@@ -51,7 +51,17 @@ pub mod opener {
     }
 }
 
+/// Pin rustls to the `ring` crypto backend. Both `ring` (via reqwest) and
+/// `aws-lc-rs` (via lettre / platform-verifier defaults) end up in the build,
+/// so rustls cannot auto-select one and panics inside the IMAP/SMTP connect
+/// future, which silently kills the sign-in command. Safe to call repeatedly;
+/// a second call is a no-op.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 pub fn run() {
+    install_crypto_provider();
     if let Err(e) = run_inner(true) {
         // A file-logging failure (e.g. locked-down ~/Library/Logs on managed
         // machines or sandboxed test runners) must never brick the app:

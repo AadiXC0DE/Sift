@@ -224,6 +224,7 @@ pub async fn accounts_add_app_password(
             false,
         )
     })?;
+    log::info!(target: "sift::setup", "app-password sign-in: connecting");
     let _ = progress.send(SetupProgress::Connecting);
     // Build a non-cached pool for verification (no DB writes yet).
     let pool = crate::provider::imap::conn::ImapPool::gmail(email.clone(), pw.clone());
@@ -235,6 +236,7 @@ pub async fn accounts_add_app_password(
     );
     let _ = progress.send(SetupProgress::Authenticating);
     verifier.verify().await.inspect_err(|e| {
+        log::warn!(target: "sift::setup", "app-password sign-in: verify failed: {e}");
         let _ = progress.send(SetupProgress::Error {
             code: serde_json::to_value(e)
                 .unwrap()
@@ -244,8 +246,10 @@ pub async fn accounts_add_app_password(
                 .to_string(),
         });
     })?;
+    log::info!(target: "sift::setup", "app-password sign-in: authenticated, listing labels");
     let _ = progress.send(SetupProgress::Listing);
     verifier.list_labels().await.inspect_err(|e| {
+        log::warn!(target: "sift::setup", "app-password sign-in: list_labels failed: {e}");
         let _ = progress.send(SetupProgress::Error {
             code: serde_json::to_value(e)
                 .unwrap()
@@ -285,6 +289,7 @@ pub async fn accounts_add_app_password(
         .write()
         .await
         .insert(acc.id.clone(), provider.clone());
+    log::info!(target: "sift::setup", "app-password sign-in: account created, starting sync");
     let _ = progress.send(SetupProgress::Syncing);
     let (db, sink_acc, app2) = (state.db.clone(), acc.id.clone(), app.clone());
     tokio::spawn(async move {
