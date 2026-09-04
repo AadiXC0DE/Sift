@@ -101,6 +101,27 @@ impl Db {
       let __out = rows.next().transpose()?; Ok(__out)
     }).await
     }
+    pub async fn attachment_cache_data(
+        &self,
+        message_id: &str,
+        key: &str,
+        data: &[u8],
+    ) -> Result<()> {
+        let (mid, key, compressed) = (
+            message_id.to_string(),
+            key.to_string(),
+            zstd::encode_all(data, 3)?,
+        );
+        self.write(move |c| {
+            c.execute(
+                "UPDATE attachments SET data_z=? WHERE message_id=? AND (part_id=? OR id=? OR content_id=? OR TRIM(IFNULL(content_id,''), '<>')=?)",
+                params![compressed, mid, key, key, key, key],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn attachments_with_bytes(
         &self,
         message_id: &str,

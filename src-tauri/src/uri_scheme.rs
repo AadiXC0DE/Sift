@@ -37,18 +37,15 @@ pub async fn resolve_attachment(
             return Ok((b, mime));
         }
     }
-    if let Some(att_id) = att_id_opt {
-        // Transport locator: Gmail attachmentId, or the IMAP section path
-        // stored in part_id (gmail_att_id is NULL for IMAP rows).
-        let locator = if att_id.is_empty() {
-            part_id
-        } else {
-            att_id.as_str()
-        };
-        let bytes = provider.fetch_attachment(message_id, locator).await?;
-        if !bytes.is_empty() {
-            return Ok((bytes, mime));
-        }
+    // Transport locator: Gmail attachmentId, or the IMAP section path stored
+    // in part_id (gmail_att_id is NULL for IMAP rows).
+    let locator = att_id_opt
+        .as_deref()
+        .filter(|attachment_id| !attachment_id.is_empty())
+        .unwrap_or(part_id);
+    let bytes = provider.fetch_attachment(message_id, locator).await?;
+    if !bytes.is_empty() {
+        return Ok((bytes, mime));
     }
     Err(crate::errors::SiftError::NotFound("attachment".into()))
 }

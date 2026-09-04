@@ -273,6 +273,38 @@ fn parse_list_unsub(raw: &str) -> (Option<String>, Option<String>) {
     (url, mailto)
 }
 
+async fn render_message_html(
+    state: &AppState,
+    account_id: &str,
+    message_id: &str,
+    html: String,
+) -> String {
+    let mut rendered = match state.db.attachments_with_bytes(message_id).await {
+        Ok(parts) => crate::render::sanitize::embed_local_images(&html, message_id, &parts),
+        Err(_) => html,
+    };
+    let unresolved = crate::render::sanitize::inline_image_refs(&rendered, message_id);
+    if unresolved.is_empty() {
+        return rendered;
+    }
+    let Ok(provider) = state.provider_for(account_id).await else {
+        return rendered;
+    };
+    for key in unresolved {
+        if let Ok((bytes, mime)) =
+            crate::uri_scheme::resolve_attachment(&state.db, &*provider, message_id, &key).await
+        {
+            let _ = state
+                .db
+                .attachment_cache_data(message_id, &key, &bytes)
+                .await;
+            let part = vec![(key.clone(), key.clone(), Some(key), mime, bytes)];
+            rendered = crate::render::sanitize::embed_local_images(&rendered, message_id, &part);
+        }
+    }
+    rendered
+}
+
 #[tauri::command]
 pub async fn message_body(
     state: State<'_, AppState>,
@@ -347,14 +379,7 @@ pub async fn message_body(
             html
         };
         let html_out = match html_out {
-            Some(h) => match state.db.attachments_with_bytes(&message_id).await {
-                Ok(parts) => Some(crate::render::sanitize::embed_local_images(
-                    &h,
-                    &message_id,
-                    &parts,
-                )),
-                Err(_) => Some(h),
-            },
+            Some(h) => Some(render_message_html(&state, &account_id, &message_id, h).await),
             None => None,
         };
         return Ok(MessageBody {
@@ -429,14 +454,7 @@ pub async fn message_body(
             html
         };
         let html_out = match html_out {
-            Some(h) => match state.db.attachments_with_bytes(&message_id).await {
-                Ok(parts) => Some(crate::render::sanitize::embed_local_images(
-                    &h,
-                    &message_id,
-                    &parts,
-                )),
-                Err(_) => Some(h),
-            },
+            Some(h) => Some(render_message_html(&state, &account_id, &message_id, h).await),
             None => None,
         };
         return Ok(MessageBody {

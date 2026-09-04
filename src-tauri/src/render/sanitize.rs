@@ -53,6 +53,20 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
             "dl",
             "dt",
             "dd",
+            "main",
+            "section",
+            "article",
+            "header",
+            "footer",
+            "nav",
+            "figure",
+            "figcaption",
+            "picture",
+            "source",
+            "map",
+            "area",
+            "video",
+            "audio",
         ])
         .rm_tags([
             "form", "input", "button", "select", "textarea", "iframe", "object", "embed", "script",
@@ -81,10 +95,40 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
             "lang",
             "style",
             "role",
+            "aria-label",
+            "aria-hidden",
+            "hidden",
         ])
-        .add_tag_attributes("a", &["href"])
-        .add_tag_attributes("img", &["src", "width", "height", "alt"])
-        .add_tag_attributes("td", &["colspan", "rowspan"])
+        .add_tag_attributes("a", &["href", "target", "name"])
+        .add_tag_attributes(
+            "img",
+            &[
+                "src", "srcset", "sizes", "width", "height", "alt", "border", "hspace", "vspace",
+                "usemap", "ismap", "loading", "decoding",
+            ],
+        )
+        .add_tag_attributes("source", &["src", "srcset", "sizes", "type", "media"])
+        .add_tag_attributes("video", &["src", "poster", "width", "height", "controls"])
+        .add_tag_attributes("audio", &["src", "controls"])
+        .add_tag_attributes("style", &["type", "media"])
+        .add_tag_attributes(
+            "table",
+            &[
+                "summary",
+                "rules",
+                "frame",
+                "width",
+                "height",
+                "bgcolor",
+                "background",
+            ],
+        )
+        .add_tag_attributes(
+            "td",
+            &[
+                "colspan", "rowspan", "headers", "scope", "abbr", "axis", "nowrap",
+            ],
+        )
         .url_schemes(
             ["http", "https", "mailto", "tel", "cid", "sift-att", "data"]
                 .into_iter()
@@ -113,21 +157,13 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
         }
     }
 
-    // Force links target blank (ammonia link_rel set; ensure target)
-    html = html.replace("<a ", "<a target=\"_blank\" ");
+    // Protocol-relative assets resolve against Tauri's custom app scheme in a
+    // srcdoc iframe. Normalize them to HTTPS so CDN-hosted email assets load.
+    html = normalize_protocol_relative_urls(html);
 
-    // Strip dangerous style declarations
+    // Keep authored layout CSS. Strip only legacy active-CSS script vectors;
+    // iframe CSP and sandboxing provide the primary execution boundary.
     html = strip_bad_styles(&html);
-
-    // Quote wrapping: gmail_quote / blockquote cite -> details
-    html = html.replace(
-        "<div class=\"gmail_quote\">",
-        "<details class=\"sift-quote\" open><summary>•••</summary>",
-    );
-    html = html.replace(
-        "<blockquote type=\"cite\">",
-        "<details class=\"sift-quote\"><summary>•••</summary><blockquote>",
-    );
 
     // dark_safe: no bgcolor/background other than white/transparent
     let lower = html.to_lowercase();
@@ -145,15 +181,6 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
                 dark_safe = false;
                 break;
             }
-        }
-    }
-
-    // Strip comments
-    while let Some(a) = html.find("<!--") {
-        if let Some(b) = html[a..].find("-->") {
-            html.replace_range(a..a + b + 3, "");
-        } else {
-            break;
         }
     }
 
@@ -199,6 +226,14 @@ fn rewrite_cid_srcs(html: String, message_id: &str) -> String {
     out
 }
 
+fn normalize_protocol_relative_urls(html: String) -> String {
+    html.replace("=\"//", "=\"https://")
+        .replace("='//", "='https://")
+        .replace("url(//", "url(https://")
+        .replace("url(&quot;//", "url(&quot;https://")
+        .replace("url(&#x27;//", "url(&#x27;https://")
+}
+
 /// Turn blocked remote images back into real `src` (Load / always-allow).
 pub fn restore_remote_images(html: &str) -> String {
     const PLACEHOLDER: &str =
@@ -216,6 +251,7 @@ pub type InlinePart = (String, String, Option<String>, String, Vec<u8>);
 
 pub fn embed_local_images(html: &str, message_id: &str, parts: &[InlinePart]) -> String {
     let mut html = html.to_string();
+    let mut replacements = Vec::new();
     for (id, part_id, content_id, mime, data) in parts {
         if data.is_empty() || !mime.starts_with("image/") {
             continue;
@@ -227,14 +263,60 @@ pub fn embed_local_images(html: &str, message_id: &str, parts: &[InlinePart]) ->
                 .trim_matches(|ch: char| ch == '<' || ch == '>')
                 .to_string()
         });
-        for k in [id.as_str(), part_id.as_str(), cid.as_deref().unwrap_or("")] {
-            if k.is_empty() {
-                continue;
+        for key in [id.as_str(), part_id.as_str(), cid.as_deref().unwrap_or("")] {
+            if !key.is_empty() {
+                replacements.push((key.to_string(), data_url.clone()));
             }
-            html = html.replace(&format!("sift-att://{message_id}/{k}"), &data_url);
         }
     }
+    // Longest first avoids corrupting a reference whose key has a shorter key
+    // as its prefix (for example, `image` and `image-large`).
+    replacements.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
+    for (key, data_url) in replacements {
+        html = replace_exact_attachment_ref(&html, message_id, &key, &data_url);
+    }
     html
+}
+
+fn replace_exact_attachment_ref(html: &str, message_id: &str, key: &str, value: &str) -> String {
+    let needle = format!("sift-att://{message_id}/{key}");
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find(&needle) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + needle.len()..];
+        let boundary = after
+            .chars()
+            .next()
+            .map(|c| matches!(c, '\"' | '\'' | ' ' | '>' | ')' | '&'))
+            .unwrap_or(true);
+        if boundary {
+            out.push_str(value);
+        } else {
+            out.push_str(&needle);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+pub fn inline_image_refs(html: &str, message_id: &str) -> Vec<String> {
+    let prefix = format!("sift-att://{message_id}/");
+    let mut refs = Vec::new();
+    let mut rest = html;
+    while let Some(start) = rest.find(&prefix) {
+        let value = &rest[start + prefix.len()..];
+        let end = value
+            .find(['\"', '\'', ' ', '>', ')', '&'])
+            .unwrap_or(value.len());
+        let key = value[..end].trim_matches(|c: char| c == '<' || c == '>');
+        if !key.is_empty() && !refs.iter().any(|existing| existing == key) {
+            refs.push(key.to_string());
+        }
+        rest = &value[end..];
+    }
+    refs
 }
 
 fn strip_bad_styles(html: &str) -> String {
@@ -254,9 +336,7 @@ fn strip_bad_styles(html: &str) -> String {
                         || l.contains("javascript:")
                         || l.contains("@import")
                         || l.contains("behavior:")
-                        || l.contains("-moz-binding")
-                        || l.contains("position:fixed")
-                        || l.contains("position: fixed"))
+                        || l.contains("-moz-binding"))
                 })
                 .collect();
             out.push_str(&format!("style=\"{}\"", kept.join(";")));
@@ -341,5 +421,86 @@ mod tests {
         assert!(out.html.contains("background-image:url("));
         assert!(out.html.contains("<style"));
         assert!(out.html.contains(".x{color:red}") || out.html.contains(".x { color: red }"));
+    }
+
+    #[test]
+    fn preserves_email_layout_attributes_and_media() {
+        let out = sanitize(
+            "m1",
+            "<style media=\"screen\">@media(max-width:600px){.hero{width:100%}}</style><table width=\"600\" cellspacing=\"12\" cellpadding=\"8\" bgcolor=\"#ffffff\" role=\"presentation\"><tr><td nowrap background=\"https://cdn.example/bg.png\"><picture><source media=\"(min-width:600px)\" srcset=\"https://cdn.example/hero@2x.png 2x\"><img class=\"hero\" src=\"https://cdn.example/hero.png\" width=\"600\" height=\"240\" hspace=\"0\"></picture></td></tr></table>",
+        );
+        for expected in [
+            "width=\"600\"",
+            "cellspacing=\"12\"",
+            "cellpadding=\"8\"",
+            "bgcolor=\"#ffffff\"",
+            "nowrap",
+            "<picture>",
+            "<source",
+            "srcset=\"https://cdn.example/hero@2x.png 2x\"",
+            "height=\"240\"",
+        ] {
+            assert!(
+                out.html.contains(expected),
+                "missing {expected}: {}",
+                out.html
+            );
+        }
+        assert!(!out.html.contains("sift-quote"));
+    }
+
+    #[test]
+    fn normalizes_protocol_relative_assets() {
+        let out = sanitize(
+            "m1",
+            "<img src=\"//cdn.example/a.png\"><div style=\"background:url(//cdn.example/b.png)\"></div>",
+        );
+        assert!(out.html.contains("src=\"https://cdn.example/a.png\""));
+        assert!(out.html.contains("url(https://cdn.example/b.png)"));
+    }
+
+    #[test]
+    fn inline_refs_and_prefix_keys_are_safe() {
+        let html = "<img src=\"sift-att://m1/image-large\"><img src=\"sift-att://m1/image\">";
+        assert_eq!(
+            inline_image_refs(html, "m1"),
+            vec!["image-large".to_string(), "image".to_string()]
+        );
+        let out = embed_local_images(
+            html,
+            "m1",
+            &[
+                (
+                    "image".into(),
+                    "image".into(),
+                    None,
+                    "image/png".into(),
+                    vec![1],
+                ),
+                (
+                    "image-large".into(),
+                    "image-large".into(),
+                    None,
+                    "image/jpeg".into(),
+                    vec![2],
+                ),
+            ],
+        );
+        assert!(!out.contains("sift-att://"));
+        assert_eq!(out.matches("data:image/").count(), 2);
+
+        let short_only = embed_local_images(
+            html,
+            "m1",
+            &[(
+                "image".into(),
+                "image".into(),
+                None,
+                "image/png".into(),
+                vec![1],
+            )],
+        );
+        assert!(short_only.contains("sift-att://m1/image-large"));
+        assert!(!short_only.contains("data:image/png;base64,AQ==-large"));
     }
 }

@@ -11,21 +11,22 @@ interface Props {
 }
 
 // Pooled iframes (2) are managed by the parent; this component is the frame itself.
-export function MailFrame({ messageId, html }: Props) {
+export function MailFrame({ messageId, html, allowed }: Props) {
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number | null>(null);
   const [hoverHref, setHoverHref] = useState<string | null>(null);
   const nonce = useMemo(() => Math.random().toString(36).slice(2), []);
 
   const srcdoc = useMemo(() => {
-    const csp = `default-src 'none'; img-src data: sift-att: https:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src 'none'; form-action 'none'; base-uri 'none'`;
-    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><style>${mailCss}</style></head><body class="sift-mail">${html ?? ''}<script nonce="${nonce}">${buildShim(nonce)}</script></body></html>`;
-  }, [html, nonce]);
+    const remote = allowed ? ' http: https:' : '';
+    const csp = `default-src 'none'; img-src data: blob:${remote}; media-src data: blob:${remote}; style-src 'unsafe-inline'${remote}; font-src data:${remote}; script-src 'nonce-${nonce}'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'`;
+    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><style>${mailCss}</style></head><body class="sift-mail">${html ?? ''}<script nonce="${nonce}">${buildShim(nonce)}</script></body></html>`;
+  }, [allowed, html, nonce]);
 
   useEffect(() => {
     setHeight(null);
     const h = (e: MessageEvent) => {
-      if (!e.data?.__sift) return;
+      if (e.source !== ref.current?.contentWindow || !e.data?.__sift) return;
       if (e.data.type === 'size' && typeof e.data.height === 'number') setHeight(e.data.height);
       if (e.data.type === 'link') {
         const href: string = e.data.href ?? '';
@@ -77,7 +78,7 @@ export function MailFrame({ messageId, html }: Props) {
           overflow: 'hidden',
           borderRadius: 8,
         }}
-        scrolling="no"
+        scrolling="auto"
       />
       {hoverHref && (
         <div
