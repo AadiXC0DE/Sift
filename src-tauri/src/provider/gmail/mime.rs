@@ -287,7 +287,9 @@ pub fn parse_full(msg: &Message) -> ParsedMessage {
                 .is_some()
                 && !mime.starts_with("text/"));
         let is_inline = cid.is_some() || disp.contains("inline");
-        if is_att || (is_inline && filename.is_some()) {
+        // CID/inline parts are renderable email content even when the sender
+        // omitted a filename (common for logos and generated newsletters).
+        if is_att || is_inline {
             let data = p
                 .body
                 .as_ref()
@@ -377,5 +379,47 @@ mod tests {
             decode_rfc2047("=?UTF-8?Q?Referral_Request_=E2=80=93_Intern?="),
             "Referral Request – Intern"
         );
+    }
+
+    #[test]
+    fn keeps_filename_less_cid_images() {
+        use crate::provider::gmail::types::{Body, Header};
+        let image_data = URL_SAFE.encode([1_u8, 2, 3]);
+        let msg = Message {
+            id: "m1".into(),
+            thread_id: "t1".into(),
+            label_ids: None,
+            snippet: None,
+            history_id: None,
+            internal_date: None,
+            size_estimate: None,
+            raw: None,
+            payload: Some(MessagePart {
+                part_id: None,
+                mime_type: Some("multipart/related".into()),
+                filename: None,
+                headers: None,
+                body: None,
+                parts: Some(vec![MessagePart {
+                    part_id: Some("1".into()),
+                    mime_type: Some("image/png".into()),
+                    filename: None,
+                    headers: Some(vec![Header {
+                        name: "Content-ID".into(),
+                        value: "<logo>".into(),
+                    }]),
+                    body: Some(Body {
+                        attachment_id: None,
+                        size: Some(3),
+                        data: Some(image_data),
+                    }),
+                    parts: None,
+                }]),
+            }),
+        };
+        let parsed = parse_full(&msg);
+        assert_eq!(parsed.inline.len(), 1);
+        assert_eq!(parsed.inline[0].content_id.as_deref(), Some("logo"));
+        assert_eq!(parsed.inline[0].data, vec![1, 2, 3]);
     }
 }

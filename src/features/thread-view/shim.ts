@@ -4,7 +4,11 @@ export function buildShim(nonce: string): string {
   return `
 (function(){
   function post(m){ parent.postMessage({ __sift: true, ...m }, '*'); }
-  function report(){ post({ type:'size', height: document.documentElement.scrollHeight }); }
+  function report(){
+    var body = document.body;
+    var rect = body.getBoundingClientRect();
+    post({ type:'size', height: Math.max(1, Math.ceil(rect.height)) });
+  }
   new ResizeObserver(report).observe(document.documentElement);
   window.addEventListener('load', function(){ report(); setTimeout(report, 300); });
   document.addEventListener('click', function(e){
