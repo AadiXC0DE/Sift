@@ -196,6 +196,7 @@ async fn send_one(
 ) -> Result<(), SiftError> {
     use lettre::transport::smtp::authentication::Credentials;
     use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+    crate::install_crypto_provider();
 
     let builder = if starttls {
         AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
@@ -242,6 +243,7 @@ pub async fn send_test(
 ) -> Result<(), SiftError> {
     use lettre::transport::smtp::authentication::Credentials;
     use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+    crate::install_crypto_provider();
 
     let (from, to) = envelope_from_raw(raw, email);
     let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)

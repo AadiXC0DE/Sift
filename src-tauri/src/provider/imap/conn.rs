@@ -219,7 +219,7 @@ impl ImapPool {
                 Err(e) if is_terminal(&e) || attempt >= MAX_ATTEMPTS => return Err(e),
                 Err(e) => {
                     let wait = self.backoff_next();
-                    log::debug!(target: "sift::imap", "connect failed ({e}); retry in {wait:?}");
+                    log::warn!(target: "sift::imap", "connect failed ({e}); retry in {wait:?}");
                     tokio::time::sleep(wait).await;
                 }
             }
@@ -251,6 +251,7 @@ impl ImapPool {
         .map_err(|_| SiftError::app("offline", "No connection to Gmail.", true))?
         .map_err(errors::io_err)?;
         use rustls_platform_verifier::ConfigVerifierExt;
+        crate::install_crypto_provider();
         let config = rustls::ClientConfig::with_platform_verifier().map_err(errors::tls_err)?;
         let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
         let domain = rustls_pki_types::ServerName::try_from(self.inner.host.as_str())

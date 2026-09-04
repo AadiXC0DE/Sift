@@ -22,39 +22,111 @@ function rowState(progress: string | null, row: RowKey): 'todo' | 'busy' | 'done
   return 'todo';
 }
 
+/** If the backend goes silent for this long (no progress event, no
+ *  resolution), surface an error instead of spinning forever. */
+const STALL_MS = 45_000;
+
+type Progress = import('../../app/ipc/types').SetupProgress;
+
+/** One backend sign-in per (email, password), shared across React StrictMode's
+ *  double mount and across re-renders. The listener is swapped on each mount
+ *  so progress always reaches the live component. */
+let inflight: {
+  key: string;
+  promise: Promise<unknown>;
+  listener: (p: Progress) => void;
+} | null = null;
+
+function errorCodeOf(p: Progress): string | null {
+  if (!p || typeof p !== 'object' || !('error' in p)) return null;
+  const e = (p as { error: unknown }).error;
+  if (typeof e === 'string') return e;
+  if (e && typeof e === 'object' && typeof (e as { code?: unknown }).code === 'string')
+    return (e as { code: string }).code;
+  return 'imap_transient';
+}
+
+function errorCodeFromReject(e: unknown): string {
+  const direct = (e as { code?: string })?.code;
+  if (typeof direct === 'string') return direct;
+  try {
+    return JSON.parse(String((e as Error)?.message ?? ''))?.code ?? 'imap_transient';
+  } catch {
+    return 'imap_transient';
+  }
+}
+
 export function StepConnecting({ onDone }: { onDone: () => void }) {
   const email = useSetup((s) => s.email);
   const appPassword = useSetup((s) => s.appPassword);
   const progress = useSetup((s) => s.progress);
   const set = useSetup((s) => s.set);
-  const started = React.useRef(false);
+  const attempt = React.useRef(0);
+  const stall = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const start = React.useCallback(
+    (fresh: boolean) => {
+      const id = ++attempt.current;
+      const live = () => id === attempt.current;
+      const disarm = () => {
+        if (stall.current) clearTimeout(stall.current);
+        stall.current = null;
+      };
+      const arm = () => {
+        disarm();
+        stall.current = setTimeout(() => {
+          if (live()) set({ progress: 'error:imap_transient' });
+        }, STALL_MS);
+      };
+      const onProgress = (p: Progress) => {
+        if (!live()) return;
+        const code = errorCodeOf(p);
+        if (code) {
+          disarm();
+          set({ progress: `error:${code}` });
+        } else if (typeof p === 'string') {
+          set({ progress: p });
+          arm();
+        }
+      };
+      const key = `${email}\u0000${appPassword}`;
+      let req = inflight;
+      if (fresh || !req || req.key !== key) {
+        const promise = api.accounts_add_app_password(email, appPassword, (p) => inflight?.listener(p));
+        req = { key, promise, listener: onProgress };
+        inflight = req;
+        promise.finally(() => {
+          if (inflight === req) inflight = null;
+        });
+      } else {
+        req.listener = onProgress;
+      }
+      set({ progress: 'connecting' });
+      arm();
+      req.promise
+        .then(() => {
+          if (!live()) return;
+          disarm();
+          set({ progress: 'done' });
+          onDone();
+        })
+        .catch((e) => {
+          if (!live()) return;
+          disarm();
+          set({ progress: `error:${errorCodeFromReject(e)}` });
+        });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [email, appPassword],
+  );
 
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    set({ progress: 'connecting' });
-    api
-      .accounts_add_app_password(email, appPassword, (p) => {
-        if (typeof p === 'string') set({ progress: p });
-        else if (p && typeof p === 'object' && 'error' in p)
-          set({ progress: `error:${(p as { error: string }).error}` });
-      })
-      .then(() => {
-        set({ progress: 'done' });
-        onDone();
-      })
-      .catch((e) => {
-        const code =
-          (e as { code?: string })?.code ??
-          (() => {
-            try {
-              return JSON.parse(String((e as Error)?.message ?? ''))?.code ?? 'imap_transient';
-            } catch {
-              return 'imap_transient';
-            }
-          })();
-        set({ progress: `error:${code}` });
-      });
+    start(false);
+    return () => {
+      attempt.current++;
+      if (stall.current) clearTimeout(stall.current);
+      stall.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -146,11 +218,7 @@ export function StepConnecting({ onDone }: { onDone: () => void }) {
                 </button>
               )}
               <button
-                onClick={() => {
-                  set({ progress: null });
-                  started.current = false;
-                  set({ progress: 'connecting' });
-                }}
+                onClick={() => start(true)}
                 style={{
                   height: 34,
                   borderRadius: 8,
