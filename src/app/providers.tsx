@@ -10,7 +10,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
   const load = useSettings((s) => s.load);
   const refresh = useAccounts((s) => s.refresh);
   useEffect(() => {
-    engine.register(defaultBindings);
+    // The engine owns only multi-key sequences (g i …), go-tos and global
+    // undo. Single-key shortcuts live with their feature handlers so one
+    // keystroke never dispatches twice.
+    engine.register(
+      defaultBindings.filter((b) => b.key.includes(' ') || b.action === 'undo' || b.action.startsWith('go')),
+    );
     load();
     refresh();
     // matchMedia listener for system theme

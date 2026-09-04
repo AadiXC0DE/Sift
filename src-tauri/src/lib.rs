@@ -1,6 +1,7 @@
 pub mod app_state;
 pub mod commands;
 pub mod db;
+pub mod demo;
 pub mod dto;
 pub mod errors;
 pub mod gmail;
@@ -8,6 +9,7 @@ pub mod logging;
 pub mod notify;
 pub mod outbox;
 pub mod render;
+pub mod runtime;
 pub mod scheduler;
 pub mod search;
 pub mod secrets;
@@ -49,10 +51,28 @@ pub mod opener {
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(logging::file_logger_plugin())
+    if let Err(e) = run_inner(true) {
+        // A file-logging failure (e.g. locked-down ~/Library/Logs on managed
+        // machines or sandboxed test runners) must never brick the app:
+        // retry stdout-only so the mailbox still opens.
+        if matches!(&e, tauri::Error::PluginInitialization(name, _) if name == "log") {
+            eprintln!("file logging unavailable ({e}); continuing stdout-only");
+            run_inner(false).expect("tauri run");
+        } else {
+            panic!("tauri run: {e}");
+        }
+    }
+}
+
+fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
+    let builder = tauri::Builder::default();
+    let builder = if with_file_log {
+        builder.plugin(logging::file_logger_plugin())
+    } else {
+        builder.plugin(logging::stdout_logger_plugin())
+    };
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -61,10 +81,14 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            // SIFT_DATA_DIR isolates the database for local demo/test runs.
+            let data_dir = std::env::var("SIFT_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    app.path()
+                        .app_data_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                });
             let _ = std::fs::create_dir_all(&data_dir);
             let db = db::Db::open(&data_dir).expect("open db");
             // theme -> native background to avoid white flash
@@ -79,21 +103,59 @@ pub fn run() {
                 });
                 eprintln!("perf:window-shown {}", db::now_ms());
             }
+            if let Err(e) = tauri::async_runtime::block_on(crate::demo::seed_if_enabled(&db)) {
+                eprintln!("demo seed: {e}");
+            }
             let state = AppState::new(db, data_dir);
             app.manage(state);
-            // overdue snoozes
-            // (spawned after manage via async_runtime)
+            // Background engine: per-account poll/drain/backfill + snooze watcher.
+            crate::runtime::spawn_supervisor(app.app_handle().clone());
             Ok(())
         })
-        .register_uri_scheme_protocol("sift-att", |_ctx, req| {
-            // Minimal handler: parse /<message>/<part>, lookup via block_on
-            // Full streaming + caching lives in uri_scheme::resolve_attachment with AppState; this stub returns 404 until state is wired.
-            // The real handler is registered in main.rs with state access.
-            let _ = req;
-            tauri::http::Response::builder()
-                .status(404)
-                .body(Vec::new())
-                .unwrap()
+        .register_uri_scheme_protocol("sift-att", |ctx, req| {
+            fn respond(status: u16, mime: &str, bytes: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
+                tauri::http::Response::builder()
+                    .status(status)
+                    .header("Content-Type", mime.to_string())
+                    .header("Cache-Control", "private, max-age=31536000".to_string())
+                    .body(bytes)
+                    .unwrap()
+            }
+            // sift-att://<message_id>/<part_id>: the message id arrives as the
+            // URI host with the part as path (be liberal: also accept /m/p).
+            let uri = req.uri().clone();
+            let (mid, part) = match uri.host() {
+                Some(h) if !uri.path().trim_start_matches('/').is_empty() => (
+                    h.to_string(),
+                    uri.path().trim_start_matches('/').to_string(),
+                ),
+                _ => match uri.path().trim_start_matches('/').split_once('/') {
+                    Some((a, b)) => (a.to_string(), b.to_string()),
+                    None => (String::new(), String::new()),
+                },
+            };
+            if mid.is_empty() || part.is_empty() || mid.contains("..") || part.contains("..") {
+                return respond(404, "text/plain", b"bad id".to_vec());
+            }
+            let app = ctx.app_handle().clone();
+            let out: Result<(Vec<u8>, String), String> =
+                tauri::async_runtime::block_on(async move {
+                    let state = app.state::<AppState>();
+                    let (aid, _) = state
+                        .db
+                        .message_thread(&mid)
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| "no message".to_string())?;
+                    let client = state.client_for(&aid).await.map_err(|e| e.to_string())?;
+                    crate::uri_scheme::resolve_attachment(&state.db, &client, &mid, &part)
+                        .await
+                        .map_err(|e| e.to_string())
+                });
+            match out {
+                Ok((bytes, mime)) => respond(200, &mime, bytes),
+                Err(_) => respond(404, "text/plain", b"not found".to_vec()),
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::settings::settings_get,
@@ -132,7 +194,7 @@ pub fn run() {
             commands::search::unsubscribe,
             commands::attachments::attachments_open,
             commands::attachments::attachments_save_as,
+            commands::demo::demo_goto,
         ])
         .run(tauri::generate_context!())
-        .expect("tauri run");
 }

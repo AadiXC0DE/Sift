@@ -5,14 +5,18 @@ export function Popover({
   trigger,
   children,
   label,
+  open,
+  onOpenChange,
 }: {
   trigger: React.ReactElement;
   children: React.ReactNode;
   label?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   void label;
   return (
-    <BasePopover.Root>
+    <BasePopover.Root open={open} onOpenChange={onOpenChange}>
       <BasePopover.Trigger render={trigger as never} />
       <BasePopover.Portal>
         <BasePopover.Positioner sideOffset={6}>
