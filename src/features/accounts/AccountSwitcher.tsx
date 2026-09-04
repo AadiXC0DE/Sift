@@ -82,6 +82,7 @@ export function AccountSwitcher() {
           alignItems: 'center',
           justifyContent: 'center',
           background: 'var(--n3)',
+          color: 'var(--fg)',
           cursor: 'pointer',
           fontSize: 11,
           fontWeight: 700,

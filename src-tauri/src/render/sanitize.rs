@@ -1,4 +1,5 @@
 use ammonia::Builder;
+use base64::Engine;
 use std::collections::HashSet;
 
 pub struct SanitizeOut {
@@ -105,9 +106,8 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
     let mut remote_images = 0i64;
     let mut trackers = 0i64;
 
-    // Rewrite cid: -> sift-att://
-    html = html.replace("src=\"cid:", &format!("src=\"sift-att://{message_id}/"));
-    html = html.replace("src='cid:", &format!("src='sift-att://{message_id}/"));
+    // Rewrite cid: -> sift-att:// (strip <angle brackets> Gmail puts on Content-ID)
+    html = rewrite_cid_srcs(html, message_id);
 
     // Process <img> tags: detect remote vs tracker
     let mut out = String::with_capacity(html.len());
@@ -239,6 +239,65 @@ fn extract_attr(tag: &str, name: &str) -> Option<String> {
     None
 }
 
+fn rewrite_cid_srcs(html: String, message_id: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html.as_str();
+    while let Some(i) = rest.find("cid:") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 4..];
+        let mut end = after
+            .find(['"', '\'', ' ', '>', '&'])
+            .unwrap_or(after.len());
+        let raw = &after[..end];
+        let cid = raw.trim_matches(|c: char| c == '<' || c == '>');
+        if raw.starts_with('<') && after[end..].starts_with('>') {
+            end += 1;
+        }
+        out.push_str(&format!("sift-att://{message_id}/{cid}"));
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Turn blocked remote images back into real `src` (Load / always-allow).
+pub fn restore_remote_images(html: &str) -> String {
+    const PLACEHOLDER: &str =
+        "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+    html.replace(&format!("src=\"{PLACEHOLDER}\""), "")
+        .replace(&format!("src='{PLACEHOLDER}'"), "")
+        .replace(" class=\"sift-blocked\"", "")
+        .replace(" class='sift-blocked'", "")
+        .replace("data-sift-src=\"", "src=\"")
+        .replace("data-sift-src='", "src='")
+}
+
+/// srcdoc iframes cannot load custom `sift-att://` URLs; embed bytes as data URIs.
+pub type InlinePart = (String, String, Option<String>, String, Vec<u8>);
+
+pub fn embed_local_images(html: &str, message_id: &str, parts: &[InlinePart]) -> String {
+    let mut html = html.to_string();
+    for (id, part_id, content_id, mime, data) in parts {
+        if data.is_empty() || !mime.starts_with("image/") {
+            continue;
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+        let data_url = format!("data:{mime};base64,{b64}");
+        let cid = content_id.as_ref().map(|c| {
+            c.trim()
+                .trim_matches(|ch: char| ch == '<' || ch == '>')
+                .to_string()
+        });
+        for k in [id.as_str(), part_id.as_str(), cid.as_deref().unwrap_or("")] {
+            if k.is_empty() {
+                continue;
+            }
+            html = html.replace(&format!("sift-att://{message_id}/{k}"), &data_url);
+        }
+    }
+    html
+}
+
 fn strip_bad_styles(html: &str) -> String {
     // Remove style="..." declarations containing url(, expression(, @import, position:fixed/absolute
     let mut out = String::with_capacity(html.len());
@@ -281,6 +340,40 @@ mod tests {
         assert!(!out.html.contains("<form"));
         assert!(!out.html.contains("onload="));
         assert!(out.html.contains("sift-att://m1/ii_1"));
+    }
+    #[test]
+    fn rewrite_cid_strips_brackets() {
+        let out = rewrite_cid_srcs("<img src=\"cid:<ii_1>\">".into(), "m1");
+        assert_eq!(out, "<img src=\"sift-att://m1/ii_1\">");
+    }
+    #[test]
+    fn restore_remote_keeps_one_src() {
+        let blocked = sanitize(
+            "m1",
+            "<img src=\"https://example.com/photo.jpg\" width=\"100\" height=\"50\">",
+        );
+        let restored = restore_remote_images(&blocked.html);
+        assert!(restored.contains("src=\"https://example.com/photo.jpg\""));
+        assert!(!restored.contains("data-sift-src"));
+        assert!(!restored.contains("sift-blocked"));
+        assert_eq!(restored.matches("src=\"").count(), 1);
+    }
+    #[test]
+    fn embed_cid_as_data_uri() {
+        let html = "<img src=\"sift-att://m1/ii_1\">";
+        let out = embed_local_images(
+            html,
+            "m1",
+            &[(
+                "att1".into(),
+                "p1".into(),
+                Some("ii_1".into()),
+                "image/png".into(),
+                vec![1, 2, 3],
+            )],
+        );
+        assert!(out.starts_with("<img src=\"data:image/png;base64,"));
+        assert!(!out.contains("sift-att://"));
     }
     #[test]
     fn p3_t07_remote_and_tracker() {

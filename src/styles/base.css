@@ -21,6 +21,16 @@ body {
 }
 button {
   font: inherit;
+  color: inherit;
+  background: transparent;
+}
+input,
+textarea,
+select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-raised);
+  color-scheme: inherit;
 }
 :focus {
   outline: none;
@@ -50,9 +60,94 @@ button {
 .num {
   font-variant-numeric: tabular-nums;
 }
+.sift-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--r-md);
+  transition:
+    transform var(--d-press) var(--ease-out),
+    background 80ms ease,
+    opacity 80ms ease;
+}
+.sift-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.sift-btn-primary {
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  border: 1px solid transparent;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+.sift-btn-secondary {
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+.sift-btn-ghost {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid transparent;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+.sift-btn-danger {
+  background: var(--danger);
+  color: var(--fg-on-accent);
+  border: 1px solid transparent;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+.sift-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  cursor: pointer;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease;
+}
+.sift-chip-btn:hover {
+  background: var(--n2);
+}
+.sift-chip-btn[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: color-mix(in oklab, var(--accent) 35%, var(--border));
+  color: var(--fg);
+}
+.sift-iconbtn:hover {
+  background: var(--n3);
+}
+.sift-row {
+  overflow: hidden;
+  contain: layout style;
+}
 @media (hover: hover) and (pointer: fine) {
   .hoverable {
     transition: background-color 80ms ease;
+  }
+  .hoverable:hover {
+    background-color: var(--bg-row-hover);
   }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -14,13 +14,15 @@
   --bg-sidebar: var(--n2);
   --bg-list: var(--n0);
   --bg-pane: var(--n0);
+  --bg-elevated: var(--n0);
+  --bg-raised: var(--n0);
   --bg-row-hover: var(--n2);
   --bg-row-selected: color-mix(in oklab, var(--accent) 10%, var(--n0));
   --bg-row-focus: color-mix(in oklab, var(--accent) 16%, var(--n0));
-  --bg-elevated: var(--n0);
   --border: var(--n3);
   --border-strong: var(--n4);
   --fg: var(--n9);
+  --fg-1: var(--n9);
   --fg-2: var(--n7);
   --fg-3: var(--n6);
   --fg-disabled: var(--n5);
@@ -75,8 +77,10 @@
   --row-h: 40px;
   --toolbar-h: 44px;
   --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
+  color-scheme: light;
 }
 :root[data-theme='dark'] {
+  color-scheme: dark;
   --n0: #161615;
   --n1: #1b1b1a;
   --n2: #202020;

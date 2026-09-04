@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { api } from '../../app/ipc/commands';
 import { useSetup } from '../../stores/setupStore';
+import { Button } from '../../ui/Button';
 
 const card: React.CSSProperties = {
   width: 440,
@@ -19,45 +20,31 @@ export function StepWelcome() {
   }, []);
   return (
     <div style={card}>
-      <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.02em' }}>Sift</div>
+      <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--fg)' }}>Sift</div>
       <div style={{ fontSize: 14, color: 'var(--fg-2)' }}>Fast, quiet email for Gmail.</div>
-      <button
+      <Button
         ref={firstBtn}
+        variant="primary"
         onClick={() => set({ step: 'email' })}
         onKeyDown={(e) => {
           if (e.key === 'Enter') set({ step: 'email' });
         }}
-        style={{
-          height: 36,
-          borderRadius: 8,
-          border: 'none',
-          background: 'var(--accent)',
-          color: '#fff',
-          fontSize: 14,
-          fontWeight: 600,
-          cursor: 'pointer',
-        }}
+        style={{ height: 36, fontSize: 14, fontWeight: 600, width: '100%' }}
       >
         Connect your Gmail
-      </button>
+      </Button>
       {oauthAvailable && (
-        <button
+        <Button
+          variant="ghost"
           onClick={() => {
             api
               .accounts_add_google()
               .then(() => set({ step: 'connecting', progress: 'syncing' }))
               .catch(() => undefined);
           }}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: 'var(--fg-2)',
-            fontSize: 13,
-            cursor: 'pointer',
-          }}
         >
           Sign in with Google instead
-        </button>
+        </Button>
       )}
       <div style={{ fontSize: 12, color: 'var(--fg-3)' }}>
         Works with Gmail and Google Workspace. Your mail stays on this Mac.

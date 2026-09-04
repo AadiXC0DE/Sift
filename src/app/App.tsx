@@ -15,6 +15,8 @@ import { on } from './ipc/events';
 import { useSync } from '../stores/syncStore';
 import { engine } from '../keymap/engine';
 import { undoLast } from '../features/actions/dispatch';
+import { Kbd } from '../ui/Kbd';
+import { Button } from '../ui/Button';
 
 export function App() {
   const paneLayout = useView((s) => s.paneLayout);
@@ -286,23 +288,23 @@ function LearnKeys() {
         justifyContent: 'center',
         padding: '6px 12px',
         fontSize: 12,
-        color: 'var(--fg-3)',
+        color: 'var(--fg-2)',
         background: 'var(--bg-list)',
         borderTop: '1px solid var(--border)',
       }}
     >
       <span>
-        <b>j/k</b> move
+        <Kbd>j</Kbd> <Kbd>k</Kbd> move
       </span>
       <span>
-        <b>e</b> archive
+        <Kbd>e</Kbd> archive
       </span>
       <span>
-        <b>⌘K</b> anything
+        <Kbd>⌘K</Kbd> anything
       </span>
       <button
         onClick={dismiss}
-        style={{ background: 'none', border: 'none', color: 'var(--fg-3)', cursor: 'pointer' }}
+        style={{ background: 'none', border: 'none', color: 'var(--fg-2)', cursor: 'pointer' }}
       >
         Dismiss
       </button>
@@ -318,10 +320,10 @@ function KitchenSink() {
   return (
     <div style={{ padding: 32, display: 'flex', flexDirection: 'column', gap: 16 }}>
       <h1>Kitchen sink ({theme})</h1>
-      <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>Toggle theme</button>
+      <Button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>Toggle theme</Button>
       <div id="ks-buttons" style={{ display: 'flex', gap: 8 }}>
-        <button className="sift-btn-primary">Primary</button>
-        <button>Secondary</button>
+        <Button variant="primary">Primary</Button>
+        <Button>Secondary</Button>
       </div>
     </div>
   );
