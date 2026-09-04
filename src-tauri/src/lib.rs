@@ -51,8 +51,8 @@ pub mod opener {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    logging::init();
     tauri::Builder::default()
+        .plugin(logging::file_logger_plugin())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -60,7 +60,6 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_log::Builder::default().build())
         .setup(|app| {
             let data_dir = app
                 .path()
