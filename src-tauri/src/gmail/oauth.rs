@@ -9,12 +9,26 @@ pub const SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/userinfo.profile",
 ];
 
+/// Google OAuth client credentials, resolved in order:
+/// 1. Runtime env (tests, power-user override).
+/// 2. Values baked in at build time from CI secrets (`option_env!`) — this is
+///    how downloaded DMG builds sign users in with zero setup (spec 2.3:
+///    Desktop-app IDs are public by Google's definition; PKCE + loopback
+///    protect the flow).
+/// 3. Test placeholders (dev builds with no credentials configured).
 fn client_id() -> String {
     std::env::var("SIFT_GOOGLE_CLIENT_ID")
-        .unwrap_or_else(|_| "test-client-id.apps.googleusercontent.com".into())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| option_env!("SIFT_GOOGLE_CLIENT_ID").map(str::to_string))
+        .unwrap_or_else(|| "test-client-id.apps.googleusercontent.com".into())
 }
 fn client_secret() -> String {
-    std::env::var("SIFT_GOOGLE_CLIENT_SECRET").unwrap_or_else(|_| "test-secret".into())
+    std::env::var("SIFT_GOOGLE_CLIENT_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| option_env!("SIFT_GOOGLE_CLIENT_SECRET").map(str::to_string))
+        .unwrap_or_else(|| "test-secret".into())
 }
 
 pub struct PendingFlow {
@@ -206,6 +220,17 @@ pub fn build_auth_url_for_test() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn embedded_credentials_fallback_chain() {
+        // Runtime env wins when set…
+        std::env::set_var("SIFT_GOOGLE_CLIENT_ID", "runtime-id");
+        assert_eq!(client_id(), "runtime-id");
+        std::env::remove_var("SIFT_GOOGLE_CLIENT_ID");
+        // …otherwise the build-time value (CI secrets) or test placeholder.
+        // Never empty: the fallback keeps dev builds compiling and booting.
+        assert!(!client_id().is_empty());
+        assert!(!client_secret().is_empty());
+    }
     #[test]
     fn p2_t01_auth_url_shape() {
         let url = build_auth_url_for_test();
