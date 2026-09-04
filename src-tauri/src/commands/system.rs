@@ -1,13 +1,18 @@
 use crate::app_state::AppState;
 use crate::dto::{Label, SyncStatus};
 use crate::errors::SiftError;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
 pub async fn sync_now(
+    app: AppHandle,
     state: State<'_, AppState>,
     account_id: Option<String>,
 ) -> Result<(), SiftError> {
+    // Demo mode has no server: stay local.
+    if crate::demo::is_demo() {
+        return Ok(());
+    }
     // Trigger partial sync for one or all accounts
     let ids: Vec<String> = match account_id {
         Some(a) => vec![a],
@@ -27,8 +32,23 @@ pub async fn sync_now(
         };
         let db = state.db.clone();
         let aid2 = aid.clone();
+        let app2 = app.clone();
         tokio::spawn(async move {
-            let _ = crate::sync::partial::run_partial_sync(&db, &aid2, &client).await;
+            if let Ok(out) = crate::sync::partial::run_partial_sync(&db, &aid2, &client).await {
+                let tids: Vec<String> = out
+                    .changed_threads
+                    .iter()
+                    .filter(|(a, _)| a == &aid2)
+                    .map(|(_, t)| t.clone())
+                    .collect();
+                if !tids.is_empty() {
+                    let _ = app2.emit(
+                        "store:threads",
+                        serde_json::json!({ "account_id": aid2, "thread_ids": tids }),
+                    );
+                }
+                let _ = app2.emit("store:labels", serde_json::json!({ "account_id": aid2 }));
+            }
         });
     }
     Ok(())
@@ -58,11 +78,37 @@ pub async fn labels_list(
     state: State<'_, AppState>,
     account_id: String,
 ) -> Result<Vec<Label>, SiftError> {
-    state
+    let mut labels = state
         .db
         .labels_list(&account_id)
         .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))
+        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+    // Live counts from the threads table (spec 6.2): threads carrying the
+    // label, excluding trash/spam; unread counts threads with unread > 0.
+    let counts: std::collections::HashMap<String, (i64, i64)> = state
+        .db
+        .read({
+            let aid = account_id.clone();
+            move |c| -> anyhow::Result<std::collections::HashMap<String, (i64, i64)>> {
+                let mut s = c.prepare(
+                    "SELECT value, COUNT(*), SUM(CASE WHEN t.unread_count>0 THEN 1 ELSE 0 END)                      FROM threads t, json_each(t.label_ids)                      WHERE t.account_id=? AND t.in_trash=0 AND t.in_spam=0 GROUP BY value",
+                )?;
+                let v: Vec<(String, i64, i64)> = s
+                    .query_map(rusqlite::params![aid], |r| {
+                        Ok::<(String, i64, i64), rusqlite::Error>((r.get(0)?, r.get(1)?, r.get(2)?))
+                    })?
+                    .collect::<Result<Vec<(String, i64, i64)>, rusqlite::Error>>()?;
+                Ok(v.into_iter().map(|(k, total, unread)| (k, (total, unread))).collect())
+            }
+        })
+        .await
+        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+    for l in &mut labels {
+        let (total, unread) = counts.get(&l.id).copied().unwrap_or((0, 0));
+        l.total_count = total;
+        l.unread_count = unread;
+    }
+    Ok(labels)
 }
 
 #[tauri::command]

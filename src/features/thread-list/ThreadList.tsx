@@ -11,8 +11,13 @@ import { Spinner } from '../../ui/Spinner';
 import { EmptyState } from '../../ui/EmptyState';
 import { Skeleton } from '../../ui/Skeleton';
 import { SearchInput } from '../search/SearchInput';
-import { dispatchAction } from '../actions/dispatch';
-import { Sun } from 'lucide-react';
+import { dispatchAction, undoLast } from '../actions/dispatch';
+import { api } from '../../app/ipc/commands';
+import { Popover } from '../../ui/Popover';
+import { LabelPicker } from '../actions/LabelPicker';
+import { toast } from 'sonner';
+import type { Label } from '../../app/ipc/types';
+import { Paperclip, Sun } from 'lucide-react';
 
 export function ThreadList({ onCompose }: { onCompose: () => void }) {
   void onCompose;
@@ -22,6 +27,13 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
   const threadId = useView((s) => s.threadId);
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [hasAtt, setHasAtt] = useState(false);
+  const [pickerHost, setPickerHost] = useState<null | {
+    kind: 'label' | 'move';
+    accountId: string;
+    threadIds: string[];
+  }>(null);
+  const [hostLabels, setHostLabels] = useState<Label[]>([]);
+  const [labelName, setLabelName] = useState<string | null>(null);
   const { rows, loading, loadMore } = useThreadsWindow(view, { unreadOnly, hasAttachment: hasAtt });
   const focusedIndex = useSelection((s) => s.focusedIndex);
   const setFocus = useSelection((s) => s.setFocus);
@@ -45,33 +57,141 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     overscan: 8,
   });
 
-  // keyboard j/k/x etc for list scope
+  // Group the selection by account for bulk actions (spec 3.4.5); falls back
+  // to the focused row for single actions.
+  const targets = (): { accountId: string; threadIds: string[] }[] => {
+    const sel = [...useSelection.getState().selectedIds];
+    if (sel.length > 1) {
+      const byAcc: Record<string, string[]> = {};
+      for (const k of sel) {
+        const i = k.indexOf(':');
+        if (i < 0) continue;
+        (byAcc[k.slice(0, i)] ??= []).push(k.slice(i + 1));
+      }
+      return Object.entries(byAcc).map(([accountId, threadIds]) => ({ accountId, threadIds }));
+    }
+    const r = rows[useSelection.getState().focusedIndex];
+    return r ? [{ accountId: r.accountId, threadIds: [r.id] }] : [];
+  };
+
+  const openRow = (index: number) => {
+    const r = rows[index];
+    if (!r) return;
+    (window as unknown as { __lastAccount?: string }).__lastAccount = r.accountId;
+    setThread(r.id);
+  };
+
+  const moveCursor = (d: number) => {
+    const n = Math.max(0, Math.min(rows.length - 1, focusedIndex + d));
+    setFocus(n);
+    // The reading pane follows the keyboard cursor (spec 12.2).
+    if (useView.getState().paneLayout !== 'off') {
+      const r = rows[n];
+      if (r) {
+        (window as unknown as { __lastAccount?: string }).__lastAccount = r.accountId;
+        setThread(r.id);
+      }
+    }
+  };
+
+  const snoozeTomorrow = (accountId: string, threadIds: string[]) => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(8, 0, 0, 0);
+    void api.snooze_set(accountId, threadIds, d.getTime()).then(() => {
+      toast('Snoozed until Tomorrow 08:00', {
+        action: { label: 'Undo (z)', onClick: () => void undoLast() },
+      });
+    });
+  };
+
+  // keyboard for list scope (single-row actions yield to the open thread)
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (view.kind === 'search' && searching) return;
-      if (e.key === 'j' || e.key === 'ArrowDown') {
+      const k = e.key;
+      if (k === 'j' || k === 'ArrowDown') {
         e.preventDefault();
-        setFocus(Math.min(rows.length - 1, focusedIndex + 1));
-      } else if (e.key === 'k' || e.key === 'ArrowUp') {
+        moveCursor(1);
+      } else if (k === 'k' || k === 'ArrowUp') {
         e.preventDefault();
-        setFocus(Math.max(0, focusedIndex - 1));
-      } else if (e.key === 'x') {
+        moveCursor(-1);
+      } else if (k === 'x') {
         const r = rows[focusedIndex];
         if (r) useSelection.getState().toggle(`${r.accountId}:${r.id}`);
-      } else if (e.key === 'e') {
+      } else if (k === 'Enter' || (k === 'o' && useView.getState().threadId == null)) {
+        openRow(focusedIndex);
+      } else if (useView.getState().threadId != null) {
+        return; // open thread owns e/#//!/s/u/i/h/l/v
+      } else if (k === 'e') {
+        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'archive' } });
+      } else if (k === '#') {
+        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'trash' } });
+      } else if (k === '!') {
+        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'spam' } });
+      } else if (k === 's') {
         const r = rows[focusedIndex];
         if (r)
-          void dispatchAction({ accountId: r.accountId, threadIds: [r.id], action: { kind: 'archive' } });
-      } else if (e.key === 'Enter' || e.key === 'o') {
-        const r = rows[focusedIndex];
-        if (r) setThread(r.id);
+          void dispatchAction({
+            accountId: r.accountId,
+            threadIds: [r.id],
+            action: { kind: 'star', on: !r.isStarred },
+          });
+      } else if (k === 'U') {
+        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'read', on: false } });
+      } else if (k === 'I') {
+        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'read', on: true } });
+      } else if (k === 'h') {
+        const g = targets()[0];
+        if (g) snoozeTomorrow(g.accountId, g.threadIds);
+      } else if (k === 'l' || k === 'v') {
+        const g = targets()[0];
+        if (g) setPickerHost({ kind: k === 'l' ? 'label' : 'move', ...g });
       }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [rows, focusedIndex, setFocus, setThread, view.kind, searching]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, focusedIndex, setFocus, setThread, view.kind, searching, selectedIds]);
+
+  // Archive-and-go (]/[ from the thread view): archive happened there; advance here.
+  useEffect(() => {
+    const h = (e: Event) => {
+      const dir = (e as CustomEvent).detail?.dir as 1 | -1;
+      const cur = useSelection.getState().focusedIndex;
+      const next = Math.max(0, Math.min(rows.length - 1, cur + dir));
+      setFocus(next);
+      if (useView.getState().paneLayout !== 'off') openRow(next);
+    };
+    document.addEventListener('sift:archive-nav', h as EventListener);
+    return () => document.removeEventListener('sift:archive-nav', h as EventListener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, setThread]);
+
+  useEffect(() => {
+    if (pickerHost) {
+      api
+        .labels_list(pickerHost.accountId)
+        .then(setHostLabels)
+        .catch(() => setHostLabels([]));
+    }
+  }, [pickerHost]);
+
+  useEffect(() => {
+    if (view.kind !== 'label') {
+      setLabelName(null);
+      return;
+    }
+    const id = (view as { labelId: string }).labelId;
+    const aids = scope === 'all' ? accounts.map((a) => a.id) : [scope];
+    Promise.all(aids.map((a) => api.labels_list(a).catch(() => [] as Label[]))).then((all) => {
+      const found = all.flat().find((l) => l.id === id);
+      setLabelName(found ? (found.name.split('/').pop() ?? found.name) : id);
+    });
+  }, [view, scope, accounts]);
 
   // keep focused visible
   useEffect(() => {
@@ -80,10 +200,10 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
   }, [focusedIndex]);
 
   const title = useMemo(() => {
-    if (view.kind === 'label') return (view as { labelId: string }).labelId;
+    if (view.kind === 'label') return labelName ?? (view as { labelId: string }).labelId;
     if (view.kind === 'search') return `Results for “${(view as { q: string }).q}”`;
     return viewTitle[view.kind] ?? 'Inbox';
-  }, [view]);
+  }, [view, labelName]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
@@ -126,7 +246,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
             cursor: 'pointer',
           }}
         >
-          📎
+          <Paperclip size={14} />
         </button>
       </div>
       <div
@@ -174,7 +294,30 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
                     showStripe={showStripe}
                     onFocus={() => setFocus(vi.index)}
                     onToggleSelect={() => useSelection.getState().toggle(key)}
-                    onOpen={() => setThread(r.id)}
+                    onOpen={() => openRow(vi.index)}
+                    onAction={(kind) => {
+                      if (kind === 'snooze') {
+                        snoozeTomorrow(r.accountId, [r.id]);
+                      } else if (kind === 'read') {
+                        void dispatchAction({
+                          accountId: r.accountId,
+                          threadIds: [r.id],
+                          action: { kind: 'read', on: r.unreadCount === 0 },
+                        });
+                      } else if (kind === 'star') {
+                        void dispatchAction({
+                          accountId: r.accountId,
+                          threadIds: [r.id],
+                          action: { kind: 'star', on: !r.isStarred },
+                        });
+                      } else {
+                        void dispatchAction({
+                          accountId: r.accountId,
+                          threadIds: [r.id],
+                          action: { kind },
+                        });
+                      }
+                    }}
                   />
                 </div>
               );
@@ -189,6 +332,40 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
         )}
       </div>
       {threadId && <div style={{ display: 'none' }}>{threadId}</div>}
+      {pickerHost && (
+        <Popover
+          open
+          onOpenChange={(o) => {
+            if (!o) setPickerHost(null);
+          }}
+          trigger={
+            <button
+              aria-hidden
+              tabIndex={-1}
+              style={{
+                position: 'fixed',
+                top: '28%',
+                left: '50%',
+                width: 1,
+                height: 1,
+                opacity: 0,
+                pointerEvents: 'none',
+              }}
+            />
+          }
+        >
+          <LabelPicker
+            labels={hostLabels}
+            selected={pickerHost.threadIds.map(
+              (tid) => rows.find((x) => x.id === tid && x.accountId === pickerHost.accountId)?.labelIds ?? [],
+            )}
+            accountId={pickerHost.accountId}
+            threadIds={pickerHost.threadIds}
+            mode={pickerHost.kind}
+            onDone={() => setPickerHost(null)}
+          />
+        </Popover>
+      )}
     </div>
   );
 }

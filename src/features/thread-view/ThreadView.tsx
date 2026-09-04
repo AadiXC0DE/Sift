@@ -10,7 +10,14 @@ import { Chip } from '../../ui/Chip';
 import { Spinner } from '../../ui/Spinner';
 import { EmptyState } from '../../ui/EmptyState';
 import { dispatchAction } from '../actions/dispatch';
-import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Paperclip } from 'lucide-react';
+import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Paperclip, Tag } from 'lucide-react';
+import { IconButton } from '../../ui/IconButton';
+import { Popover } from '../../ui/Popover';
+import { Menu } from '../../ui/Menu';
+import { SnoozeButton } from '../snooze/SnoozePopover';
+import { LabelPicker } from '../actions/LabelPicker';
+import { on } from '../../app/ipc/events';
+import type { Label } from '../../app/ipc/types';
 
 const bodyCache = new Map<string, MessageBody>();
 function cacheGet(id: string) {
@@ -123,6 +130,97 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
 
+  // Re-fetch the open thread when its rows change (actions, undo, sync).
+  useEffect(() => {
+    if (!threadId) return;
+    let unsub = () => {};
+    on<{ account_id: string; thread_ids: string[] }>('store:threads', (p) => {
+      const ids = (p as unknown as { thread_ids: string[] }).thread_ids ?? [];
+      if (!ids.includes(threadId) && ids.length > 0) return;
+      const acc = (window as unknown as { __lastAccount?: string }).__lastAccount;
+      if (acc)
+        api
+          .thread_get(acc, threadId)
+          .then(setDetail)
+          .catch(() => {});
+    })
+      .then((u) => {
+        unsub = u;
+      })
+      .catch(() => {});
+    return () => unsub();
+  }, [threadId]);
+
+  // Thread-scope keyboard: triage the open conversation without touching the mouse.
+  useEffect(() => {
+    if (!detail) return;
+    const ids = { accountId: detail.accountId, threadIds: [detail.id] };
+    const h = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key;
+      // Leave full-width reader back to the list (palette/compose own their Esc).
+      if (k === 'Escape' || k === 'u') {
+        const w = window as unknown as { __paletteOpen?: boolean; __composeOpen?: boolean };
+        if (
+          useView.getState().paneLayout === 'off' &&
+          !w.__paletteOpen &&
+          !w.__composeOpen &&
+          (k === 'u' || useView.getState().threadId != null)
+        ) {
+          e.preventDefault();
+          useView.getState().setThread(null);
+          return;
+        }
+        if (k === 'Escape') return;
+        useSelection.getState().clearKeepFocus();
+        return;
+      }
+      // Ignore action keys while the detail is stale (cursor moved on).
+      if (detail.id !== useView.getState().threadId) return;
+      const starred = detail.messages.some((m) => m.isStarred);
+      const focusStep = (d: number) => {
+        setFocusMsg((v) => {
+          const n = Math.max(0, Math.min(detail.messages.length - 1, v + d));
+          const m = detail.messages[n];
+          if (m) setExpanded((ex) => ({ ...ex, [m.id]: true }));
+          return n;
+        });
+      };
+      const pick = (what: 'snooze' | 'label' | 'move') =>
+        document.dispatchEvent(new CustomEvent('sift:thread-picker', { detail: { what } }));
+      if (k === 'e') void dispatchAction({ ...ids, action: { kind: 'archive' } });
+      else if (k === '#' || k === 'Backspace') {
+        e.preventDefault();
+        void dispatchAction({ ...ids, action: { kind: 'trash' } });
+      } else if (k === '!') void dispatchAction({ ...ids, action: { kind: 'spam' } });
+      else if (k === 's') void dispatchAction({ ...ids, action: { kind: 'star', on: !starred } });
+      else if (k === 'U') void dispatchAction({ ...ids, action: { kind: 'read', on: false } });
+      else if (k === 'I') void dispatchAction({ ...ids, action: { kind: 'read', on: true } });
+      else if (k === 'h') pick('snooze');
+      else if (k === 'l') pick('label');
+      else if (k === 'v') pick('move');
+      else if (k === 'r') onReply('reply', detail.id);
+      else if (k === 'a') onReply('reply_all', detail.id);
+      else if (k === 'f') onReply('forward', detail.id);
+      else if (k === 'n') focusStep(1);
+      else if (k === 'p') focusStep(-1);
+      else if (k === 'o') {
+        const m = detail.messages[focusMsg];
+        if (m) setExpanded((ex) => ({ ...ex, [m.id]: !ex[m.id] }));
+      } else if (k === ']') {
+        document.dispatchEvent(new CustomEvent('sift:archive-nav', { detail: { dir: 1 as const } }));
+        void dispatchAction({ ...ids, action: { kind: 'archive' } });
+      } else if (k === '[') {
+        document.dispatchEvent(new CustomEvent('sift:archive-nav', { detail: { dir: -1 as const } }));
+        void dispatchAction({ ...ids, action: { kind: 'archive' } });
+      }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [detail, focusMsg, onReply]);
+
   const selected = useSelection((s) => s.selectedIds);
   if (selected.size > 1) {
     return (
@@ -179,11 +277,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
           <h1 style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em', flex: 1, margin: 0 }}>
             {detail.subject || '(No subject)'}
           </h1>
-          <HeaderActions
-            accountId={detail.accountId}
-            threadId={detail.id}
-            onReply={() => onReply('reply', detail.id)}
-          />
+          <HeaderActions detail={detail} onReply={(mode) => onReply(mode, detail.id)} />
         </div>
         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
           {detail.labelIds
@@ -415,55 +509,122 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
   );
 }
 
-function HeaderActions({
-  accountId,
-  threadId,
-  onReply,
-}: {
-  accountId: string;
-  threadId: string;
-  onReply: () => void;
-}) {
-  void onReply;
+function HeaderActions({ detail, onReply }: { detail: ThreadDetail; onReply: (mode: string) => void }) {
+  const { accountId, id: threadId } = detail;
+  const starred = detail.messages.some((m) => m.isStarred);
+  const unread = detail.messages.some((m) => m.isUnread);
+  const [labels, setLabels] = useState<Label[]>([]);
+  const [labelOpen, setLabelOpen] = useState(false);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const [pickerMode, setPickerMode] = useState<'label' | 'move'>('label');
+  useEffect(() => {
+    api
+      .labels_list(accountId)
+      .then(setLabels)
+      .catch(() => {});
+  }, [accountId]);
+  // Bridge for thread-scope keyboard (h/l/v) handled in ThreadView.
+  useEffect(() => {
+    const h = (e: Event) => {
+      const what = (e as CustomEvent).detail?.what as 'snooze' | 'label' | 'move' | undefined;
+      if (what === 'snooze') setSnoozeOpen(true);
+      else if (what === 'label' || what === 'move') {
+        setPickerMode(what);
+        setLabelOpen(true);
+      }
+    };
+    document.addEventListener('sift:thread-picker', h as EventListener);
+    return () => document.removeEventListener('sift:thread-picker', h as EventListener);
+  }, []);
+  const copyLink = () => {
+    try {
+      void navigator.clipboard.writeText(`https://mail.google.com/mail/u/0/#all/${threadId}`);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
   return (
     <div style={{ display: 'flex', gap: 4 }}>
-      <button
-        title="Star (s)"
+      <IconButton
+        tip={starred ? 'Unstar (s)' : 'Star (s)'}
         onClick={() =>
-          void dispatchAction({ accountId, threadIds: [threadId], action: { kind: 'star', on: true } })
+          void dispatchAction({
+            accountId,
+            threadIds: [threadId],
+            action: { kind: 'star', on: !starred },
+          })
         }
-        style={iconBtn}
       >
-        <Star size={16} />
-      </button>
-      <button
-        title="Archive (e)"
+        <Star
+          size={16}
+          fill={starred ? 'var(--star)' : 'none'}
+          color={starred ? 'var(--star)' : 'currentColor'}
+        />
+      </IconButton>
+      <IconButton
+        tip="Archive (e)"
         onClick={() => void dispatchAction({ accountId, threadIds: [threadId], action: { kind: 'archive' } })}
-        style={iconBtn}
       >
         <Archive size={16} />
-      </button>
-      <button
-        title="Trash (#)"
+      </IconButton>
+      <IconButton
+        tip="Trash (#)"
         onClick={() => void dispatchAction({ accountId, threadIds: [threadId], action: { kind: 'trash' } })}
-        style={iconBtn}
       >
         <Trash2 size={16} />
-      </button>
-      <button
-        title="Snooze (h)"
-        onClick={() =>
-          document.dispatchEvent(
-            new CustomEvent('sift:snooze', { detail: { accountId, threadIds: [threadId] } }),
-          )
+      </IconButton>
+      <SnoozeButton
+        accountId={accountId}
+        threadIds={[threadId]}
+        open={snoozeOpen}
+        onOpenChange={setSnoozeOpen}
+        trigger={
+          <button style={iconBtn} title="Snooze (h)">
+            <Clock size={16} />
+          </button>
         }
-        style={iconBtn}
+      />
+      <Popover
+        open={labelOpen}
+        onOpenChange={setLabelOpen}
+        trigger={
+          <button style={iconBtn} title="Label (l) / Move (v)">
+            <Tag size={16} />
+          </button>
+        }
       >
-        <Clock size={16} />
-      </button>
-      <button title="More" style={iconBtn}>
-        <MoreHorizontal size={16} />
-      </button>
+        <LabelPicker
+          labels={labels}
+          selected={detail.messages.map((m) => m.labelIds)}
+          accountId={accountId}
+          threadIds={[threadId]}
+          mode={pickerMode}
+          onDone={() => setLabelOpen(false)}
+        />
+      </Popover>
+      <Menu
+        trigger={
+          <button style={iconBtn} title="More actions">
+            <MoreHorizontal size={16} />
+          </button>
+        }
+        items={[
+          { label: 'Reply', hint: 'r', action: () => onReply('reply') },
+          { label: 'Reply all', hint: 'a', action: () => onReply('reply_all') },
+          { label: 'Forward', hint: 'f', action: () => onReply('forward') },
+          {
+            label: unread ? 'Mark as read' : 'Mark as unread',
+            hint: '⇧i',
+            action: () =>
+              void dispatchAction({
+                accountId,
+                threadIds: [threadId],
+                action: { kind: 'read', on: !unread },
+              }),
+          },
+          { label: 'Copy Gmail link', action: copyLink },
+        ]}
+      />
     </div>
   );
 }

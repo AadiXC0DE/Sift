@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::dto::{ActionKind, ThreadAction};
 use crate::errors::SiftError;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 fn label_sets(action: &ActionKind) -> (Vec<String>, Vec<String>, bool, bool) {
     // (add, remove, trash_flag, spam_flag) — local message_labels edit
@@ -35,6 +35,7 @@ fn label_sets(action: &ActionKind) -> (Vec<String>, Vec<String>, bool, bool) {
 
 #[tauri::command]
 pub async fn threads_action(
+    app: AppHandle,
     state: State<'_, AppState>,
     req: ThreadAction,
 ) -> Result<serde_json::Value, SiftError> {
@@ -157,11 +158,23 @@ pub async fn threads_action(
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
     }
     // trash/untrash use thread endpoints (still enqueue modify for simplicity + correct reconcile)
+    let _ = app.emit(
+        "store:threads",
+        serde_json::json!({ "account_id": req.account_id, "thread_ids": req.thread_ids }),
+    );
+    let _ = app.emit(
+        "store:labels",
+        serde_json::json!({ "account_id": req.account_id }),
+    );
     Ok(serde_json::json!({ "undo_group": undo_group }))
 }
 
 #[tauri::command]
-pub async fn action_undo(state: State<'_, AppState>, undo_group: String) -> Result<(), SiftError> {
+pub async fn action_undo(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    undo_group: String,
+) -> Result<(), SiftError> {
     // cancel pending
     let pending = state
         .db
@@ -195,6 +208,12 @@ pub async fn action_undo(state: State<'_, AppState>, undo_group: String) -> Resu
         }
     }
     // revert pending locals (apply inverse without enqueue)
+    // Full reload: undone threads are not tracked here, so broadcast empty.
+    let _ = app.emit(
+        "store:threads",
+        serde_json::json!({ "account_id": "", "thread_ids": [] }),
+    );
+    let _ = app.emit("store:labels", serde_json::json!({}));
     for op in pending {
         let payload: serde_json::Value = serde_json::from_str(&op.payload).unwrap_or_default();
         if op.kind == "modify_labels" {
@@ -214,6 +233,7 @@ pub async fn action_undo(state: State<'_, AppState>, undo_group: String) -> Resu
 
 #[tauri::command]
 pub async fn snooze_set(
+    app: AppHandle,
     state: State<'_, AppState>,
     account_id: String,
     thread_ids: Vec<String>,
@@ -302,11 +322,20 @@ pub async fn snooze_set(
             .await
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
     }
+    let _ = app.emit(
+        "store:threads",
+        serde_json::json!({ "account_id": account_id, "thread_ids": thread_ids }),
+    );
+    let _ = app.emit(
+        "store:labels",
+        serde_json::json!({ "account_id": account_id }),
+    );
     Ok(serde_json::json!({ "undo_group": undo_group }))
 }
 
 #[tauri::command]
 pub async fn snooze_clear(
+    app: AppHandle,
     state: State<'_, AppState>,
     account_id: String,
     thread_ids: Vec<String>,
@@ -329,6 +358,14 @@ pub async fn snooze_clear(
             .await
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
     }
+    let _ = app.emit(
+        "store:threads",
+        serde_json::json!({ "account_id": account_id, "thread_ids": thread_ids }),
+    );
+    let _ = app.emit(
+        "store:labels",
+        serde_json::json!({ "account_id": account_id }),
+    );
     Ok(())
 }
 

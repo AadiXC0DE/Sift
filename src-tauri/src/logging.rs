@@ -19,6 +19,15 @@ pub fn log_level() -> LevelFilter {
 /// system was already initialized")`. Proven by bisect (boot with the tracing
 /// init disabled succeeds) and locked in by `scripts/smoke-boot.sh`. Do NOT add
 /// a second global logger/subscriber init anywhere in the binary.
+/// Stdout-only fallback for environments where the log directory is not
+/// writable. Used automatically by `run()`; never selected by hand.
+pub fn stdout_logger_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri_plugin_log::Builder::new()
+        .level(log_level())
+        .targets([Target::new(TargetKind::Stdout)])
+        .build()
+}
+
 pub fn file_logger_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri_plugin_log::Builder::new()
         .level(log_level())

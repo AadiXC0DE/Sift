@@ -75,9 +75,9 @@ export function AccountSwitcher() {
         onClick={() => setScope('all')}
         style={{
           border: scope === 'all' ? '2px solid var(--accent)' : '2px solid transparent',
-          borderRadius: '50%',
-          width: 30,
+          borderRadius: 999,
           height: 30,
+          padding: '0 12px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',

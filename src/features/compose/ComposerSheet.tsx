@@ -19,6 +19,12 @@ export function ComposerSheet({
   threadId?: string;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    (window as unknown as { __composeOpen?: boolean }).__composeOpen = true;
+    return () => {
+      (window as unknown as { __composeOpen?: boolean }).__composeOpen = false;
+    };
+  }, []);
   const accounts = useAccounts((s) => s.accounts);
   const scope = useAccounts((s) => s.accounts[0]?.id ?? '');
   void scope;
@@ -293,6 +299,16 @@ export function ComposerSheet({
           }}
         />
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', minHeight: 0 }}>
+          <style>{`
+            .tiptap { min-height: 120px; outline: none; font-size: 14px; line-height: 1.55; color: var(--fg); }
+            .tiptap:focus { outline: none; }
+            .tiptap p { margin: 0 0 8px; }
+            .tiptap.is-empty::before { content: attr(data-placeholder); color: var(--fg-3); float: left; height: 0; pointer-events: none; }
+            .tiptap a { color: var(--accent); }
+            .tiptap blockquote { border-left: 2px solid var(--border-strong); margin: 8px 0; padding: 4px 12px; color: var(--fg-2); }
+            .tiptap ul, .tiptap ol { padding-left: 20px; margin: 0 0 8px; }
+            .tiptap code { font-family: var(--font-mono); font-size: 13px; background: var(--n2); border-radius: 4px; padding: 0 4px; }
+          `}</style>
           <EditorContent editor={editor} />
         </div>
         {atts.length > 0 && (

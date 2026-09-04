@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Command } from 'cmdk';
 import { api } from '../../app/ipc/commands';
+import { dispatchAction } from './dispatch';
 import type { Label } from '../../app/ipc/types';
 
 export function LabelPicker({
@@ -25,9 +26,9 @@ export function LabelPicker({
   );
   const apply = async (labelId: string) => {
     if (mode === 'move') {
-      await api.threads_action({ accountId, threadIds, action: { kind: 'moveTo', labelId } });
+      await dispatchAction({ accountId, threadIds, action: { kind: 'moveTo', labelId } });
     } else {
-      await api.threads_action({ accountId, threadIds, action: { kind: 'addLabel', labelId } });
+      await dispatchAction({ accountId, threadIds, action: { kind: 'addLabel', labelId } });
     }
     onDone();
   };

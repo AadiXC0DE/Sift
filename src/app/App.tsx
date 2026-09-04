@@ -13,6 +13,8 @@ import { useSelection } from '../stores/selectionStore';
 import { api } from './ipc/commands';
 import { on } from './ipc/events';
 import { useSync } from '../stores/syncStore';
+import { engine } from '../keymap/engine';
+import { undoLast } from '../features/actions/dispatch';
 
 export function App() {
   const paneLayout = useView((s) => s.paneLayout);
@@ -27,6 +29,22 @@ export function App() {
   const online = useSync((s) => s.online);
 
   const refreshAccounts = useAccounts((s) => s.refresh);
+  const setThread = useView((s) => s.setThread);
+
+  // Engine owns sequences (g i …), go-tos and global undo; single-key
+  // shortcuts live with their feature handlers to avoid double dispatch.
+  useEffect(() => {
+    engine.onAction = (action) => {
+      const v = useView.getState();
+      if (action === 'goInbox') v.setView({ kind: 'inbox' });
+      else if (action === 'goStarred') v.setView({ kind: 'starred' });
+      else if (action === 'goSnoozed') v.setView({ kind: 'snoozed' });
+      else if (action === 'goSent') v.setView({ kind: 'sent' });
+      else if (action === 'goDrafts') v.setView({ kind: 'drafts' });
+      else if (action === 'goArchive') v.setView({ kind: 'archive' });
+      else if (action === 'undo') void undoLast();
+    };
+  }, []);
 
   useEffect(() => {
     const unsubs: (() => void)[] = [];
@@ -34,6 +52,41 @@ export function App() {
       .then((u) => unsubs.push(u))
       .catch(() => {});
     on('store:threads', () => {})
+      .then((u) => unsubs.push(u))
+      .catch(() => {});
+    // Screenshot-pipeline driver (demo builds only emit demo:goto).
+    on<{ scene: string }>('demo:goto', (p) => {
+      const scene = (p as unknown as { scene: string }).scene;
+      const view = useView.getState();
+      if (scene === 'palette') setPaletteOpen(true);
+      else if (scene === 'compose') setComposeOpen({ mode: 'new' });
+      else if (scene === 'settings') setSettingsOpen(true);
+      else if (scene === 'search') view.setView({ kind: 'search', q: 'invoice' });
+      else {
+        view.setScope('all');
+        view.setView({ kind: 'inbox' });
+      }
+    })
+      .then((u) => unsubs.push(u))
+      .catch(() => {});
+    // Dock badge = unread inbox threads across included accounts.
+    on('store:labels', () => {
+      void (async () => {
+        try {
+          const accs = useAccounts.getState();
+          let total = 0;
+          for (const a of accs.accounts) {
+            if (accs.included[a.id] === false) continue;
+            const labels = await api.labels_list(a.id);
+            const inbox = labels.find((l) => l.id === 'INBOX');
+            total += inbox?.unread_count ?? 0;
+          }
+          await api.app_set_badge(total);
+        } catch {
+          /* offline */
+        }
+      })();
+    })
       .then((u) => unsubs.push(u))
       .catch(() => {});
     // global keys not in inputs
@@ -45,7 +98,23 @@ export function App() {
         setPaletteOpen((v) => !v);
         return;
       }
+      // Sequences + global undo first (engine ignores text inputs itself).
+      if (engine.handle(e, ['global'])) return;
       if (typing) return;
+      // Back out of a full-width thread to the list.
+      if (
+        (e.key === 'Escape' || e.key === 'u') &&
+        !paletteOpen &&
+        !composeOpen &&
+        !settingsOpen &&
+        !helpOpen &&
+        useView.getState().paneLayout === 'off' &&
+        useView.getState().threadId != null
+      ) {
+        e.preventDefault();
+        setThread(null);
+        return;
+      }
       if (e.key === '?') setHelpOpen(true);
       if ((e.metaKey || e.ctrlKey) && e.key === ',') {
         e.preventDefault();
@@ -66,13 +135,14 @@ export function App() {
       window.removeEventListener('keydown', h);
       unsubs.forEach((u) => u());
     };
-  }, [cyclePane]);
+  }, [cyclePane, paletteOpen, composeOpen, settingsOpen, helpOpen, setThread]);
 
   useEffect(() => {
     refreshAccounts();
   }, [refreshAccounts]);
 
   const showOnboarding = accounts.length === 0;
+  const paneOffOpen = paneLayout === 'off' && threadId != null;
 
   if (window.location.hash === '#/kitchen-sink') {
     return <KitchenSink />;
@@ -81,36 +151,38 @@ export function App() {
   return (
     <div className="sift-chrome" style={{ display: 'flex', height: '100vh', background: 'var(--bg-app)' }}>
       {!sidebarHidden && <Sidebar onSettings={() => setSettingsOpen(true)} />}
-      <div
-        style={{
-          width: 'var(--list-w)',
-          minWidth: 300,
-          maxWidth: 560,
-          borderRight: '1px solid var(--border)',
-          display: 'flex',
-          flexDirection: 'column',
-          background: 'var(--bg-list)',
-        }}
-      >
-        <div data-tauri-drag-region style={{ height: 38, flexShrink: 0 }} />
-        {!online && (
-          <div
-            style={{
-              height: 24,
-              background: 'color-mix(in oklab, var(--warning) 14%, transparent)',
-              color: 'var(--warning)',
-              fontSize: 12,
-              display: 'flex',
-              alignItems: 'center',
-              padding: '0 12px',
-            }}
-          >
-            Offline · changes will sync when you&apos;re back
-          </div>
-        )}
-        <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
-      </div>
-      {paneLayout !== 'off' || !threadId ? (
+      {!paneOffOpen && (
+        <div
+          style={{
+            width: 'var(--list-w)',
+            minWidth: 300,
+            maxWidth: 560,
+            borderRight: '1px solid var(--border)',
+            display: 'flex',
+            flexDirection: 'column',
+            background: 'var(--bg-list)',
+          }}
+        >
+          <div data-tauri-drag-region style={{ height: 38, flexShrink: 0 }} />
+          {!online && (
+            <div
+              style={{
+                height: 24,
+                background: 'color-mix(in oklab, var(--warning) 14%, transparent)',
+                color: 'var(--warning)',
+                fontSize: 12,
+                display: 'flex',
+                alignItems: 'center',
+                padding: '0 12px',
+              }}
+            >
+              Offline · changes will sync when you&apos;re back
+            </div>
+          )}
+          <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
+        </div>
+      )}
+      {(paneLayout !== 'off' || threadId) && (
         <div
           style={{
             flex: 1,
@@ -122,7 +194,7 @@ export function App() {
         >
           <ThreadView onReply={(mode, tid) => setComposeOpen({ mode, threadId: tid })} />
         </div>
-      ) : null}
+      )}
       {showOnboarding && <Onboarding />}
       {paletteOpen && (
         <Palette

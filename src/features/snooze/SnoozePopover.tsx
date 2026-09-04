@@ -31,10 +31,14 @@ export function SnoozeButton({
   accountId,
   threadIds,
   trigger,
+  open,
+  onOpenChange,
 }: {
   accountId: string;
   threadIds: string[];
   trigger: React.ReactElement;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [custom, setCustom] = useState('');
   const go = async (wake: number, label: string) => {
@@ -46,6 +50,11 @@ export function SnoozeButton({
   return (
     <Popover
       trigger={trigger}
+      open={open}
+      onOpenChange={(o) => {
+        onOpenChange?.(o);
+        if (!o) setCustom('');
+      }}
       children={
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 220 }}>
           {(

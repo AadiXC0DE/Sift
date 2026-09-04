@@ -12,6 +12,12 @@ export function Palette({
   onCompose: () => void;
   onSettings: () => void;
 }) {
+  useEffect(() => {
+    (window as unknown as { __paletteOpen?: boolean }).__paletteOpen = true;
+    return () => {
+      (window as unknown as { __paletteOpen?: boolean }).__paletteOpen = false;
+    };
+  }, []);
   const [q, setQ] = useState('');
   const results = useMemo(() => filterCommands(q).slice(0, 30), [q]);
   const [hi, setHi] = useState(0);

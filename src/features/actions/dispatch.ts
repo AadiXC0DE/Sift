@@ -28,17 +28,7 @@ export async function dispatchAction(
         },
         duration: dur,
       });
-      // z binding
-      const h = (e: KeyboardEvent) => {
-        if (e.key === 'z' && !e.metaKey && !e.ctrlKey) {
-          const t = e.target as HTMLElement | null;
-          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-          void api.action_undo(undo_group);
-          window.removeEventListener('keydown', h);
-        }
-      };
-      window.addEventListener('keydown', h);
-      setTimeout(() => window.removeEventListener('keydown', h), 60_000);
+      // Undo via the global engine binding (z, 60s window in undoStack) and the toast button.
     }
     return undo_group;
   } catch (e) {
