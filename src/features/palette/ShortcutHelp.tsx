@@ -22,6 +22,8 @@ export function ShortcutHelp({ open, onClose }: { open: boolean; onClose: () => 
           border: '1px solid var(--border)',
           borderRadius: 6,
           padding: '0 8px',
+          background: 'var(--bg-raised)',
+          color: 'var(--fg)',
         }}
       />
       <div style={{ maxHeight: 380, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>

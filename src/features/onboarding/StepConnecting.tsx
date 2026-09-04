@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { api } from '../../app/ipc/commands';
 import { IMAP_ERROR_COPY, useSetup } from '../../stores/setupStore';
+import { Button } from '../../ui/Button';
 
 const ROWS = [
   { key: 'connecting', label: 'Reaching Gmail' },
@@ -123,7 +124,8 @@ export function StepConnecting({ onDone }: { onDone: () => void }) {
   useEffect(() => {
     start(false);
     return () => {
-      attempt.current++;
+      // Invalidate this mount's in-flight sign-in (not a DOM ref).
+      attempt.current += 1;
       if (stall.current) clearTimeout(stall.current);
       stall.current = null;
     };
@@ -135,8 +137,8 @@ export function StepConnecting({ onDone }: { onDone: () => void }) {
   const copy = errorCode ? (IMAP_ERROR_COPY[errorCode] ?? IMAP_ERROR_COPY.imap_transient) : null;
 
   return (
-    <div style={{ width: 440, display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ fontSize: 20, fontWeight: 650 }}>Connecting</div>
+    <div style={{ width: 440, display: 'flex', flexDirection: 'column', gap: 12, color: 'var(--fg)' }}>
+      <div style={{ fontSize: 20, fontWeight: 650, color: 'var(--fg)' }}>Connecting</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} role="status">
         {ROWS.map((r) => {
           const st = errorCode ? (r.key === 'connecting' ? 'todo' : 'todo') : rowState(progStr, r.key);
@@ -167,72 +169,24 @@ export function StepConnecting({ onDone }: { onDone: () => void }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ fontSize: 13, color: 'var(--danger)' }}>{copy.text}</div>
           {copy.button === 'Back to app password' ? (
-            <button
-              onClick={() => set({ step: 'app-password', appPassword: '', progress: null })}
-              style={{
-                height: 34,
-                borderRadius: 8,
-                border: '1px solid var(--border)',
-                background: 'var(--bg-raised)',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
+            <Button onClick={() => set({ step: 'app-password', appPassword: '', progress: null })}>
               Back to app password
-            </button>
+            </Button>
           ) : (
             <div style={{ display: 'flex', gap: 8 }}>
               {errorCode === 'imap_web_login_required' && (
-                <button
-                  onClick={() => void api.app_open_url('https://mail.google.com')}
-                  style={{
-                    height: 34,
-                    borderRadius: 8,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-raised)',
-                    padding: '0 12px',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Open Gmail
-                </button>
+                <Button onClick={() => void api.app_open_url('https://mail.google.com')}>Open Gmail</Button>
               )}
               {errorCode === 'imap_all_mail_hidden' && (
-                <button
+                <Button
                   onClick={() => void api.app_open_url('https://mail.google.com/mail/u/0/#settings/labels')}
-                  style={{
-                    height: 34,
-                    borderRadius: 8,
-                    border: '1px solid var(--border)',
-                    background: 'var(--bg-raised)',
-                    padding: '0 12px',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                  }}
                 >
                   Open Gmail settings
-                </button>
+                </Button>
               )}
-              <button
-                onClick={() => start(true)}
-                style={{
-                  height: 34,
-                  borderRadius: 8,
-                  border: 'none',
-                  background: 'var(--accent)',
-                  color: '#fff',
-                  padding: '0 12px',
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
+              <Button variant="primary" onClick={() => start(true)}>
                 Try again
-              </button>
+              </Button>
             </div>
           )}
         </div>

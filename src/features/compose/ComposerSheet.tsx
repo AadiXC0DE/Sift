@@ -9,6 +9,7 @@ import type { Address, AttachmentRef, Draft } from '../../app/ipc/types';
 import { useAccounts } from '../../stores/accountsStore';
 import { useSettings } from '../../stores/settingsStore';
 import { toast } from 'sonner';
+import { Button } from '../../ui/Button';
 
 export function ComposerSheet({
   mode,
@@ -346,51 +347,24 @@ export function ComposerSheet({
             alignItems: 'center',
           }}
         >
-          <button
+          <Button
+            variant="primary"
             onClick={() => void send()}
             style={{
-              background: sent ? 'var(--success)' : 'var(--accent)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 8,
               padding: '8px 20px',
-              fontSize: 13,
+              height: 36,
               fontWeight: 600,
-              cursor: 'pointer',
-              transition: 'filter 200ms ease',
-              filter: sent ? 'blur(0px)' : 'none',
+              background: sent ? 'var(--success)' : 'var(--accent)',
             }}
           >
             {sent ? '✓' : sending ? 'Sending…' : 'Send ⌘↵'}
-          </button>
-          <button
-            onClick={() => void send(true)}
-            title="Send and archive (⌘⇧↵)"
-            style={{
-              background: 'none',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              padding: '8px 12px',
-              fontSize: 12,
-              cursor: 'pointer',
-            }}
-          >
+          </Button>
+          <Button onClick={() => void send(true)} title="Send and archive (⌘⇧↵)">
             Send & archive
-          </button>
-          <button
-            onClick={() => void attach()}
-            title="Attach (⌘⇧A)"
-            style={{
-              background: 'none',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              padding: '8px 12px',
-              fontSize: 12,
-              cursor: 'pointer',
-            }}
-          >
+          </Button>
+          <Button onClick={() => void attach()} title="Attach (⌘⇧A)">
             Attach
-          </button>
+          </Button>
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 11, color: 'var(--fg-3)' }}>Esc saves draft</span>
         </div>

@@ -5,6 +5,7 @@ import { Switch } from '../../ui/Switch';
 import { useSettings } from '../../stores/settingsStore';
 import { useAccounts } from '../../stores/accountsStore';
 import { api } from '../../app/ipc/commands';
+import { Button } from '../../ui/Button';
 
 const accents = ['blue', 'indigo', 'violet', 'rose', 'orange', 'green', 'teal', 'graphite'] as const;
 
@@ -195,10 +196,12 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                     aria-label="color"
                     style={{ width: 80 }}
                   />
-                  <button onClick={() => void api.accounts_remove(a.id)}>Remove</button>
+                  <Button size="sm" onClick={() => void api.accounts_remove(a.id)}>
+                    Remove
+                  </Button>
                 </div>
               ))}
-              <button onClick={() => void api.accounts_add_google()}>Add account</button>
+              <Button onClick={() => void api.accounts_add_google()}>Add account</Button>
             </div>
           )}
           {tab === 'Shortcuts' && (

@@ -342,12 +342,20 @@ pub async fn message_body(
         .map_err(|e| SiftError::app("db", e.to_string(), false))?
     {
         let html_out = if global_allow {
-            html.map(|h| {
-                h.replace("data-sift-src=\"", "src=\"")
-                    .replace(" class=\"sift-blocked\"", "")
-            })
+            html.map(|h| crate::render::sanitize::restore_remote_images(&h))
         } else {
             html
+        };
+        let html_out = match html_out {
+            Some(h) => match state.db.attachments_with_bytes(&message_id).await {
+                Ok(parts) => Some(crate::render::sanitize::embed_local_images(
+                    &h,
+                    &message_id,
+                    &parts,
+                )),
+                Err(_) => Some(h),
+            },
+            None => None,
         };
         return Ok(MessageBody {
             message_id,
@@ -450,10 +458,8 @@ pub async fn remote_images_load(
     // return body with images allowed
     let mut body = message_body(state.clone(), message_id).await?;
     if let Some(h) = body.html.take() {
-        body.html = Some(
-            h.replace("data-sift-src=\"", "src=\"")
-                .replace(" class=\"sift-blocked\"", ""),
-        );
+        let restored = crate::render::sanitize::restore_remote_images(&h);
+        body.html = Some(restored);
     }
     body.remote_images_allowed = true;
     Ok(body)

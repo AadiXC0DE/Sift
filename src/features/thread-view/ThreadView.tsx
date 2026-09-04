@@ -18,6 +18,7 @@ import { SnoozeButton } from '../snooze/SnoozePopover';
 import { LabelPicker } from '../actions/LabelPicker';
 import { on } from '../../app/ipc/events';
 import type { Label } from '../../app/ipc/types';
+import { Button } from '../../ui/Button';
 
 const bodyCache = new Map<string, MessageBody>();
 function cacheGet(id: string) {
@@ -129,6 +130,19 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
+
+  useEffect(() => {
+    const h = (e: Event) => {
+      const id = (e as CustomEvent).detail?.messageId as string | undefined;
+      if (!id) return;
+      void api.remote_images_load(id, false).then((b) => {
+        cacheSet(id, b);
+        setBodies((p) => ({ ...p, [id]: b }));
+      });
+    };
+    document.addEventListener('sift:load-remote', h as EventListener);
+    return () => document.removeEventListener('sift:load-remote', h as EventListener);
+  }, []);
 
   // Re-fetch the open thread when its rows change (actions, undo, sync).
   useEffect(() => {
@@ -373,52 +387,43 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                       {body.remoteImageCount > 0 && !body.remoteImagesAllowed && (
                         <div
                           style={{
-                            height: 32,
+                            minHeight: 36,
                             background: 'var(--n2)',
+                            color: 'var(--fg)',
+                            border: '1px solid var(--border)',
                             borderRadius: 6,
                             display: 'flex',
                             alignItems: 'center',
                             gap: 8,
-                            padding: '0 12px',
+                            padding: '6px 12px',
                             fontSize: 12,
                             marginBottom: 8,
                           }}
                         >
-                          <span>Images hidden</span>
-                          <button
+                          <span style={{ color: 'var(--fg)', flex: 1 }}>Images hidden to block trackers</span>
+                          <Button
+                            size="sm"
                             onClick={() =>
                               void api.remote_images_load(m.id, false).then((b) => {
                                 cacheSet(m.id, b);
                                 setBodies((p) => ({ ...p, [m.id]: b }));
                               })
                             }
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              color: 'var(--accent)',
-                              cursor: 'pointer',
-                              fontSize: 12,
-                            }}
                           >
                             Load
-                          </button>
-                          <button
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() =>
                               void api.remote_images_load(m.id, true).then((b) => {
                                 cacheSet(m.id, b);
                                 setBodies((p) => ({ ...p, [m.id]: b }));
                               })
                             }
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              color: 'var(--accent)',
-                              cursor: 'pointer',
-                              fontSize: 12,
-                            }}
                           >
-                            Always load from {m.from.e}
-                          </button>
+                            Always from {m.from.e}
+                          </Button>
                         </div>
                       )}
                       <MailFrame
@@ -660,16 +665,10 @@ function BulkBar() {
   };
   return (
     <div style={{ display: 'flex', gap: 8 }}>
-      <button
-        onClick={() => void act('archive')}
-        style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer' }}
-      >
+      <button onClick={() => void act('archive')} className="sift-chip-btn">
         Archive
       </button>
-      <button
-        onClick={() => void act('trash')}
-        style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer' }}
-      >
+      <button onClick={() => void act('trash')} className="sift-chip-btn">
         Trash
       </button>
       <button
@@ -719,6 +718,7 @@ function AttachmentStrip({
               border: '1px solid var(--border)',
               borderRadius: 8,
               background: 'var(--n1)',
+              color: 'var(--fg)',
               cursor: 'pointer',
               fontSize: 12,
             }}
