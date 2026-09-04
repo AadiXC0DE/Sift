@@ -1,0 +1,129 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1286
+expression: rs
+---
+[
+    Untagged(
+        Flags(
+            [
+                "\\Answered",
+                "\\Flagged",
+                "\\Draft",
+                "\\Deleted",
+                "\\Seen",
+                "$NotPhishing",
+                "$Phishing",
+            ],
+        ),
+    ),
+    Untagged(
+        Other {
+            kind: "OK",
+            rest: "Flags permitted.",
+        },
+    ),
+    Untagged(
+        UidValidity(
+            987654,
+        ),
+    ),
+    Untagged(
+        UidNext(
+            4523,
+        ),
+    ),
+    Untagged(
+        HighestModSeq(
+            89123,
+        ),
+    ),
+    Untagged(
+        Exists(
+            412,
+        ),
+    ),
+    Untagged(
+        Recent(
+            0,
+        ),
+    ),
+    Untagged(
+        Other {
+            kind: "OK",
+            rest: "Select completed.",
+        },
+    ),
+    Untagged(
+        Status {
+            mailbox: "[Gmail]/Alle Nachrichten",
+            values: {
+                "HIGHESTMODSEQ": 89123,
+                "MESSAGES": 412,
+                "UIDNEXT": 4523,
+                "UIDVALIDITY": 987654,
+            },
+        },
+    ),
+    Untagged(
+        Search(
+            [
+                1,
+                2,
+                3,
+                4521,
+                4522,
+            ],
+        ),
+    ),
+    Untagged(
+        Exists(
+            4523,
+        ),
+    ),
+    Untagged(
+        Expunge(
+            2,
+        ),
+    ),
+    Untagged(
+        Fetch {
+            seq: 24,
+            attrs: [
+                Uid(
+                    4522,
+                ),
+                Flags(
+                    [
+                        "\\Seen",
+                        "\\Flagged",
+                    ],
+                ),
+                ModSeq(
+                    89140,
+                ),
+            ],
+        },
+    ),
+    TaggedOk {
+        tag: "a142",
+        code: Some(
+            AppendUid {
+                uidvalidity: 987654,
+                uid: 4523,
+            },
+        ),
+        text: "APPEND completed.",
+    },
+    TaggedOk {
+        tag: "a143",
+        code: Some(
+            CopyUid {
+                uidvalidity: 987654,
+                src: "4521:4522",
+                dst: "9001:9002",
+            },
+        ),
+        text: "COPY completed.",
+    },
+]

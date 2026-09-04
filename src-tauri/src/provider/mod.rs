@@ -160,6 +160,9 @@ pub trait SyncSink: Send + Sync {
         remove: &[String],
     ) -> Result<(String, String)>;
     async fn message_thread(&self, id: &str) -> Result<Option<(String, String)>>;
+    async fn message_snippet(&self, id: &str) -> Result<String>;
+    async fn message_flags(&self, id: &str) -> Result<(bool, bool)>;
+    async fn set_snippet(&self, id: &str, snippet: &str) -> Result<()>;
     async fn message_exists(&self, id: &str) -> Result<bool>;
     async fn list_local_messages(&self, account: &str) -> Result<Vec<(String, String)>>;
     // -- bodies / attachments -----------------------------------------------
@@ -187,6 +190,20 @@ pub trait SyncSink: Send + Sync {
         -> Result<Vec<(String, i64)>>;
     // -- progress ---------------------------------------------------------------
     fn progress(&self, status: SyncStatus);
+    /// Thread rows changed (list refresh). Emitted per sync chunk so the
+    /// inbox fills top-down during full sync.
+    fn threads_changed(&self, account: &str, thread_ids: &[String]);
+}
+
+/// Sink notifications. `DbSink::with_progress` subscribes to progress only;
+/// `with_events` gets both (used by full-sync commands).
+#[derive(Debug, Clone)]
+pub enum SyncEvent {
+    Progress(SyncStatus),
+    ThreadsChanged {
+        account_id: String,
+        thread_ids: Vec<String>,
+    },
 }
 
 /// [`SyncSink`] backed by [`Db`]. Progress reporting is optional: pass
@@ -194,17 +211,24 @@ pub trait SyncSink: Send + Sync {
 #[derive(Clone)]
 pub struct DbSink {
     db: Db,
-    progress: Option<std::sync::Arc<dyn Fn(SyncStatus) + Send + Sync>>,
+    events: Option<std::sync::Arc<dyn Fn(SyncEvent) + Send + Sync>>,
 }
 
 impl DbSink {
     pub fn new(db: Db) -> Self {
-        Self { db, progress: None }
+        Self { db, events: None }
     }
     pub fn with_progress(db: Db, f: impl Fn(SyncStatus) + Send + Sync + 'static) -> Self {
+        Self::with_events(db, move |e| {
+            if let SyncEvent::Progress(s) = e {
+                f(s);
+            }
+        })
+    }
+    pub fn with_events(db: Db, f: impl Fn(SyncEvent) + Send + Sync + 'static) -> Self {
         Self {
             db,
-            progress: Some(std::sync::Arc::new(f)),
+            events: Some(std::sync::Arc::new(f)),
         }
     }
     pub fn db(&self) -> &Db {
@@ -263,6 +287,15 @@ impl SyncSink for DbSink {
     }
     async fn message_thread(&self, id: &str) -> Result<Option<(String, String)>> {
         self.db.message_thread(id).await
+    }
+    async fn message_snippet(&self, id: &str) -> Result<String> {
+        self.db.message_snippet(id).await
+    }
+    async fn set_snippet(&self, id: &str, snippet: &str) -> Result<()> {
+        self.db.set_snippet(id, snippet).await
+    }
+    async fn message_flags(&self, id: &str) -> Result<(bool, bool)> {
+        self.db.message_flags(id).await
     }
     async fn message_exists(&self, id: &str) -> Result<bool> {
         let mid = id.to_string();
@@ -354,8 +387,19 @@ impl SyncSink for DbSink {
         self.db.uids_for_message(account, message_id).await
     }
     fn progress(&self, status: SyncStatus) {
-        if let Some(f) = &self.progress {
-            f(status);
+        if let Some(f) = &self.events {
+            f(SyncEvent::Progress(status));
+        }
+    }
+    fn threads_changed(&self, account: &str, thread_ids: &[String]) {
+        if thread_ids.is_empty() {
+            return;
+        }
+        if let Some(f) = &self.events {
+            f(SyncEvent::ThreadsChanged {
+                account_id: account.to_string(),
+                thread_ids: thread_ids.to_vec(),
+            });
         }
     }
 }
@@ -402,14 +446,39 @@ pub async fn store_parsed(
     }
     sink.store_body(crate::db::bodies::BodyPut {
         message_id: message_id.to_string(),
-        html: final_html,
-        text,
+        html: final_html.clone(),
+        text: text.clone(),
         remote_images: remote,
         trackers,
         dark_safe,
         quoted_from: parsed.quoted_from.map(|q| q as i64),
     })
     .await?;
+    // Snippet backfill: transports without server snippets (IMAP messages
+    // past the snippet window) derive one from the fetched body. REST
+    // snippets are never empty, so this is a no-op there.
+    if sink
+        .message_snippet(message_id)
+        .await
+        .unwrap_or_default()
+        .is_empty()
+    {
+        let derived = text
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| crate::provider::imap::message::snippet_of_text(&s))
+            .or_else(|| {
+                final_html.as_deref().map(|h| {
+                    crate::provider::imap::message::snippet_of_text(
+                        &crate::render::text::html_to_text(h),
+                    )
+                })
+            })
+            .unwrap_or_default();
+        let derived: String = derived.chars().take(200).collect();
+        if !derived.is_empty() {
+            sink.set_snippet(message_id, &derived).await?;
+        }
+    }
     Ok(())
 }
 
@@ -437,6 +506,15 @@ pub trait Provider: Send + Sync {
         &self,
         message_id: &str,
     ) -> Result<crate::provider::gmail::mime::ParsedMessage, SiftError>;
+    /// Backfill variant: transports with a download budget (IMAP 1 GB/day)
+    /// enforce it here. Foreground `fetch_body` is never budgeted. The
+    /// default is unlimited (REST path, unchanged behavior).
+    async fn fetch_body_backfill(
+        &self,
+        message_id: &str,
+    ) -> Result<crate::provider::gmail::mime::ParsedMessage, SiftError> {
+        self.fetch_body(message_id).await
+    }
     async fn fetch_attachment(
         &self,
         message_id: &str,
