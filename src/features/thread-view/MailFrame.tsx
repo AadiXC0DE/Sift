@@ -70,10 +70,12 @@ export function MailFrame({ messageId, html, allowed, dark }: Props) {
         srcDoc={srcdoc}
         style={{
           width: '100%',
-          height: height ?? 120,
+          maxWidth: '100%',
+          height: height ?? 160,
           border: 'none',
-          visibility: height ? 'visible' : 'hidden',
-          maxHeight: 2000,
+          display: 'block',
+          overflow: 'hidden',
+          borderRadius: 8,
         }}
         scrolling="no"
       />

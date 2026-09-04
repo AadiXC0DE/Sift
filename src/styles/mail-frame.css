@@ -3,18 +3,26 @@
   font-size: 14px;
   line-height: 1.55;
   color: #1f1f1d;
-  max-width: 720px;
+  max-width: 100%;
   margin: 0 auto;
   padding: 4px 2px 12px;
   text-rendering: optimizeLegibility;
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+html,
+body {
+  margin: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 .sift-mail img {
   max-width: 100%;
   height: auto;
 }
 .sift-mail table {
-  max-width: 100%;
+  max-width: 100% !important;
+  width: auto !important;
   border-collapse: collapse;
 }
 .sift-mail blockquote {
@@ -57,6 +65,7 @@
 body.dark .sift-mail,
 .sift-mail.dark {
   color: #ececea;
+  background: #161615;
 }
 body.dark .sift-mail a,
 .sift-mail.dark a {
