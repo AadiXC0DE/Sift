@@ -35,7 +35,6 @@
   },
   "plugins": {
     "updater": { "active": true, "endpoints": ["https://github.com/ownpath/sift/releases/latest/download/latest.json"], "dialog": false, "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IHJlcGxhY2Ugd2l0aCByZWFsIHVwZGF0ZXIgcHVibGljIGtleQ==" },
-    "deep-link": { "desktop": { "schemes": ["xyz.ownpath.sift", "mailto"] } },
-    "single-instance": { "customUriSchemes": ["xyz.ownpath.sift", "mailto"] }
+    "deep-link": { "desktop": { "schemes": ["xyz.ownpath.sift", "mailto"] } }
   }
 }
