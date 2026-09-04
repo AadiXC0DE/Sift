@@ -143,6 +143,34 @@ export function App() {
       if (e.key === '`') cyclePane();
       if (e.key === 'c' && !e.metaKey && !e.ctrlKey) setComposeOpen({ mode: 'new' });
     };
+    // Overlay Escape must beat WKWebView/macOS (which otherwise miniaturizes).
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (composeOpen) {
+        e.preventDefault();
+        e.stopPropagation();
+        setComposeOpen(null);
+        return;
+      }
+      if (paletteOpen) {
+        e.preventDefault();
+        e.stopPropagation();
+        setPaletteOpen(false);
+        return;
+      }
+      if (settingsOpen) {
+        e.preventDefault();
+        e.stopPropagation();
+        setSettingsOpen(false);
+        return;
+      }
+      if (helpOpen) {
+        e.preventDefault();
+        e.stopPropagation();
+        setHelpOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onEsc, true);
     window.addEventListener('keydown', h);
     // first paint mark
     requestAnimationFrame(() => {
@@ -151,6 +179,7 @@ export function App() {
     });
     // kitchen sink route
     return () => {
+      window.removeEventListener('keydown', onEsc, true);
       window.removeEventListener('keydown', h);
       unsubs.forEach((u) => u());
     };
@@ -162,6 +191,9 @@ export function App() {
 
   const showOnboarding = accounts.length === 0;
   const paneOffOpen = paneLayout === 'off' && threadId != null;
+  const bottom = paneLayout === 'bottom';
+  const showList = !paneOffOpen;
+  const showThread = paneLayout !== 'off' || threadId != null;
 
   if (window.location.hash === '#/kitchen-sink') {
     return <KitchenSink />;
@@ -179,57 +211,69 @@ export function App() {
         minWidth: 0,
       }}
     >
+      <div data-tauri-drag-region style={{ height: 28, flexShrink: 0 }} />
       <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
         {!sidebarHidden && <Sidebar onSettings={() => setSettingsOpen(true)} />}
-        {!paneOffOpen && (
-          <div
-            style={{
-              width: 'var(--list-w)',
-              minWidth: 0,
-              maxWidth: 560,
-              flex: '0 1 var(--list-w)',
-              borderRight: '1px solid var(--border)',
-              display: 'flex',
-              flexDirection: 'column',
-              background: 'var(--bg-list)',
-              overflow: 'hidden',
-            }}
-          >
-            <div data-tauri-drag-region style={{ height: 38, flexShrink: 0 }} />
-            {!online && (
-              <div
-                style={{
-                  height: 24,
-                  background: 'color-mix(in oklab, var(--warning) 14%, transparent)',
-                  color: 'var(--warning)',
-                  fontSize: 12,
-                  display: 'flex',
-                  alignItems: 'center',
-                  padding: '0 12px',
-                  flexShrink: 0,
-                }}
-              >
-                Offline · changes will sync when you&apos;re back
-              </div>
-            )}
-            <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
-          </div>
-        )}
-        {(paneLayout !== 'off' || threadId) && (
-          <div
-            style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: paneLayout === 'bottom' ? 'column' : 'row',
-              background: 'var(--bg-pane)',
-              minWidth: 0,
-              minHeight: 0,
-              overflow: 'hidden',
-            }}
-          >
-            <ThreadView onReply={(mode, tid) => setComposeOpen({ mode, threadId: tid })} />
-          </div>
-        )}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: bottom ? 'column' : 'row',
+            flex: 1,
+            minWidth: 0,
+            minHeight: 0,
+            overflow: 'hidden',
+          }}
+        >
+          {showList && (
+            <div
+              style={{
+                width: bottom ? 'auto' : 'var(--list-w)',
+                flex: bottom ? '0 0 38%' : '0 1 var(--list-w)',
+                minWidth: 0,
+                minHeight: 0,
+                maxWidth: bottom ? 'none' : 560,
+                borderRight: bottom ? 'none' : '1px solid var(--border)',
+                borderBottom: bottom ? '1px solid var(--border)' : 'none',
+                display: 'flex',
+                flexDirection: 'column',
+                background: 'var(--bg-list)',
+                overflow: 'hidden',
+              }}
+            >
+              {!online && (
+                <div
+                  style={{
+                    height: 24,
+                    background: 'color-mix(in oklab, var(--warning) 14%, transparent)',
+                    color: 'var(--warning)',
+                    fontSize: 12,
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '0 12px',
+                    flexShrink: 0,
+                  }}
+                >
+                  Offline · changes will sync when you&apos;re back
+                </div>
+              )}
+              <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
+            </div>
+          )}
+          {showThread && (
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                minWidth: 0,
+                minHeight: 0,
+                overflow: 'hidden',
+                background: 'var(--bg-pane)',
+              }}
+            >
+              <ThreadView onReply={(mode, tid) => setComposeOpen({ mode, threadId: tid })} />
+            </div>
+          )}
+        </div>
       </div>
       {showOnboarding && <Onboarding />}
       {paletteOpen && (
@@ -281,9 +325,9 @@ function SeqHint() {
 }
 
 function LearnKeys() {
-  const [dismissed, setDismissed] = useState(() => localStorage.getItem('sift-learn-dismissed') === '1');
+  const [dismissed, setDismissed] = useState(() => sessionStorage.getItem('sift-learn-dismissed') === '1');
   const dismiss = useCallback(() => {
-    localStorage.setItem('sift-learn-dismissed', '1');
+    sessionStorage.setItem('sift-learn-dismissed', '1');
     setDismissed(true);
   }, []);
   if (dismissed) return null;
@@ -293,12 +337,12 @@ function LearnKeys() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 12,
+        gap: 10,
         flexWrap: 'wrap',
-        padding: '8px 16px',
+        padding: '6px 16px',
         fontSize: 12,
         color: 'var(--fg-2)',
-        background: 'color-mix(in oklab, var(--bg-elevated) 92%, transparent)',
+        background: 'var(--bg-elevated)',
         borderTop: '1px solid var(--border)',
         flexShrink: 0,
       }}
@@ -315,10 +359,20 @@ function LearnKeys() {
       </span>
       <span style={{ color: 'var(--border-strong)' }}>·</span>
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <Kbd>r</Kbd>
+        <span>reply</span>
+      </span>
+      <span style={{ color: 'var(--border-strong)' }}>·</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <Kbd>c</Kbd>
+        <span>compose</span>
+      </span>
+      <span style={{ color: 'var(--border-strong)' }}>·</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
         <Kbd>⌘K</Kbd>
         <span>anything</span>
       </span>
-      <Button variant="ghost" size="sm" onClick={dismiss} style={{ marginLeft: 8 }}>
+      <Button variant="ghost" size="sm" onClick={dismiss} style={{ marginLeft: 4 }}>
         Dismiss
       </Button>
     </div>

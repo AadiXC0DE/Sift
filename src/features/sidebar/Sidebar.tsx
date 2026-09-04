@@ -74,7 +74,6 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
         overflow: 'hidden',
       }}
     >
-      <div data-tauri-drag-region style={{ height: 38, flexShrink: 0 }} />
       <AccountSwitcher />
       <SyncProgress />
       <nav style={{ flex: 1, overflowY: 'auto', padding: '4px 8px' }} aria-label="Mailbox">

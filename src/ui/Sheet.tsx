@@ -28,6 +28,7 @@ export function Sheet({ children, onDismiss }: { children: React.ReactNode; onDi
         zIndex: 50,
         display: 'flex',
         flexDirection: 'column',
+        color: 'var(--fg)',
       }}
     >
       {children}
