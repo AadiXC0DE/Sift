@@ -11,6 +11,7 @@ pub fn row_to_account(r: &rusqlite::Row) -> rusqlite::Result<Account> {
         display_name: r.get("display_name")?,
         avatar_url: r.get("avatar_url")?,
         color: r.get("color")?,
+        auth_kind: r.get("auth_kind").unwrap_or_else(|_| "oauth".to_string()),
         history_id: r.get("history_id")?,
         sync_state: r.get("sync_state")?,
         last_sync_at: r.get("last_sync_at")?,
@@ -34,8 +35,8 @@ impl Db {
     pub async fn accounts_insert(&self, a: &Account) -> Result<()> {
         let a = a.clone();
         self.write(move |c| {
-      c.execute("INSERT OR REPLACE INTO accounts (id,provider,email,display_name,avatar_url,color,history_id,sync_state,last_sync_at,created_at,sort_order,signature_html) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        params![a.id,a.provider,a.email,a.display_name,a.avatar_url,a.color,a.history_id,a.sync_state,a.last_sync_at,a.created_at,a.sort_order,a.signature_html])?;
+      c.execute("INSERT OR REPLACE INTO accounts (id,provider,email,display_name,avatar_url,color,auth_kind,history_id,sync_state,last_sync_at,created_at,sort_order,signature_html) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        params![a.id,a.provider,a.email,a.display_name,a.avatar_url,a.color,a.auth_kind,a.history_id,a.sync_state,a.last_sync_at,a.created_at,a.sort_order,a.signature_html])?;
       Ok(())
     }).await
     }
@@ -93,6 +94,14 @@ impl Db {
         })
         .await
     }
+    pub async fn accounts_set_auth_kind(&self, id: &str, kind: &str) -> Result<()> {
+        let (i, k) = (id.to_string(), kind.to_string());
+        self.write(move |c| {
+            c.execute("UPDATE accounts SET auth_kind=? WHERE id=?", params![k, i])?;
+            Ok(())
+        })
+        .await
+    }
     pub async fn accounts_set_state(&self, id: &str, state: &str) -> Result<()> {
         let (id, state) = (id.to_string(), state.to_string());
         self.write(move |c| {
@@ -128,6 +137,7 @@ impl Db {
             display_name: name,
             avatar_url: avatar,
             color: "blue".into(),
+            auth_kind: "oauth".into(),
             history_id: None,
             sync_state: "new".into(),
             last_sync_at: None,

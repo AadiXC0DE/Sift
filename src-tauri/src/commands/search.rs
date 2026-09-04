@@ -29,74 +29,21 @@ pub async fn search(
             generation: 0,
         });
     }
-    // server scope: messages.list?q= then hydrate
+    // server scope: provider search hydrates + indexes hits (second run local)
     let mut rows: Vec<ThreadRow> = vec![];
     let mut seen = std::collections::HashSet::new();
+    let sink = crate::provider::DbSink::new(state.db.clone());
     for aid in &account_ids {
-        let client = state.client_for(aid).await?;
-        let resp = client.list_messages(None, Some(&q), false).await?;
-        let ids: Vec<String> = resp
-            .messages
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| m.id)
-            .collect();
-        // hydrate unknown
-        for id in &ids {
-            let exists: bool = state
-                .db
-                .read({
-                    let mid = id.clone();
-                    move |c| {
-                        Ok(c.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM messages WHERE id=?)",
-                            rusqlite::params![mid],
-                            |r| r.get(0),
-                        )
-                        .unwrap_or(false))
-                    }
-                })
-                .await
-                .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-            if !exists {
-                if let Ok(m) = client.get_message_meta(id).await {
-                    let labels = m.label_ids.clone().unwrap_or_default();
-                    let up = crate::db::messages::MsgUpsert {
-                        id: id.clone(),
-                        account_id: aid.clone(),
-                        thread_id: m.thread_id.clone(),
-                        history_id: m.history_id.clone(),
-                        internal_date: m
-                            .internal_date
-                            .as_deref()
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0),
-                        subject: String::new(),
-                        snippet: m.snippet.clone().unwrap_or_default(),
-                        is_unread: labels.contains(&"UNREAD".into()),
-                        is_starred: labels.contains(&"STARRED".into()),
-                        is_draft: labels.contains(&"DRAFT".into()),
-                        label_ids: labels,
-                        ..Default::default()
-                    };
-                    let _ = state.db.messages_upsert(up).await;
-                }
-            }
-        }
-        // map to threads
-        for id in ids {
-            if let Some((a, t)) = state
-                .db
-                .message_thread(&id)
-                .await
-                .map_err(|e| SiftError::app("db", e.to_string(), false))?
-            {
-                if seen.insert((a.clone(), t.clone())) {
-                    if let Some(mut r) = super::threads::thread_row_for(&state.db, &a, &t).await? {
-                        // mark serverOnly if it was just hydrated? simplified: false
-                        r.server_only = false;
-                        rows.push(r);
-                    }
+        let provider = state.provider_for(aid).await?;
+        let refs = provider.server_search(&q, 100, &sink).await?;
+        for r in refs {
+            if seen.insert((aid.clone(), r.thread_id.clone())) {
+                if let Some(mut row) =
+                    super::threads::thread_row_for(&state.db, aid, &r.thread_id).await?
+                {
+                    // mark serverOnly if it was just hydrated? simplified: false
+                    row.server_only = false;
+                    rows.push(row);
                 }
             }
         }

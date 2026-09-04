@@ -9,6 +9,7 @@ pub struct Account {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub color: String,
+    pub auth_kind: String,
     pub history_id: Option<String>,
     pub sync_state: String,
     pub last_sync_at: Option<i64>,

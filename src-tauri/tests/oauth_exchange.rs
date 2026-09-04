@@ -28,7 +28,7 @@ async fn p2_t03_exchange_shape() {
         .mount(&server)
         .await;
     let http = reqwest::Client::new();
-    let t = sift::gmail::oauth::exchange("code123", "verifier123", 9999, &http)
+    let t = sift::provider::gmail::oauth::exchange("code123", "verifier123", 9999, &http)
         .await
         .unwrap();
     assert_eq!(t.access_token, "at");

@@ -60,11 +60,18 @@ fn spawn_account_loops(app: AppHandle, account_id: String) {
                 settings.poll_background.max(15) as u64
             };
             if state.is_online() && !crate::demo::is_demo() {
-                if let Ok(client) = state.client_for(&aid).await {
-                    match crate::sync::partial::run_partial_sync(&state.db, &aid, &client).await {
-                        Ok(out) => {
-                            emit_store(&app2, &aid, &out.changed_threads).await;
-                            notify_new(&app2, &state.db, &out.new_inbox).await;
+                if let Ok(provider) = state.provider_for(&aid).await {
+                    let cursor = read_cursor(&state.db, &aid).await;
+                    match provider.partial_sync(&cursor, &db_sink(&state.db)).await {
+                        Ok(crate::provider::PartialOutcome::Synced {
+                            changed_threads,
+                            new_inbox,
+                        }) => {
+                            emit_store(&app2, &aid, &changed_threads).await;
+                            notify_new(&app2, &state.db, &new_inbox).await;
+                        }
+                        Ok(crate::provider::PartialOutcome::NeedsFull) => {
+                            recover_full(&app2, &state.db, &aid, &*provider).await;
                         }
                         Err(e) => {
                             let _ = app2.emit(
@@ -87,16 +94,18 @@ fn spawn_account_loops(app: AppHandle, account_id: String) {
             let online = state.is_online();
             let mut worked = false;
             if online && !crate::demo::is_demo() {
-                if let Ok(client) = state.client_for(&aid).await {
-                    match crate::outbox::drain_one(&state.db, &client, &aid, true).await {
+                if let Ok(provider) = state.provider_for(&aid).await {
+                    match crate::outbox::drain_one(&state.db, &*provider, &aid, true).await {
                         Ok(true) => {
                             worked = true;
                             // Fresh server state after every mutation.
-                            if let Ok(out) =
-                                crate::sync::partial::run_partial_sync(&state.db, &aid, &client)
-                                    .await
+                            let cursor = read_cursor(&state.db, &aid).await;
+                            if let Ok(crate::provider::PartialOutcome::Synced {
+                                changed_threads,
+                                ..
+                            }) = provider.partial_sync(&cursor, &db_sink(&state.db)).await
                             {
-                                emit_store(&app3, &aid, &out.changed_threads).await;
+                                emit_store(&app3, &aid, &changed_threads).await;
                             }
                         }
                         Ok(false) => {}
@@ -122,17 +131,18 @@ fn spawn_account_loops(app: AppHandle, account_id: String) {
         loop {
             let state = app4.state::<AppState>();
             if state.is_online() && !crate::demo::is_demo() {
-                if let Ok(client) = state.client_for(&aid).await {
+                if let Ok(provider) = state.provider_for(&aid).await {
                     let settings = state.db.settings_get().await.unwrap_or_default();
                     let horizon_days = match settings.offline_body_cache.as_str() {
                         "6m" => 180,
                         "all" => 365 * 30,
                         _ => 730,
                     };
+                    let sink = db_sink(&state.db);
                     let _ = crate::sync::backfill::run_backfill_once(
-                        &state.db,
+                        &sink,
                         &aid,
-                        &client,
+                        &*provider,
                         &state.gate,
                         horizon_days,
                     )
@@ -142,6 +152,74 @@ fn spawn_account_loops(app: AppHandle, account_id: String) {
             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         }
     });
+}
+
+fn db_sink(db: &Db) -> crate::provider::DbSink {
+    crate::provider::DbSink::new(db.clone())
+}
+
+async fn read_cursor(db: &Db, account_id: &str) -> crate::provider::Cursor {
+    let raw: Option<String> = db
+        .accounts_get(account_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|a| a.history_id);
+    crate::provider::Cursor::parse(raw.as_deref().unwrap_or(""))
+}
+
+/// Recover from an unusable cursor: reconcile REST history, rebuild IMAP
+/// folders from scratch. Providers persist their own cursors; the runtime
+/// only refreshes what the UI shows.
+async fn recover_full(
+    app: &AppHandle,
+    db: &Db,
+    account_id: &str,
+    provider: &dyn crate::provider::Provider,
+) {
+    use crate::provider::{Cursor, ProviderKind};
+    let sink = db_sink(db);
+    match provider.kind() {
+        ProviderKind::GmailApi => {
+            // History lost mid-tick (rare: provider already reconciles once
+            // internally). Reconcile again defensively; the next tick continues.
+            let cursor = Cursor::Gmail {
+                history_id: String::new(),
+            };
+            if provider.partial_sync(&cursor, &sink).await.is_ok() {
+                let _ = app.emit(
+                    "store:labels",
+                    serde_json::json!({ "account_id": account_id }),
+                );
+            }
+        }
+        ProviderKind::GmailImap => {
+            // UIDVALIDITY changed: folder state is garbage. full_sync rebuilds
+            // each folder idempotently, then persists the fresh cursor.
+            let cancel = tokio_util::sync::CancellationToken::new();
+            match provider.full_sync(&sink, cancel).await {
+                Ok(cursor) => {
+                    let _ = db
+                        .accounts_set_history(account_id, &cursor.render(), crate::db::now_ms())
+                        .await;
+                    let _ = app.emit(
+                        "store:labels",
+                        serde_json::json!({ "account_id": account_id }),
+                    );
+                    let _ = app.emit(
+                        "sync:state",
+                        serde_json::json!({"account_id": account_id, "phase": "full", "done": 0, "total": 0, "last_error": null}),
+                    );
+                }
+                Err(e) => {
+                    let _ = app.emit(
+                        "sync:state",
+                        serde_json::json!({"account_id": account_id, "phase": "error", "done": 0, "total": 0, "last_error": e.to_string()}),
+                    );
+                }
+            }
+        }
+    }
 }
 
 async fn emit_store(app: &AppHandle, account_id: &str, changed: &[(String, String)]) {

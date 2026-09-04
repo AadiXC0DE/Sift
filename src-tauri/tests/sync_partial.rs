@@ -8,6 +8,7 @@ fn lock_env() -> std::sync::MutexGuard<'static, ()> {
 }
 // P3-T11 + T12: history script add/label/delete + 404 tolerance
 use sift::db::Db;
+use sift::provider::Provider;
 
 #[tokio::test]
 async fn p3_t11_history_applies() {
@@ -79,11 +80,27 @@ async fn p3_t11_history_applies() {
         .mount(&server)
         .await;
 
-    let client = sift::gmail::client::GmailClient::new("t".into());
-    let out = sift::sync::partial::run_partial_sync(&db, &acc.id, &client)
+    let provider = sift::provider::gmail::api::GmailApiProvider::new(
+        acc.id.clone(),
+        sift::provider::gmail::client::GmailClient::new("t".into()),
+    );
+    let sink = sift::provider::DbSink::new(db.clone());
+    let out = provider
+        .partial_sync(
+            &sift::provider::Cursor::Gmail {
+                history_id: "100".into(),
+            },
+            &sink,
+        )
         .await
         .unwrap();
-    assert!(out.changed_threads.iter().any(|(_, t)| t == "tA"));
+    let sift::provider::PartialOutcome::Synced {
+        changed_threads, ..
+    } = out
+    else {
+        panic!("expected Synced, got NeedsFull");
+    };
+    assert!(changed_threads.iter().any(|(_, t)| t == "tA"));
     // B deleted
     let exists: bool = db
         .read(|c| {
@@ -138,9 +155,19 @@ async fn p3_t12_added_then_deleted_404_skipped() {
         .respond_with(wiremock::ResponseTemplate::new(404).set_body_string("{}"))
         .mount(&server)
         .await;
-    let client = sift::gmail::client::GmailClient::new("t".into());
+    let provider = sift::provider::gmail::api::GmailApiProvider::new(
+        acc.id.clone(),
+        sift::provider::gmail::client::GmailClient::new("t".into()),
+    );
+    let sink = sift::provider::DbSink::new(db.clone());
     // should not fail
-    sift::sync::partial::run_partial_sync(&db, &acc.id, &client)
+    provider
+        .partial_sync(
+            &sift::provider::Cursor::Gmail {
+                history_id: "100".into(),
+            },
+            &sink,
+        )
         .await
         .unwrap();
     std::env::remove_var("SIFT_GMAIL_BASE");

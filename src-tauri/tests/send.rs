@@ -59,14 +59,17 @@ async fn p7_t03_send_delay_and_thread() {
         )
         .await
         .unwrap();
-    let client = sift::gmail::client::GmailClient::new("t".into());
+    let provider = sift::provider::gmail::api::GmailApiProvider::new(
+        acc.id.clone(),
+        sift::provider::gmail::client::GmailClient::new("t".into()),
+    );
     // immediate drain does nothing (not_before future -> outbox_next filters)
-    assert!(!sift::outbox::drain_one(&db, &client, &acc.id, true)
+    assert!(!sift::outbox::drain_one(&db, &provider, &acc.id, true)
         .await
         .unwrap());
     // make due then drain sends
     db.outbox_set(op, "pending", 0, 0, None).await.unwrap();
-    assert!(sift::outbox::drain_one(&db, &client, &acc.id, true)
+    assert!(sift::outbox::drain_one(&db, &provider, &acc.id, true)
         .await
         .unwrap());
     std::env::remove_var("SIFT_GMAIL_BASE");

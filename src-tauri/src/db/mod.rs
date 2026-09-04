@@ -13,6 +13,7 @@ pub mod bodies;
 pub mod contacts;
 pub mod drafts;
 pub mod fts;
+pub mod imap;
 pub mod labels;
 pub mod messages;
 pub mod outbox;
@@ -25,6 +26,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
         "0002_contacts_backfill",
         include_str!("migrations/0002_contacts_backfill.sql"),
     ),
+    ("0003_imap", include_str!("migrations/0003_imap.sql")),
 ];
 
 #[derive(Clone)]
@@ -65,6 +67,8 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         conn.execute_batch(MIGRATIONS[0].1)?;
         // mark 0002 applied state: check if triggers exist; run 0002 (IF NOT EXISTS so idempotent)
         let _ = conn.execute_batch(MIGRATIONS[1].1);
+        conn.execute_batch(MIGRATIONS[2].1)?;
+        conn.execute("UPDATE schema_version SET version=3", [])?;
         return Ok(());
     }
     let v: i64 = conn
@@ -73,6 +77,19 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     if v < 2 {
         let _ = conn.execute_batch(MIGRATIONS[1].1);
         conn.execute("UPDATE schema_version SET version=2", [])?;
+    }
+    if v < 3 {
+        // Explicit transaction: ALTER TABLE is not idempotent, so a crash
+        // mid-migration must roll back for a clean retry.
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let r = conn.execute_batch(MIGRATIONS[2].1);
+        if r.is_ok() {
+            conn.execute("UPDATE schema_version SET version=3", [])?;
+            conn.execute_batch("COMMIT")?;
+        } else {
+            let _ = conn.execute_batch("ROLLBACK");
+            r?;
+        }
     }
     Ok(())
 }

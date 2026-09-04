@@ -8,6 +8,7 @@ fn lock_env() -> std::sync::MutexGuard<'static, ()> {
 }
 // P3-T10: full sync 1234 messages / 400 threads via fake Gmail
 use sift::db::Db;
+use sift::provider::Provider;
 
 fn meta_json(id: &str, tid: &str, hid: &str) -> serde_json::Value {
     serde_json::json!({
@@ -106,17 +107,16 @@ async fn p3_t10_full_sync_counts() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).unwrap();
     let acc = db.new_account("a@x", None, None).await.unwrap();
-    let client = sift::gmail::client::GmailClient::new("t".into());
-    let emits = 0;
-    sift::sync::full::run_full_sync(
-        &db,
-        &acc.id,
-        &client,
-        |_s| { /* count via interior mutability is complex; assert DB instead */ },
-    )
-    .await
-    .unwrap();
-    let _ = emits;
+    let provider = sift::provider::gmail::api::GmailApiProvider::new(
+        acc.id.clone(),
+        sift::provider::gmail::client::GmailClient::new("t".into()),
+    );
+    let sink = sift::provider::DbSink::new(db.clone());
+    let cursor = provider
+        .full_sync(&sink, tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(matches!(cursor, sift::provider::Cursor::Gmail { .. }));
     let nm: i64 = db
         .read(|c| Ok(c.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?))
         .await

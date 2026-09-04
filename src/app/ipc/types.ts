@@ -6,6 +6,7 @@ export interface Account {
   display_name?: string | null;
   avatar_url?: string | null;
   color: string;
+  auth_kind: string;
   history_id?: string | null;
   sync_state: string;
   last_sync_at?: number | null;

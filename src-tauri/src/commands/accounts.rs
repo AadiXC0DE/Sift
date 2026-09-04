@@ -19,7 +19,7 @@ pub async fn accounts_add_google(
     login_hint: Option<String>,
 ) -> Result<Account, SiftError> {
     // PKCE + loopback flow
-    let flow = crate::gmail::oauth::start_flow()?;
+    let flow = crate::provider::gmail::oauth::start_flow()?;
     let url = flow.auth_url.clone();
     let mut url = url;
     if let Some(hint) = login_hint {
@@ -31,11 +31,12 @@ pub async fn accounts_add_google(
     let verifier = flow.verifier.clone();
     let port = flow.port;
     let code = flow.wait(300).await?;
-    let tokens = crate::gmail::oauth::exchange(&code, &verifier, port, &state.http).await?;
+    let tokens =
+        crate::provider::gmail::oauth::exchange(&code, &verifier, port, &state.http).await?;
     // userinfo
-    let client = crate::gmail::client::GmailClient::new(tokens.access_token.clone());
+    let client = crate::provider::gmail::client::GmailClient::new(tokens.access_token.clone());
     // store access in memory via clients map keyed after account creation
-    let info: crate::gmail::types::Userinfo = {
+    let info: crate::provider::gmail::types::Userinfo = {
         let base = std::env::var("SIFT_USERINFO_URL")
             .unwrap_or_else(|_| "https://openidconnect.googleapis.com/v1/userinfo".into());
         let r = state
@@ -62,7 +63,13 @@ pub async fn accounts_add_google(
             expires_at: crate::db::now_ms() + tokens.expires_in * 1000,
         },
     );
-    state.clients.write().await.insert(acc.id.clone(), client);
+    state.providers.write().await.insert(
+        acc.id.clone(),
+        std::sync::Arc::new(crate::provider::gmail::api::GmailApiProvider::new(
+            acc.id.clone(),
+            client,
+        )),
+    );
     // start full sync in background
     let (db, accid) = (state.db.clone(), acc.id.clone());
     // Note: real sync loop spawned by lib.rs watcher; here kick full sync once
@@ -87,7 +94,7 @@ pub async fn accounts_remove(state: State<'_, AppState>, id: String) -> Result<(
     {
         let _ = crate::secrets::delete(&a.email);
     }
-    state.clients.write().await.remove(&id);
+    state.providers.write().await.remove(&id);
     state.tokens.write().await.remove(&id);
     state
         .db

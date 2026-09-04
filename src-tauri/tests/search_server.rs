@@ -53,7 +53,7 @@ async fn p8_t04_server_hydrates_then_local() {
         .await
         .unwrap();
     }
-    let client = sift::gmail::client::GmailClient::new("t".into());
+    let client = sift::provider::gmail::client::GmailClient::new("t".into());
     let resp = client
         .list_messages(None, Some("hello"), false)
         .await

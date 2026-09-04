@@ -248,8 +248,8 @@ pub async fn snooze_set(
     if !labels.iter().any(|l| l.name == "Sift/Snoozed") {
         // create remotely if online, else local stub
         let remote_id = if state.is_online() {
-            match state.client_for(&account_id).await {
-                Ok(c) => c
+            match state.provider_for(&account_id).await {
+                Ok(p) => p
                     .create_label("Sift/Snoozed")
                     .await
                     .map(|l| l.id)
@@ -376,20 +376,9 @@ pub async fn labels_create(
     name: String,
     color: Option<String>,
 ) -> Result<crate::dto::Label, SiftError> {
-    let client = state.client_for(&account_id).await?;
-    let remote = client.create_label(&name).await?;
-    let l = crate::dto::Label {
-        account_id: account_id.clone(),
-        id: remote.id,
-        name: remote.name,
-        kind: "user".into(),
-        color_bg: color.clone(),
-        color_fg: None,
-        visible: true,
-        unread_count: 0,
-        total_count: 0,
-        sort_order: 200,
-    };
+    let provider = state.provider_for(&account_id).await?;
+    let mut l = provider.create_label(&name).await?;
+    l.color_bg = color.clone();
     state
         .db
         .labels_upsert(&l)

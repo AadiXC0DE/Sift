@@ -1,8 +1,13 @@
-use crate::db::{messages::MsgUpsert, Db};
-use crate::gmail::client::GmailClient;
+use super::client::GmailClient;
+use crate::db::messages::MsgUpsert;
+use crate::provider::SyncSink;
 use anyhow::Result;
 
-pub async fn run_reconcile(db: &Db, account_id: &str, client: &GmailClient) -> Result<()> {
+pub async fn run_reconcile(
+    sink: &dyn SyncSink,
+    account_id: &str,
+    client: &GmailClient,
+) -> Result<String> {
     let profile = client
         .get_profile()
         .await
@@ -25,26 +30,13 @@ pub async fn run_reconcile(db: &Db, account_id: &str, client: &GmailClient) -> R
             break;
         }
     }
-    let local: Vec<(String, String)> = db
-        .read({
-            let aid = account_id.to_string();
-            move |c| -> anyhow::Result<Vec<(String, String)>> {
-                let mut s = c.prepare("SELECT id, thread_id FROM messages WHERE account_id=?")?;
-                let v: Vec<(String, String)> = s
-                    .query_map(rusqlite::params![aid], |r| {
-                        Ok::<(String, String), rusqlite::Error>((r.get(0)?, r.get(1)?))
-                    })?
-                    .collect::<Result<Vec<(String, String)>, rusqlite::Error>>()?;
-                Ok(v)
-            }
-        })
-        .await?;
+    let local: Vec<(String, String)> = sink.list_local_messages(account_id).await?;
     let local_set: std::collections::HashSet<String> =
         local.iter().map(|(i, _)| i.clone()).collect();
     // delete L - S
     for (id, tid) in &local {
         if !server.contains(id) {
-            db.messages_delete(id, account_id, tid).await?;
+            sink.delete_message(id, account_id, tid).await?;
         }
     }
     // insert S - L
@@ -79,7 +71,7 @@ pub async fn run_reconcile(db: &Db, account_id: &str, client: &GmailClient) -> R
                     label_ids: labels,
                     ..Default::default()
                 };
-                let _ = db.messages_upsert(up).await;
+                let _ = sink.upsert_message(up).await;
             }
         }
     }
@@ -93,20 +85,7 @@ pub async fn run_reconcile(db: &Db, account_id: &str, client: &GmailClient) -> R
         for (id, r) in chunk.iter().zip(res) {
             if let Ok(m) = r {
                 let labels = m.label_ids.clone().unwrap_or_default();
-                let cur: String = db
-                    .read({
-                        let mid = id.clone();
-                        move |c| {
-                            Ok(c.query_row(
-                                "SELECT label_ids FROM messages WHERE id=?",
-                                rusqlite::params![mid],
-                                |x| x.get(0),
-                            )
-                            .unwrap_or("[]".into()))
-                        }
-                    })
-                    .await?;
-                let cur: Vec<String> = serde_json::from_str(&cur).unwrap_or_default();
+                let cur: Vec<String> = sink.message_labels(id).await.unwrap_or_default();
                 let add: Vec<String> = labels
                     .iter()
                     .filter(|l| !cur.contains(l))
@@ -118,12 +97,11 @@ pub async fn run_reconcile(db: &Db, account_id: &str, client: &GmailClient) -> R
                     .cloned()
                     .collect();
                 if !add.is_empty() || !remove.is_empty() {
-                    let _ = db.apply_label_change(id, &add, &remove).await;
+                    let _ = sink.apply_label_change(id, &add, &remove).await;
                 }
             }
         }
     }
-    db.accounts_set_history(account_id, &profile.history_id, crate::db::now_ms())
-        .await?;
-    Ok(())
+    sink.set_history_id(account_id, &profile.history_id).await?;
+    Ok(profile.history_id)
 }

@@ -16,8 +16,12 @@ async fn p3_t15_backfill_yields_to_foreground() {
     .unwrap();
     let gate = sift::sync::backfill::BackfillGate::new();
     let _fg = gate.enter();
-    let client = sift::gmail::client::GmailClient::new("t".into());
-    let n = sift::sync::backfill::run_backfill_once(&db, &acc.id, &client, &gate, 365 * 2)
+    let provider = sift::provider::gmail::api::GmailApiProvider::new(
+        acc.id.clone(),
+        sift::provider::gmail::client::GmailClient::new("t".into()),
+    );
+    let sink = sift::provider::DbSink::new(db.clone());
+    let n = sift::sync::backfill::run_backfill_once(&sink, &acc.id, &provider, &gate, 365 * 2)
         .await
         .unwrap();
     assert_eq!(n, 0); // paused

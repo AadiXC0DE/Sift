@@ -373,34 +373,13 @@ pub async fn message_body(
     // We kick a real fetch task via client if available.
     let dbc = state.db.clone();
     let mid2 = message_id.clone();
-    let clients = state.clients.read().await.get(&account_id).cloned();
+    let provider = state.provider_for(&account_id).await.ok();
     tokio::spawn(async move {
-        if let Some(client) = clients {
-            if let Ok(m) = client.get_message_full(&mid2).await {
-                let parsed = crate::gmail::mime::parse_full(&m);
-                let html = parsed.html.clone();
-                let text = parsed.text.clone();
-                let (fh, ri, tc, ds) = if let Some(h) = html {
-                    let s = crate::render::sanitize::sanitize(&mid2, &h);
-                    (Some(s.html), s.remote_images, s.trackers, s.dark_safe)
-                } else if let Some(t) = text.clone() {
-                    let (h, _) = crate::render::text::to_html(&t);
-                    let s = crate::render::sanitize::sanitize(&mid2, &h);
-                    (Some(s.html), s.remote_images, s.trackers, s.dark_safe)
-                } else {
-                    (None, 0, 0, true)
-                };
-                let _ = dbc
-                    .bodies_put(crate::db::bodies::BodyPut {
-                        message_id: mid2,
-                        html: fh,
-                        text,
-                        remote_images: ri,
-                        trackers: tc,
-                        dark_safe: ds,
-                        quoted_from: None,
-                    })
-                    .await;
+        if let Some(provider) = provider {
+            if let Ok(parsed) = provider.fetch_body(&mid2).await {
+                let sink = crate::provider::DbSink::new(dbc.clone());
+                let _ = crate::provider::store_parsed(&sink, &mid2, &parsed).await;
+                let _ = dbc;
             }
         }
     });
@@ -429,9 +408,8 @@ pub async fn message_raw_source(
     let Some((account_id, _)) = info else {
         return Err(SiftError::NotFound("message".into()));
     };
-    let client = state.client_for(&account_id).await?;
-    let m = client.get_message_raw(&message_id).await?;
-    Ok(m.raw.unwrap_or_default())
+    let provider = state.provider_for(&account_id).await?;
+    provider.fetch_raw(&message_id).await
 }
 
 #[tauri::command]

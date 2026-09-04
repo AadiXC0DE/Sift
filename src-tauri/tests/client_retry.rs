@@ -34,7 +34,7 @@ async fn p3_t03_retry_policies() {
         })
         .mount(&server)
         .await;
-    let c = sift::gmail::client::GmailClient::new("t".into());
+    let c = sift::provider::gmail::client::GmailClient::new("t".into());
     let t0 = std::time::Instant::now();
     let p = c.get_profile().await.unwrap();
     assert_eq!(p.history_id, "100");
@@ -66,7 +66,7 @@ async fn p3_t03_500_then_ok_and_eventual_fail() {
         })
         .mount(&server)
         .await;
-    let c = sift::gmail::client::GmailClient::new("t".into());
+    let c = sift::provider::gmail::client::GmailClient::new("t".into());
     let p = c.get_profile().await.unwrap();
     assert_eq!(p.history_id, "101");
     std::env::remove_var("SIFT_GMAIL_BASE");

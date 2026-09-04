@@ -1,6 +1,7 @@
 use crate::db::Db;
 use crate::errors::SiftError;
-use crate::gmail::client::GmailClient;
+use crate::provider::gmail::{api::GmailApiProvider, client::GmailClient};
+use crate::provider::Provider;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize};
@@ -16,7 +17,7 @@ pub struct AppState {
     pub db: Db,
     pub http: reqwest::Client,
     pub tokens: RwLock<HashMap<String, TokenInfo>>,
-    pub clients: RwLock<HashMap<String, GmailClient>>,
+    pub providers: RwLock<HashMap<String, std::sync::Arc<dyn Provider>>>,
     pub refresh_lock: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub online: AtomicBool,
     pub foreground_inflight: Arc<AtomicUsize>,
@@ -37,7 +38,7 @@ impl AppState {
             db,
             http,
             tokens: RwLock::new(Default::default()),
-            clients: RwLock::new(Default::default()),
+            providers: RwLock::new(Default::default()),
             refresh_lock: Mutex::new(Default::default()),
             online: AtomicBool::new(true),
             foreground_inflight: Arc::new(AtomicUsize::new(0)),
@@ -48,17 +49,45 @@ impl AppState {
         }
     }
 
-    pub async fn client_for(&self, account_id: &str) -> Result<GmailClient, SiftError> {
-        if let Some(c) = self.clients.read().await.get(account_id).cloned() {
+    /// Provider bound to an account, cached per account id. OAuth accounts
+    /// refresh via the TokenStore; app-password accounts resolve once the
+    /// IMAP provider lands (until then they report not-configured).
+    pub async fn provider_for(
+        &self,
+        account_id: &str,
+    ) -> Result<std::sync::Arc<dyn Provider>, SiftError> {
+        if let Some(c) = self.providers.read().await.get(account_id).cloned() {
             return Ok(c);
         }
-        let token = self.get_access_token(account_id).await?;
-        let c = GmailClient::new(token);
-        self.clients
+        let acc = self
+            .db
+            .accounts_get(account_id)
+            .await
+            .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+        let acc = acc.ok_or_else(|| SiftError::app("account", "missing", false))?;
+        if acc.auth_kind == "app_password" {
+            return Err(SiftError::app(
+                "auth",
+                "app-password sign-in is not available in this build",
+                false,
+            ));
+        }
+        let access = self.get_access_token(account_id).await?;
+        let c: std::sync::Arc<dyn Provider> = std::sync::Arc::new(GmailApiProvider::new(
+            account_id.into(),
+            GmailClient::new(access),
+        ));
+        self.providers
             .write()
             .await
             .insert(account_id.into(), c.clone());
         Ok(c)
+    }
+
+    /// Back-compat shim used while call sites migrate to [`Self::provider_for`].
+    pub async fn client_for(&self, account_id: &str) -> Result<GmailClient, SiftError> {
+        let access = self.get_access_token(account_id).await?;
+        Ok(GmailClient::new(access))
     }
 
     pub async fn get_access_token(&self, account_id: &str) -> Result<String, SiftError> {
@@ -85,16 +114,16 @@ impl AppState {
         let acc = acc.ok_or_else(|| SiftError::app("account", "missing", false))?;
         let rt = crate::secrets::load_refresh_token(&acc.email)?
             .ok_or_else(|| SiftError::reauth("no refresh token"))?;
-        match crate::gmail::oauth::refresh(&rt, &self.http).await {
+        match crate::provider::gmail::oauth::refresh(&rt, &self.http).await {
             Ok(t) => {
                 let info = TokenInfo {
                     access: t.access_token.clone(),
                     expires_at: now + t.expires_in * 1000,
                 };
                 self.tokens.write().await.insert(account_id.into(), info);
-                if let Some(c) = self.clients.read().await.get(account_id) {
-                    c.set_token(t.access_token.clone()).await;
-                }
+                // Drop any cached provider so the next call rebuilds it
+                // with the fresh access token.
+                self.providers.write().await.remove(account_id);
                 Ok(t.access_token)
             }
             Err(SiftError::App { code, .. }) if code == "reauth" => {

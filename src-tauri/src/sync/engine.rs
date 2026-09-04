@@ -1,5 +1,5 @@
 use crate::db::Db;
-use crate::gmail::client::GmailClient;
+use crate::provider::gmail::client::GmailClient;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
