@@ -27,6 +27,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
         include_str!("migrations/0002_contacts_backfill.sql"),
     ),
     ("0003_imap", include_str!("migrations/0003_imap.sql")),
+    (
+        "0004_mail_rendering",
+        include_str!("migrations/0004_mail_rendering.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -68,7 +72,7 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         // mark 0002 applied state: check if triggers exist; run 0002 (IF NOT EXISTS so idempotent)
         let _ = conn.execute_batch(MIGRATIONS[1].1);
         conn.execute_batch(MIGRATIONS[2].1)?;
-        conn.execute("UPDATE schema_version SET version=3", [])?;
+        conn.execute("UPDATE schema_version SET version=4", [])?;
         return Ok(());
     }
     let v: i64 = conn
@@ -90,6 +94,10 @@ fn run_migrations(conn: &Connection) -> Result<()> {
             let _ = conn.execute_batch("ROLLBACK");
             r?;
         }
+    }
+    if v < 4 {
+        conn.execute_batch(MIGRATIONS[3].1)?;
+        conn.execute("UPDATE schema_version SET version=4", [])?;
     }
     Ok(())
 }
@@ -167,7 +175,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert!(v >= 1);
+        assert_eq!(v, 4);
         for t in [
             "accounts",
             "labels",

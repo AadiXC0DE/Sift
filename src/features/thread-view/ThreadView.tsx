@@ -47,7 +47,7 @@ async function pollBody(id: string, onUpdate: (b: MessageBody) => void) {
           b.state === 'ready' &&
           b.remoteImageCount > 0 &&
           !b.remoteImagesAllowed &&
-          useSettings.getState().settings.remoteImages !== 'never'
+          useSettings.getState().settings.remoteImages === 'always'
         ) {
           const loaded = await api.remote_images_load(id, false);
           cacheSet(id, loaded);
@@ -451,7 +451,32 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                       </Button>
                     </div>
                   ) : body.html ? (
-                    <MailFrame messageId={m.id} html={body.html} allowed dark={false} />
+                    <>
+                      {body.remoteImageCount > 0 &&
+                        !body.remoteImagesAllowed &&
+                        settings.remoteImages === 'ask' && (
+                          <div style={{ marginBottom: 8 }}>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() =>
+                                void api.remote_images_load(m.id, false).then((loaded) => {
+                                  cacheSet(m.id, loaded);
+                                  setBodies((previous) => ({ ...previous, [m.id]: loaded }));
+                                })
+                              }
+                            >
+                              Load remote images
+                            </Button>
+                          </div>
+                        )}
+                      <MailFrame
+                        messageId={m.id}
+                        html={body.html}
+                        allowed={body.remoteImagesAllowed}
+                        dark={false}
+                      />
+                    </>
                   ) : (
                     <pre
                       style={{
