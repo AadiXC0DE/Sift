@@ -26,6 +26,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               style={{
                 textAlign: 'left',
                 background: tab === t ? 'var(--bg-row-focus)' : 'none',
+                color: tab === t ? 'var(--fg)' : 'var(--fg-2)',
                 border: 'none',
                 borderRadius: 6,
                 padding: '6px 10px',
@@ -126,7 +127,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                         width: 24,
                         height: 24,
                         borderRadius: '50%',
-                        background: `var(--accent)`,
+                        background: `var(--swatch-${a})`,
                         border: settings.accent === a ? '2px solid var(--fg)' : '2px solid transparent',
                         cursor: 'pointer',
                       }}

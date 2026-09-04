@@ -125,3 +125,14 @@
 :root[data-accent='blue'] {
   --accent: #2f6df6;
 }
+/* Static swatch colors for the Appearance picker (independent of selection). */
+:root {
+  --swatch-blue: #2f6df6;
+  --swatch-indigo: #5b5bd6;
+  --swatch-violet: #7c5cdb;
+  --swatch-rose: #d6456d;
+  --swatch-orange: #e0742a;
+  --swatch-green: #2c9a5a;
+  --swatch-teal: #1f9a94;
+  --swatch-graphite: #55554f;
+}
