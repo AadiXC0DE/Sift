@@ -50,7 +50,7 @@ function HoverActions({ row, onAction }: { row: Row; onAction?: (kind: RowAction
       </button>
       <button
         title={row.unreadCount > 0 ? 'Mark read' : 'Mark unread'}
-        style={btn}
+        style={{ ...btn, color: 'var(--fg)' }}
         onClick={stop(() => onAction('read'))}
       >
         {row.unreadCount > 0 ? <MailOpen size={14} /> : <Mail size={14} />}
@@ -267,7 +267,7 @@ export const ThreadRowView = memo(function ThreadRowView({
             {row.snippet}
           </span>
           {row.isStarred && <Star size={14} fill="var(--star)" color="var(--star)" />}
-          {row.hasAttachments && <Paperclip size={14} color="var(--fg-3)" />}
+          {row.hasAttachments && <Paperclip size={14} color="var(--fg-2)" />}
           {chips.map((c) => (
             <Chip key={c} label={c} />
           ))}
