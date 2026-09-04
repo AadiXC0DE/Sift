@@ -1,0 +1,22 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1221
+expression: m1
+---
+GmailMeta {
+    msgid: Some(
+        1912345678901234567,
+    ),
+    thrid: Some(
+        1912345678901234567,
+    ),
+    labels: [
+        "\\Inbox",
+        "\\Important",
+        "Weekly Reports",
+        "Clients/Acme",
+    ],
+    modseq: Some(
+        89123,
+    ),
+}

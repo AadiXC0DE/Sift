@@ -261,6 +261,26 @@ fn assert_no_pii(s: &str) -> Result<(), SiftError> {
     Ok(())
 }
 
+/// Build info for the setup wizard (Step A button + CI P11-T21).
+/// `oauth_available` is true only when a Google client ID was present at
+/// build time (`SIFT_GOOGLE_CLIENT_ID` runtime or compile-time) — public
+/// builds without it show the app-password path only.
+#[tauri::command]
+pub fn system_info() -> Result<serde_json::Value, SiftError> {
+    let oauth_available = std::env::var("SIFT_GOOGLE_CLIENT_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .is_some()
+        || option_env!("SIFT_GOOGLE_CLIENT_ID")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+    Ok(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "oauth_available": oauth_available,
+        "demo": crate::demo::is_demo(),
+    }))
+}
+
 #[tauri::command]
 pub async fn perf_mark(state: State<'_, AppState>, name: String) -> Result<(), SiftError> {
     eprintln!("perf:{name} {}", crate::db::now_ms());

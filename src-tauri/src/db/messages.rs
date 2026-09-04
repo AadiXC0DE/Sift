@@ -174,6 +174,41 @@ impl Db {
     }).await
     }
 
+    pub async fn message_flags(&self, message_id: &str) -> Result<(bool, bool)> {
+        let mid = message_id.to_string();
+        self.read(move |c| {
+            Ok(c.query_row(
+                "SELECT is_unread, is_starred FROM messages WHERE id=?",
+                rusqlite::params![mid],
+                |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, i64>(1)? != 0)),
+            )
+            .unwrap_or((false, false)))
+        })
+        .await
+    }
+    pub async fn message_snippet(&self, message_id: &str) -> Result<String> {
+        let mid = message_id.to_string();
+        self.read(move |c| {
+            Ok(c.query_row(
+                "SELECT snippet FROM messages WHERE id=?",
+                rusqlite::params![mid],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_default())
+        })
+        .await
+    }
+    pub async fn set_snippet(&self, message_id: &str, snippet: &str) -> Result<()> {
+        let (mid, sn) = (message_id.to_string(), snippet.to_string());
+        self.write(move |c| {
+            c.execute(
+                "UPDATE messages SET snippet=? WHERE id=?",
+                rusqlite::params![sn, mid],
+            )?;
+            Ok(())
+        })
+        .await
+    }
     pub async fn message_thread(&self, message_id: &str) -> Result<Option<(String, String)>> {
         let mid = message_id.to_string();
         self.read(move |c| {

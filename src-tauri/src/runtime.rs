@@ -61,25 +61,7 @@ fn spawn_account_loops(app: AppHandle, account_id: String) {
             };
             if state.is_online() && !crate::demo::is_demo() {
                 if let Ok(provider) = state.provider_for(&aid).await {
-                    let cursor = read_cursor(&state.db, &aid).await;
-                    match provider.partial_sync(&cursor, &db_sink(&state.db)).await {
-                        Ok(crate::provider::PartialOutcome::Synced {
-                            changed_threads,
-                            new_inbox,
-                        }) => {
-                            emit_store(&app2, &aid, &changed_threads).await;
-                            notify_new(&app2, &state.db, &new_inbox).await;
-                        }
-                        Ok(crate::provider::PartialOutcome::NeedsFull) => {
-                            recover_full(&app2, &state.db, &aid, &*provider).await;
-                        }
-                        Err(e) => {
-                            let _ = app2.emit(
-                                "sync:state",
-                                serde_json::json!({"account_id": aid, "phase": "error", "done": 0, "total": 0, "last_error": e.to_string()}),
-                            );
-                        }
-                    }
+                    partial_tick(&app2, &state.db, &aid, &*provider).await;
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
@@ -126,12 +108,12 @@ fn spawn_account_loops(app: AppHandle, account_id: String) {
     });
 
     // Body backfill loop (low priority, yields to foreground fetches).
-    let (app4, aid) = (app, account_id);
+    let (app4, aid4) = (app.clone(), account_id.clone());
     tauri::async_runtime::spawn(async move {
         loop {
             let state = app4.state::<AppState>();
             if state.is_online() && !crate::demo::is_demo() {
-                if let Ok(provider) = state.provider_for(&aid).await {
+                if let Ok(provider) = state.provider_for(&aid4).await {
                     let settings = state.db.settings_get().await.unwrap_or_default();
                     let horizon_days = match settings.offline_body_cache.as_str() {
                         "6m" => 180,
@@ -141,7 +123,7 @@ fn spawn_account_loops(app: AppHandle, account_id: String) {
                     let sink = db_sink(&state.db);
                     let _ = crate::sync::backfill::run_backfill_once(
                         &sink,
-                        &aid,
+                        &aid4,
                         &*provider,
                         &state.gate,
                         horizon_days,
@@ -152,6 +134,72 @@ fn spawn_account_loops(app: AppHandle, account_id: String) {
             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
         }
     });
+
+    // IDLE push consumer (IMAP only; `watch()` is None for REST).
+    // Debounces 1 s, then runs the same partial tick as the poll loop.
+    let (app5, aid) = (app.clone(), account_id.clone());
+    tauri::async_runtime::spawn(async move {
+        use futures::StreamExt;
+        loop {
+            let stream = {
+                let state = app5.state::<AppState>();
+                match state.provider_for(&aid).await {
+                    Ok(p) => p.watch(),
+                    Err(_) => None,
+                }
+            };
+            let Some(mut stream) = stream else {
+                // REST accounts (and unknown): the poll loop covers them.
+                return;
+            };
+            while let Some(_evt) = stream.next().await {
+                // Debounce: collapse IDLE flurries, drain anything queued.
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                while tokio::time::timeout(std::time::Duration::from_millis(200), stream.next())
+                    .await
+                    .is_ok_and(|v| v.is_some())
+                {}
+                let state = app5.state::<AppState>();
+                if state.is_online() && !crate::demo::is_demo() {
+                    if let Ok(provider) = state.provider_for(&aid).await {
+                        partial_tick(&app5, &state.db, &aid, &*provider).await;
+                    }
+                }
+            }
+            // Stream ended (IDLE error path): polling covered the gap;
+            // re-arm shortly (IDLE task itself also retries internally).
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+}
+
+/// One partial tick shared by the poll loop and the IDLE consumer.
+async fn partial_tick(
+    app: &AppHandle,
+    db: &Db,
+    aid: &str,
+    provider: &dyn crate::provider::Provider,
+) {
+    use crate::provider::PartialOutcome;
+    let cursor = read_cursor(db, aid).await;
+    match provider.partial_sync(&cursor, &db_sink(db)).await {
+        Ok(PartialOutcome::Synced {
+            changed_threads,
+            new_inbox,
+        }) => {
+            emit_store(app, aid, &changed_threads).await;
+            notify_new(app, db, &new_inbox).await;
+        }
+        Ok(PartialOutcome::NeedsFull) => {
+            recover_full(app, db, aid, provider).await;
+        }
+        Err(e) => {
+            let _ = app.emit(
+                "sync:state",
+                serde_json::json!({"account_id": aid, "phase": "error", "done": 0, "total": 0, "last_error": e.to_string()}),
+            );
+        }
+    }
 }
 
 fn db_sink(db: &Db) -> crate::provider::DbSink {

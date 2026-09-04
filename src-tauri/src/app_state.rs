@@ -66,11 +66,27 @@ impl AppState {
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
         let acc = acc.ok_or_else(|| SiftError::app("account", "missing", false))?;
         if acc.auth_kind == "app_password" {
-            return Err(SiftError::app(
-                "auth",
-                "app-password sign-in is not available in this build",
-                false,
-            ));
+            let pw = crate::secrets::load_app_password(&acc.email)?.ok_or_else(|| {
+                SiftError::app(
+                    "auth",
+                    "app-password sign-in is not available in this build",
+                    false,
+                )
+            })?;
+            // Record re-auth need on bad password only after a past success
+            // (the caller maps imap_bad_password → auth:expired + banner).
+            let pool = crate::provider::imap::conn::ImapPool::gmail(acc.email.clone(), pw);
+            let c: std::sync::Arc<dyn Provider> =
+                std::sync::Arc::new(crate::provider::imap::provider::GmailImapProvider::new(
+                    account_id.into(),
+                    pool,
+                    self.db.clone(),
+                ));
+            self.providers
+                .write()
+                .await
+                .insert(account_id.into(), c.clone());
+            return Ok(c);
         }
         let access = self.get_access_token(account_id).await?;
         let c: std::sync::Arc<dyn Provider> = std::sync::Arc::new(GmailApiProvider::new(

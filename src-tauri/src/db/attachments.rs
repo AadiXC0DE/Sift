@@ -19,6 +19,19 @@ pub struct AttPut {
 impl Db {
     pub async fn attachments_put(&self, a: AttPut) -> Result<()> {
         self.write(move |c| {
+      // Idempotent per (message, part): attachment bytes never change, so a
+      // repeat store (foreground re-fetch) keeps the existing row instead of
+      // duplicating it. This also preserves a downloaded local_path.
+      let exists: bool = c
+        .query_row(
+          "SELECT EXISTS(SELECT 1 FROM attachments WHERE message_id=? AND part_id=?)",
+          params![a.message_id, a.part_id],
+          |r| r.get(0),
+        )
+        .unwrap_or(false);
+      if exists {
+        return Ok(());
+      }
       let dz: Option<Vec<u8>> = a.data.map(|d| zstd::encode_all(d.as_slice(), 3).unwrap_or_default());
       c.execute("INSERT OR REPLACE INTO attachments (id,message_id,gmail_att_id,part_id,filename,mime,size,content_id,is_inline,data_z) VALUES (?,?,?,?,?,?,?,?,?,?)",
         params![a.id,a.message_id,a.gmail_att_id,a.part_id,a.filename,a.mime,a.size,a.content_id,a.is_inline as i32,dz])?;

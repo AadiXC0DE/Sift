@@ -1,0 +1,20 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1864
+expression: summarize(&rs)
+---
+FLAGS ["\\Answered", "\\Flagged", "\\Draft", "\\Deleted", "\\Seen", "$NotPhishing", "$Phishing"]
+SELECT-OK [PERMANENTFLAGS (\Answered \Flagged \Draft \Deleted \Seen $NotPhishing $Phishing \*)]
+SELECT-OK [UIDVALIDITY 987654]
+SELECT-OK [UIDNEXT 4523]
+SELECT-OK [HIGHESTMODSEQ 89123]
+EXISTS 412
+RECENT 0
+SELECT-OK [READ-WRITE ]
+STATUS StatusInfo { mailbox_raw: "[Gmail]/Alle Nachrichten", mailbox: "[Gmail]/Alle Nachrichten", messages: Some(412), recent: None, uidnext: Some(4523), uidvalidity: Some(987654), unseen: None, highestmodseq: Some(89123) }
+SEARCH [1, 2, 3, 4521, 4522]
+EXISTS 4523
+EXPUNGE 2
+FETCH seq=24 uid=Some(4522) flags=["\\Seen", "\\Flagged"] size=None modseq=Some(89140) msgid=None thrid=None labels=[] bodies= header=0 has_struct=false
+TAGGED a142 OK code=Some("APPENDUID") args=Some("APPENDUID 987654 4523") text="APPEND completed."
+TAGGED a143 OK code=Some("COPYUID") args=Some("COPYUID 987654 4521:4522 9001:9002") text="COPY completed."

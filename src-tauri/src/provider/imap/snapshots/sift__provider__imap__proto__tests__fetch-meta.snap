@@ -1,0 +1,13 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1777
+expression: summarize(&rs)
+---
+FETCH seq=23 uid=Some(4521) flags=["\\Seen"] size=Some(18432) modseq=Some(89123) msgid=Some(1912345678901234567) thrid=Some(1912345678901234567) labels=["\\Inbox", "\\Important", "Weekly Reports", "Clients/Acme"] bodies=HEADER.FIELDS (FROM TO CC BCC REPLY-TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST):168b@None header=168 has_struct=true
+  STRUCT Multi { parts: [Single { mime_type: "text", subtype: "plain", params: {"charset": "utf-8"}, id: None, description: None, encoding: "quoted-printable", size: 312, lines: Some(12), disposition: None, disposition_params: {}, content_id: None }, Single { mime_type: "text", subtype: "html", params: {"charset": "utf-8"}, id: None, description: None, encoding: "quoted-printable", size: 2048, lines: Some(40), disposition: None, disposition_params: {}, content_id: None }], subtype: "alternative", params: {"boundary": "abc123"} }
+  ATTACH []
+  TEXTSEC Some("1")
+FETCH seq=24 uid=Some(4522) flags=["\\Flagged"] size=Some(45200) modseq=Some(89130) msgid=Some(1912345678901234588) thrid=Some(1912345678901234001) labels=["\\Starred", "Büro", "🧾 Receipts"] bodies=HEADER.FIELDS (FROM TO CC BCC REPLY-TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST):351b@None header=351 has_struct=true
+  STRUCT Multi { parts: [Single { mime_type: "text", subtype: "html", params: {"charset": "utf-8"}, id: None, description: None, encoding: "quoted-printable", size: 900, lines: Some(22), disposition: None, disposition_params: {}, content_id: None }, Single { mime_type: "application", subtype: "pdf", params: {"name": "contract.pdf"}, id: None, description: None, encoding: "base64", size: 2100, lines: None, disposition: Some("attachment"), disposition_params: {"filename": "contract.pdf"}, content_id: None }, Single { mime_type: "image", subtype: "png", params: {"name": "row14.png"}, id: Some("<ii_row14>"), description: None, encoding: "base64", size: 4520, lines: None, disposition: None, disposition_params: {}, content_id: Some("<ii_row14>") }], subtype: "mixed", params: {"boundary": "xyz789"} }
+  ATTACH [AttachmentInfo { section: "2", filename: Some("contract.pdf"), mime: "application/pdf", size: 2100, encoding: "base64", is_inline: false, content_id: None }, AttachmentInfo { section: "3", filename: Some("row14.png"), mime: "image/png", size: 4520, encoding: "base64", is_inline: false, content_id: Some("<ii_row14>") }]
+  TEXTSEC Some("1")
