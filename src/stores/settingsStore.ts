@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '../app/ipc/commands';
 import { defaultSettings, type Settings } from '../app/ipc/types';
+import { useView, type PaneLayout } from './viewStore';
 
 interface S {
   settings: Settings;
@@ -19,6 +20,13 @@ function applyTheme(s: Settings) {
   root.dataset.density = s.density;
 }
 
+function applyPane(s: Settings) {
+  const pane = s.readingPane;
+  if (pane === 'right' || pane === 'bottom' || pane === 'off') {
+    useView.getState().setPane(pane as PaneLayout);
+  }
+}
+
 export const useSettings = create<S>((set, get) => ({
   settings: defaultSettings,
   loaded: false,
@@ -27,6 +35,7 @@ export const useSettings = create<S>((set, get) => ({
       const settings = await api.settings_get();
       set({ settings, loaded: true });
       applyTheme(settings);
+      applyPane(settings);
     } catch {
       set({ loaded: true });
     }
@@ -36,6 +45,7 @@ export const useSettings = create<S>((set, get) => ({
     const next = { ...prev, ...p };
     set({ settings: next });
     applyTheme(next);
+    if (p.readingPane) applyPane(next);
     try {
       await api.settings_set(p);
     } catch {

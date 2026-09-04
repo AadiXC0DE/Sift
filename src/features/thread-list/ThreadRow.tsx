@@ -6,6 +6,7 @@ import { formatRowDate } from '../../lib/dates';
 import { participantsLabel } from '../../lib/names';
 import { accentHex } from '../../lib/colors';
 import { useSettings } from '../../stores/settingsStore';
+import { decodeRfc2047 } from '../../lib/rfc2047';
 import { Archive, Clock, Mail, MailOpen, Star, Paperclip, Trash2 } from 'lucide-react';
 
 export type RowAction = 'archive' | 'trash' | 'read' | 'star' | 'snooze';
@@ -193,7 +194,8 @@ export const ThreadRowView = memo(function ThreadRowView({
             fontSize: 12.5,
           }}
         >
-          {row.subject} <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>— {row.snippet}</span>
+          {decodeRfc2047(row.subject)}{' '}
+          <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>— {decodeRfc2047(row.snippet)}</span>
         </span>
         <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)', flexShrink: 0 }}>
           {formatRowDate(row.lastMessageAt)}
@@ -260,7 +262,7 @@ export const ThreadRowView = memo(function ThreadRowView({
               textOverflow: 'ellipsis',
             }}
           >
-            {row.subject}
+            {decodeRfc2047(row.subject)}
           </span>
           <span
             style={{
@@ -272,7 +274,7 @@ export const ThreadRowView = memo(function ThreadRowView({
               flex: 1,
             }}
           >
-            {row.snippet}
+            {decodeRfc2047(row.snippet)}
           </span>
           {row.isStarred && <Star size={14} fill="var(--star)" color="var(--star)" />}
           {row.hasAttachments && <Paperclip size={14} color="var(--fg-2)" />}

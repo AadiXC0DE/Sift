@@ -16,9 +16,10 @@ interface WindowState {
 export function useThreadsWindow(view: View, opts?: { unreadOnly?: boolean; hasAttachment?: boolean }) {
   const scope = useView((s) => s.accountScope);
   const includedIds = useAccounts((s) => s.includedIds);
+  const accountCount = useAccounts((s) => s.accounts.length);
   const [state, setState] = useState<WindowState>({ rows: [], loading: true, generation: 0 });
   const gen = useRef(0);
-  const key = JSON.stringify({ view, scope, opts });
+  const key = JSON.stringify({ view, scope, opts, accountCount });
 
   const load = useCallback(
     async (cursor?: string, append = false) => {
@@ -28,7 +29,13 @@ export function useThreadsWindow(view: View, opts?: { unreadOnly?: boolean; hasA
         const ids = includedIds();
         const accountIds = scope === 'all' ? ids : [scope];
         if (!accountIds.length) {
-          setState({ rows: [], loading: false, generation: g });
+          const acc = useAccounts.getState();
+          // Stay in loading until accounts exist so first paint isn't an empty inbox.
+          setState({
+            rows: [],
+            loading: acc.loading || acc.accounts.length === 0,
+            generation: g,
+          });
           return;
         }
         const q: ThreadsQuery = {

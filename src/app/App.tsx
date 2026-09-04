@@ -9,7 +9,6 @@ import { Onboarding } from '../features/onboarding/Onboarding';
 import { ShortcutHelp } from '../features/palette/ShortcutHelp';
 import { useView } from '../stores/viewStore';
 import { useAccounts } from '../stores/accountsStore';
-import { useSelection } from '../stores/selectionStore';
 import { api } from './ipc/commands';
 import { on } from './ipc/events';
 import { useSync } from '../stores/syncStore';
@@ -169,52 +168,69 @@ export function App() {
   }
 
   return (
-    <div className="sift-chrome" style={{ display: 'flex', height: '100vh', background: 'var(--bg-app)' }}>
-      {!sidebarHidden && <Sidebar onSettings={() => setSettingsOpen(true)} />}
-      {!paneOffOpen && (
-        <div
-          style={{
-            width: 'var(--list-w)',
-            minWidth: 300,
-            maxWidth: 560,
-            borderRight: '1px solid var(--border)',
-            display: 'flex',
-            flexDirection: 'column',
-            background: 'var(--bg-list)',
-          }}
-        >
-          <div data-tauri-drag-region style={{ height: 38, flexShrink: 0 }} />
-          {!online && (
-            <div
-              style={{
-                height: 24,
-                background: 'color-mix(in oklab, var(--warning) 14%, transparent)',
-                color: 'var(--warning)',
-                fontSize: 12,
-                display: 'flex',
-                alignItems: 'center',
-                padding: '0 12px',
-              }}
-            >
-              Offline · changes will sync when you&apos;re back
-            </div>
-          )}
-          <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
-        </div>
-      )}
-      {(paneLayout !== 'off' || threadId) && (
-        <div
-          style={{
-            flex: 1,
-            display: 'flex',
-            flexDirection: paneLayout === 'bottom' ? 'column' : 'row',
-            background: 'var(--bg-pane)',
-            minWidth: 0,
-          }}
-        >
-          <ThreadView onReply={(mode, tid) => setComposeOpen({ mode, threadId: tid })} />
-        </div>
-      )}
+    <div
+      className="sift-chrome"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100vh',
+        background: 'var(--bg-app)',
+        overflow: 'hidden',
+        minWidth: 0,
+      }}
+    >
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
+        {!sidebarHidden && <Sidebar onSettings={() => setSettingsOpen(true)} />}
+        {!paneOffOpen && (
+          <div
+            style={{
+              width: 'var(--list-w)',
+              minWidth: 0,
+              maxWidth: 560,
+              flex: '0 1 var(--list-w)',
+              borderRight: '1px solid var(--border)',
+              display: 'flex',
+              flexDirection: 'column',
+              background: 'var(--bg-list)',
+              overflow: 'hidden',
+            }}
+          >
+            <div data-tauri-drag-region style={{ height: 38, flexShrink: 0 }} />
+            {!online && (
+              <div
+                style={{
+                  height: 24,
+                  background: 'color-mix(in oklab, var(--warning) 14%, transparent)',
+                  color: 'var(--warning)',
+                  fontSize: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: '0 12px',
+                  flexShrink: 0,
+                }}
+              >
+                Offline · changes will sync when you&apos;re back
+              </div>
+            )}
+            <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
+          </div>
+        )}
+        {(paneLayout !== 'off' || threadId) && (
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: paneLayout === 'bottom' ? 'column' : 'row',
+              background: 'var(--bg-pane)',
+              minWidth: 0,
+              minHeight: 0,
+              overflow: 'hidden',
+            }}
+          >
+            <ThreadView onReply={(mode, tid) => setComposeOpen({ mode, threadId: tid })} />
+          </div>
+        )}
+      </div>
       {showOnboarding && <Onboarding />}
       {paletteOpen && (
         <Palette
@@ -266,48 +282,45 @@ function SeqHint() {
 
 function LearnKeys() {
   const [dismissed, setDismissed] = useState(() => localStorage.getItem('sift-learn-dismissed') === '1');
-  const setFocus = useSelection((s) => s.setFocus);
-  void setFocus;
   const dismiss = useCallback(() => {
     localStorage.setItem('sift-learn-dismissed', '1');
     setDismissed(true);
   }, []);
-  useEffect(() => {
-    void dismiss;
-  }, [dismiss]);
   if (dismissed) return null;
   return (
     <div
       style={{
-        position: 'fixed',
-        bottom: 0,
-        left: 'var(--sidebar-w)',
-        right: 0,
         display: 'flex',
-        gap: 16,
+        alignItems: 'center',
         justifyContent: 'center',
-        padding: '6px 12px',
+        gap: 12,
+        flexWrap: 'wrap',
+        padding: '8px 16px',
         fontSize: 12,
         color: 'var(--fg-2)',
-        background: 'var(--bg-list)',
+        background: 'color-mix(in oklab, var(--bg-elevated) 92%, transparent)',
         borderTop: '1px solid var(--border)',
+        flexShrink: 0,
       }}
     >
-      <span>
-        <Kbd>j</Kbd> <Kbd>k</Kbd> move
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <Kbd>j</Kbd>
+        <Kbd>k</Kbd>
+        <span>move</span>
       </span>
-      <span>
-        <Kbd>e</Kbd> archive
+      <span style={{ color: 'var(--border-strong)' }}>·</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <Kbd>e</Kbd>
+        <span>archive</span>
       </span>
-      <span>
-        <Kbd>⌘K</Kbd> anything
+      <span style={{ color: 'var(--border-strong)' }}>·</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <Kbd>⌘K</Kbd>
+        <span>anything</span>
       </span>
-      <button
-        onClick={dismiss}
-        style={{ background: 'none', border: 'none', color: 'var(--fg-2)', cursor: 'pointer' }}
-      >
+      <Button variant="ghost" size="sm" onClick={dismiss} style={{ marginLeft: 8 }}>
         Dismiss
-      </button>
+      </Button>
     </div>
   );
 }

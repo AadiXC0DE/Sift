@@ -171,7 +171,7 @@ pub fn meta_to_upsert(
                 Some(r)
             }
         },
-        subject: get("subject"),
+        subject: crate::provider::gmail::mime::decode_rfc2047(&get("subject")),
         snippet,
         rfc_message_id: {
             let r = get("message-id");
