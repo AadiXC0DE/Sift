@@ -1,0 +1,37 @@
+# Sift internal spec (kept out of the repo on purpose)
+SIFT_SPEC.md
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+.pnpm-store/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+target/
+
+# Test / bench artifacts
+coverage/
+playwright-report/
+test-results/
+e2e/.auth/
+docs/perf/*.raw
+fixtures/mailbox-100k/*.db
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Logs
+*.log
