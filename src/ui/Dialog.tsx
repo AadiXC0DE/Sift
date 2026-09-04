@@ -1,5 +1,6 @@
 import React from 'react';
 import { Dialog as BaseDialog } from '@base-ui-components/react/dialog';
+import { X } from 'lucide-react';
 
 export function Dialog({
   open,
@@ -43,12 +44,37 @@ export function Dialog({
             padding: 20,
             width,
             maxWidth: '90vw',
+            maxHeight: '86vh',
+            overflow: 'auto',
+            color: 'var(--fg)',
             transition: 'opacity 200ms var(--ease-out), transform 200ms var(--ease-out)',
           }}
         >
-          <BaseDialog.Title style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>
-            {title}
-          </BaseDialog.Title>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+            <BaseDialog.Title style={{ fontSize: 14, fontWeight: 600, flex: 1, margin: 0 }}>
+              {title}
+            </BaseDialog.Title>
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={onClose}
+              className="sift-iconbtn"
+              style={{
+                width: 28,
+                height: 28,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 'var(--r-md)',
+                border: '1px solid transparent',
+                background: 'transparent',
+                color: 'var(--fg-2)',
+                cursor: 'pointer',
+              }}
+            >
+              <X size={16} />
+            </button>
+          </div>
           {children}
         </BaseDialog.Popup>
       </BaseDialog.Portal>

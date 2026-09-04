@@ -220,9 +220,23 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
           padding: '0 12px',
           borderBottom: '1px solid var(--border)',
           flexShrink: 0,
+          minWidth: 0,
+          overflow: 'hidden',
         }}
       >
-        <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>{title}</span>
+        <span
+          style={{
+            fontWeight: 600,
+            fontSize: 14,
+            flex: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {title}
+        </span>
         <SearchInput onSearching={setSearching} />
         <button
           onClick={() => setUnreadOnly((v) => !v)}

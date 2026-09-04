@@ -58,7 +58,7 @@ fn walk<'a>(p: &'a MessagePart, out: &mut Vec<&'a MessagePart>) {
     }
 }
 
-fn decode_rfc2047(s: &str) -> String {
+pub fn decode_rfc2047(s: &str) -> String {
     // Minimal RFC2047 B/Q decoder (avoids mail-parser API churn)
     let out = s.to_string();
     // =?charset?B?data?=
@@ -79,28 +79,26 @@ fn decode_rfc2047(s: &str) -> String {
                         .map(|v| String::from_utf8_lossy(&v).into_owned())
                         .unwrap_or_else(|_| data.to_string())
                 } else {
-                    // Q-encoding: _ => space, =XX hex
+                    // Q-encoding: _ => space, =XX hex; decode as bytes then charset.
                     let q = data.replace('_', " ");
-                    // simple percent-like decode
-                    let s2 = q.clone();
-                    let mut out2 = String::new();
-                    let mut chars = s2.chars().peekable();
-                    while let Some(ch) = chars.next() {
-                        if ch == '=' {
-                            let h1 = chars.next().unwrap_or('0');
-                            let h2 = chars.next().unwrap_or('0');
-                            if let Ok(b) = u8::from_str_radix(&format!("{h1}{h2}"), 16) {
-                                out2.push(b as char);
-                            } else {
-                                out2.push(ch);
-                                out2.push(h1);
-                                out2.push(h2);
+                    let raw = q.as_bytes();
+                    let mut bytes = Vec::with_capacity(raw.len());
+                    let mut i = 0;
+                    while i < raw.len() {
+                        if raw[i] == b'=' && i + 2 < raw.len() {
+                            if let Ok(v) = u8::from_str_radix(
+                                std::str::from_utf8(&raw[i + 1..i + 3]).unwrap_or("00"),
+                                16,
+                            ) {
+                                bytes.push(v);
+                                i += 3;
+                                continue;
                             }
-                        } else {
-                            out2.push(ch);
                         }
+                        bytes.push(raw[i]);
+                        i += 1;
                     }
-                    out2
+                    String::from_utf8_lossy(&bytes).into_owned()
                 };
                 res.push_str(&rest[..a]);
                 res.push_str(&decoded);
@@ -375,5 +373,9 @@ mod tests {
         assert_eq!(addrs.len(), 2);
         assert_eq!(addrs[0].1, "john@x.com");
         assert_eq!(addrs[0].0.as_deref(), Some("Doe, John"));
+        assert_eq!(
+            decode_rfc2047("=?UTF-8?Q?Referral_Request_=E2=80=93_Intern?="),
+            "Referral Request – Intern"
+        );
     }
 }

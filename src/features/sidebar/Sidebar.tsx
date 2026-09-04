@@ -70,6 +70,8 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
         display: 'flex',
         flexDirection: 'column',
         flexShrink: 0,
+        minWidth: 0,
+        overflow: 'hidden',
       }}
     >
       <div data-tauri-drag-region style={{ height: 38, flexShrink: 0 }} />
