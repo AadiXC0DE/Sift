@@ -79,15 +79,17 @@ impl AppState {
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
         let acc = acc.ok_or_else(|| SiftError::app("account", "missing", false))?;
         if acc.auth_kind == "app_password" {
-            let pw = crate::secrets::load_app_password(&acc.email)?.ok_or_else(|| {
-                SiftError::app(
-                    "auth",
-                    "app-password sign-in is not available in this build",
-                    false,
-                )
-            })?;
-            // Record re-auth need on bad password only after a past success
-            // (the caller maps imap_bad_password → auth:expired + banner).
+            let pw = match crate::secrets::load_app_password(&acc.email)? {
+                Some(password) => password,
+                None => {
+                    let _ = self.db.accounts_set_state(account_id, "reauth").await;
+                    return Err(SiftError::app(
+                        "imap_needs_app_password",
+                        "Reconnect this account with a Google app password.",
+                        false,
+                    ));
+                }
+            };
             let pool = crate::provider::imap::conn::ImapPool::gmail(acc.email.clone(), pw);
             let c: std::sync::Arc<dyn Provider> =
                 std::sync::Arc::new(crate::provider::imap::provider::GmailImapProvider::new(
@@ -146,8 +148,17 @@ impl AppState {
             .await
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
         let acc = acc.ok_or_else(|| SiftError::app("account", "missing", false))?;
-        let rt = crate::secrets::load_refresh_token(&acc.email)?
-            .ok_or_else(|| SiftError::reauth("no refresh token"))?;
+        let rt = match crate::secrets::load_refresh_token(&acc.email)? {
+            Some(token) => token,
+            None => {
+                let _ = self.db.accounts_set_state(account_id, "reauth").await;
+                self.emit_event(
+                    "auth:expired",
+                    serde_json::json!({ "account_id": account_id }),
+                );
+                return Err(SiftError::reauth("Reconnect this Google account."));
+            }
+        };
         match crate::provider::gmail::oauth::refresh(&rt, &self.http).await {
             Ok(t) => {
                 let info = TokenInfo {

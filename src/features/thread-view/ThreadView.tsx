@@ -441,7 +441,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                     )
                   ) : body.state === 'error' ? (
                     <div style={{ color: 'var(--danger)', fontSize: 13 }}>
-                      Couldn&apos;t load this message.{' '}
+                      {body.text || "Couldn't load this message."}{' '}
                       <Button
                         size="sm"
                         variant="ghost"
