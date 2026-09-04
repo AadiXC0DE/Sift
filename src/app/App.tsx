@@ -217,62 +217,74 @@ export function App() {
         <div
           style={{
             display: 'flex',
-            flexDirection: bottom ? 'column' : 'row',
+            flexDirection: 'column',
             flex: 1,
             minWidth: 0,
             minHeight: 0,
             overflow: 'hidden',
           }}
         >
-          {showList && (
-            <div
-              style={{
-                width: bottom ? 'auto' : 'var(--list-w)',
-                flex: bottom ? '0 0 38%' : '0 1 var(--list-w)',
-                minWidth: 0,
-                minHeight: 0,
-                maxWidth: bottom ? 'none' : 560,
-                borderRight: bottom ? 'none' : '1px solid var(--border)',
-                borderBottom: bottom ? '1px solid var(--border)' : 'none',
-                display: 'flex',
-                flexDirection: 'column',
-                background: 'var(--bg-list)',
-                overflow: 'hidden',
-              }}
-            >
-              {!online && (
-                <div
-                  style={{
-                    height: 24,
-                    background: 'color-mix(in oklab, var(--warning) 14%, transparent)',
-                    color: 'var(--warning)',
-                    fontSize: 12,
-                    display: 'flex',
-                    alignItems: 'center',
-                    padding: '0 12px',
-                    flexShrink: 0,
-                  }}
-                >
-                  Offline · changes will sync when you&apos;re back
-                </div>
-              )}
-              <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
-            </div>
-          )}
-          {showThread && (
-            <div
-              style={{
-                flex: 1,
-                display: 'flex',
-                minWidth: 0,
-                minHeight: 0,
-                overflow: 'hidden',
-                background: 'var(--bg-pane)',
-              }}
-            >
-              <ThreadView onReply={(mode, tid) => setComposeOpen({ mode, threadId: tid })} />
-            </div>
-          )}
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: bottom ? 'column' : 'row',
+              flex: 1,
+              minWidth: 0,
+              minHeight: 0,
+              overflow: 'hidden',
+            }}
+          >
+            {showList && (
+              <div
+                style={{
+                  width: bottom ? 'auto' : 'var(--list-w)',
+                  flex: bottom ? '0 0 38%' : '0 1 var(--list-w)',
+                  minWidth: 0,
+                  minHeight: 0,
+                  maxWidth: bottom ? 'none' : 560,
+                  borderRight: bottom ? 'none' : '1px solid var(--border)',
+                  borderBottom: bottom ? '1px solid var(--border)' : 'none',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  background: 'var(--bg-list)',
+                  overflow: 'hidden',
+                }}
+              >
+                {!online && (
+                  <div
+                    style={{
+                      height: 24,
+                      background: 'color-mix(in oklab, var(--warning) 14%, transparent)',
+                      color: 'var(--warning)',
+                      fontSize: 12,
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '0 12px',
+                      flexShrink: 0,
+                    }}
+                  >
+                    Offline · changes will sync when you&apos;re back
+                  </div>
+                )}
+                <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
+              </div>
+            )}
+            {showThread && (
+              <div
+                style={{
+                  flex: 1,
+                  display: 'flex',
+                  minWidth: 0,
+                  minHeight: 0,
+                  overflow: 'hidden',
+                  background: 'var(--bg-pane)',
+                }}
+              >
+                <ThreadView onReply={(mode, tid) => setComposeOpen({ mode, threadId: tid })} />
+              </div>
+            )}
+          </div>
+          <LearnKeys />
         </div>
       </div>
       {showOnboarding && <Onboarding />}
@@ -293,7 +305,6 @@ export function App() {
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <SeqHint />
-      <LearnKeys />
     </div>
   );
 }
@@ -337,44 +348,55 @@ function LearnKeys() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 10,
-        flexWrap: 'wrap',
-        padding: '6px 16px',
-        fontSize: 12,
-        color: 'var(--fg-2)',
-        background: 'var(--bg-elevated)',
+        gap: 8,
+        height: 26,
+        padding: '0 10px',
+        fontSize: 11,
+        color: 'var(--fg-3)',
+        background: 'var(--bg-list)',
         borderTop: '1px solid var(--border)',
         flexShrink: 0,
       }}
     >
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         <Kbd>j</Kbd>
         <Kbd>k</Kbd>
-        <span>move</span>
+        move
       </span>
-      <span style={{ color: 'var(--border-strong)' }}>·</span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ opacity: 0.4 }}>·</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         <Kbd>e</Kbd>
-        <span>archive</span>
+        archive
       </span>
-      <span style={{ color: 'var(--border-strong)' }}>·</span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ opacity: 0.4 }}>·</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         <Kbd>r</Kbd>
-        <span>reply</span>
+        reply
       </span>
-      <span style={{ color: 'var(--border-strong)' }}>·</span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ opacity: 0.4 }}>·</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         <Kbd>c</Kbd>
-        <span>compose</span>
+        compose
       </span>
-      <span style={{ color: 'var(--border-strong)' }}>·</span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ opacity: 0.4 }}>·</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         <Kbd>⌘K</Kbd>
-        <span>anything</span>
+        anything
       </span>
-      <Button variant="ghost" size="sm" onClick={dismiss} style={{ marginLeft: 4 }}>
+      <button
+        onClick={dismiss}
+        style={{
+          marginLeft: 8,
+          background: 'none',
+          border: 'none',
+          color: 'var(--fg-3)',
+          cursor: 'pointer',
+          fontSize: 11,
+          padding: 0,
+        }}
+      >
         Dismiss
-      </Button>
+      </button>
     </div>
   );
 }
