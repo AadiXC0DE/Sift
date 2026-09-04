@@ -52,7 +52,7 @@ pub async fn run_backfill_once(
         if gate.foreground.load(Ordering::SeqCst) > 0 {
             break;
         }
-        match provider.fetch_body(&id).await {
+        match provider.fetch_body_backfill(&id).await {
             Ok(parsed) => {
                 if store_parsed(sink, &id, &parsed).await.is_ok() {
                     n += 1;

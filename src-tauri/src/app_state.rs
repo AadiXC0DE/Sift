@@ -56,8 +56,21 @@ impl AppState {
         &self,
         account_id: &str,
     ) -> Result<std::sync::Arc<dyn Provider>, SiftError> {
-        if let Some(c) = self.providers.read().await.get(account_id).cloned() {
-            return Ok(c);
+        if let Some(cached) = self.providers.read().await.get(account_id).cloned() {
+            if cached.kind() == crate::provider::ProviderKind::GmailImap {
+                return Ok(cached);
+            }
+            let now = crate::db::now_ms();
+            let token_is_fresh = self
+                .tokens
+                .read()
+                .await
+                .get(account_id)
+                .is_some_and(|token| token.expires_at - now > 5 * 60 * 1000);
+            if token_is_fresh {
+                return Ok(cached);
+            }
+            self.providers.write().await.remove(account_id);
         }
         let acc = self
             .db
@@ -98,6 +111,11 @@ impl AppState {
             .await
             .insert(account_id.into(), c.clone());
         Ok(c)
+    }
+
+    pub async fn invalidate_oauth_provider(&self, account_id: &str) {
+        self.providers.write().await.remove(account_id);
+        self.tokens.write().await.remove(account_id);
     }
 
     /// Back-compat shim used while call sites migrate to [`Self::provider_for`].

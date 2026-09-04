@@ -65,6 +65,25 @@ impl serde::Serialize for SiftError {
 }
 
 impl SiftError {
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::App { retryable, .. } => *retryable,
+            Self::Http(error) => {
+                error.is_timeout()
+                    || error.is_connect()
+                    || error
+                        .status()
+                        .is_some_and(|status| status.as_u16() == 429 || status.as_u16() >= 500)
+            }
+            Self::Io(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_reauth(&self) -> bool {
+        matches!(self, Self::App { code, .. } if code == "reauth")
+    }
+
     pub fn app(code: &str, message: impl Into<String>, retryable: bool) -> Self {
         SiftError::App {
             code: code.into(),

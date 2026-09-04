@@ -208,6 +208,51 @@ mod tests {
         let _ = Db::open(dir.path()).unwrap();
         let _ = Db::open(dir.path()).unwrap();
     }
+
+    #[tokio::test]
+    async fn rendering_upgrade_preserves_cached_bodies() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let account = db
+            .new_account("mail@example.com", None, None)
+            .await
+            .unwrap();
+        let account_id = account.id;
+        db.write(move |connection| {
+            connection.execute(
+                "INSERT INTO messages (id,account_id,thread_id,internal_date,body_state) VALUES ('m1',?,'t1',1,'fetched')",
+                params![account_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        db.bodies_put(crate::db::bodies::BodyPut {
+            message_id: "m1".into(),
+            html: Some("<p>cached mail</p>".into()),
+            text: Some("cached mail".into()),
+            remote_images: 0,
+            trackers: 0,
+            dark_safe: true,
+            quoted_from: None,
+        })
+        .await
+        .unwrap();
+        db.write(|connection| {
+            connection.execute("UPDATE schema_version SET version=3", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        drop(db);
+
+        let reopened = Db::open(dir.path()).unwrap();
+        let body = reopened.bodies_get("m1").await.unwrap();
+        assert_eq!(
+            body.and_then(|value| value.0).as_deref(),
+            Some("<p>cached mail</p>")
+        );
+    }
     #[test]
     fn p1_t03_pragmas() {
         let dir = tempfile::tempdir().unwrap();

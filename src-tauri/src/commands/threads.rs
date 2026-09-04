@@ -273,6 +273,21 @@ fn parse_list_unsub(raw: &str) -> (Option<String>, Option<String>) {
     (url, mailto)
 }
 
+fn body_failure_state(error: &SiftError) -> &'static str {
+    if error.is_retryable() {
+        "loading"
+    } else {
+        "error"
+    }
+}
+
+fn should_refresh_body_provider(
+    error: &SiftError,
+    provider_kind: crate::provider::ProviderKind,
+) -> bool {
+    error.is_reauth() && provider_kind == crate::provider::ProviderKind::GmailApi
+}
+
 async fn render_message_html(
     state: &AppState,
     account_id: &str,
@@ -393,14 +408,14 @@ pub async fn message_body(
             remote_images_allowed: global_allow,
         });
     }
-    // Foreground fetch: wait so the open thread gets HTML/text instead of an
-    // endless skeleton. Backfill stays in the supervisor.
-    let provider = match state.provider_for(&account_id).await {
+    // Foreground fetches must preempt bulk backfill after a rendering upgrade.
+    let _foreground = state.gate.enter();
+    let mut provider = match state.provider_for(&account_id).await {
         Ok(p) => p,
-        Err(_) => {
+        Err(error) => {
             return Ok(MessageBody {
                 message_id,
-                state: "error".into(),
+                state: body_failure_state(&error).into(),
                 html: None,
                 text: None,
                 remote_image_count: 0,
@@ -410,7 +425,24 @@ pub async fn message_body(
             });
         }
     };
-    match provider.fetch_body(&message_id).await {
+    let mut fetched = provider.fetch_body(&message_id).await;
+    // A cached Gmail provider owns the token it was constructed with. If the
+    // server rejects that token, rebuild it from the refresh token and retry
+    // the foreground request once instead of failing every opened message.
+    if fetched
+        .as_ref()
+        .is_err_and(|error| should_refresh_body_provider(error, provider.kind()))
+    {
+        state.invalidate_oauth_provider(&account_id).await;
+        match state.provider_for(&account_id).await {
+            Ok(refreshed) => {
+                provider = refreshed;
+                fetched = provider.fetch_body(&message_id).await;
+            }
+            Err(refresh_error) => fetched = Err(refresh_error),
+        }
+    }
+    match fetched {
         Ok(parsed) => {
             let sink = crate::provider::DbSink::new(state.db.clone());
             if crate::provider::store_parsed(&sink, &message_id, &parsed)
@@ -429,10 +461,10 @@ pub async fn message_body(
                 });
             }
         }
-        Err(_) => {
+        Err(error) => {
             return Ok(MessageBody {
                 message_id,
-                state: "error".into(),
+                state: body_failure_state(&error).into(),
                 html: None,
                 text: None,
                 remote_image_count: 0,
@@ -544,6 +576,27 @@ pub async fn remote_images_load(
 
 #[cfg(test)]
 mod tests {
+    use super::{body_failure_state, should_refresh_body_provider};
+    use crate::errors::SiftError;
+    use crate::provider::ProviderKind;
+
+    #[test]
+    fn body_fetch_failures_remain_recoverable() {
+        let transient = SiftError::app("http", "temporary", true);
+        let permanent = SiftError::NotFound("message".into());
+        let expired = SiftError::reauth("expired");
+        assert_eq!(body_failure_state(&transient), "loading");
+        assert_eq!(body_failure_state(&permanent), "error");
+        assert!(should_refresh_body_provider(
+            &expired,
+            ProviderKind::GmailApi
+        ));
+        assert!(!should_refresh_body_provider(
+            &expired,
+            ProviderKind::GmailImap
+        ));
+    }
+
     #[tokio::test]
     async fn p5_t02_loading_dedup() {
         // message_body for body_state none returns loading (fetch scheduled, no dup panic)
