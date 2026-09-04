@@ -34,13 +34,27 @@ function cacheSet(id: string, b: MessageBody) {
 }
 
 async function pollBody(id: string, onUpdate: (b: MessageBody) => void) {
-  let delay = 400;
-  for (let i = 0; i < 10; i++) {
+  let delay = 250;
+  let last: MessageBody | undefined;
+  for (let i = 0; i < 16; i++) {
     try {
       const b = await api.message_body(id);
+      last = b;
       cacheSet(id, b);
       onUpdate(b);
-      if (b.state === 'ready' || b.state === 'error') return;
+      if (b.state === 'ready' || b.state === 'error') {
+        if (
+          b.state === 'ready' &&
+          b.remoteImageCount > 0 &&
+          !b.remoteImagesAllowed &&
+          useSettings.getState().settings.remoteImages !== 'never'
+        ) {
+          const loaded = await api.remote_images_load(id, false);
+          cacheSet(id, loaded);
+          onUpdate(loaded);
+        }
+        return;
+      }
     } catch {
       onUpdate({
         messageId: id,
@@ -49,11 +63,15 @@ async function pollBody(id: string, onUpdate: (b: MessageBody) => void) {
         trackerCount: 0,
         darkSafe: true,
         remoteImagesAllowed: false,
+        text: last?.text,
       });
       return;
     }
     await new Promise((r) => setTimeout(r, delay));
-    delay = Math.min(Math.round(delay * 1.4), 2000);
+    delay = Math.min(Math.round(delay * 1.35), 2000);
+  }
+  if (last && last.state === 'loading') {
+    onUpdate({ ...last, state: last.text || last.html ? 'ready' : 'error' });
   }
 }
 

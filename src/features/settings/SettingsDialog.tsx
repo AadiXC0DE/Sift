@@ -8,6 +8,7 @@ import { api } from '../../app/ipc/commands';
 import { Button } from '../../ui/Button';
 import { Kbd } from '../../ui/Kbd';
 import { defaultBindings } from '../../keymap/defaults';
+import { toast } from 'sonner';
 
 const accents = ['blue', 'indigo', 'violet', 'rose', 'orange', 'green', 'teal', 'graphite'] as const;
 
@@ -93,7 +94,16 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               <Row label="Split inbox by category">
                 <Switch checked={settings.splitInbox} onChange={(v) => void set({ splitInbox: v })} />
               </Row>
-              <Button onClick={() => void api.sync_now()} style={{ alignSelf: 'flex-start' }}>
+              <Button
+                onClick={() => {
+                  toast.promise(api.sync_now(), {
+                    loading: 'Syncing…',
+                    success: 'Sync started',
+                    error: 'Sync failed',
+                  });
+                }}
+                style={{ alignSelf: 'flex-start' }}
+              >
                 Sync now
               </Button>
               <button

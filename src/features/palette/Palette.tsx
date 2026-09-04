@@ -29,7 +29,11 @@ export function Palette({
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         setHi((v) => Math.min(results.length - 1, v + 1));

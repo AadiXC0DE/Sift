@@ -276,8 +276,17 @@ export const ThreadRowView = memo(function ThreadRowView({
           >
             {decodeRfc2047(row.snippet)}
           </span>
-          {row.isStarred && <Star size={14} fill="var(--star)" color="var(--star)" />}
-          {row.hasAttachments && <Paperclip size={14} color="var(--fg-2)" />}
+          {row.isStarred && (
+            <Star
+              size={14}
+              fill="var(--star)"
+              color="var(--star)"
+              style={{ flexShrink: 0, width: 14, height: 14 }}
+            />
+          )}
+          {row.hasAttachments && (
+            <Paperclip size={14} color="var(--fg-2)" style={{ flexShrink: 0, width: 14, height: 14 }} />
+          )}
           {chips.map((c) => (
             <Chip key={c} label={c} />
           ))}
