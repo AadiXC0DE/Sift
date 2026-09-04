@@ -9,15 +9,145 @@ import { Button } from '../../ui/Button';
 import { Kbd } from '../../ui/Kbd';
 import { defaultBindings } from '../../keymap/defaults';
 import { toast } from 'sonner';
+import type { Account } from '../../app/ipc/types';
 
 const accents = ['blue', 'indigo', 'violet', 'rose', 'orange', 'green', 'teal', 'graphite'] as const;
+
+function AccountSettingsRow({ account }: { account: Account }) {
+  const refresh = useAccounts((state) => state.refresh);
+  const [editingPassword, setEditingPassword] = React.useState(false);
+  const [password, setPassword] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+
+  const reconnectAppPassword = async () => {
+    setSaving(true);
+    try {
+      await api.accounts_update_app_password(account.id, password);
+      setPassword('');
+      setEditingPassword(false);
+      await refresh();
+      toast.success('Account reconnected');
+    } catch {
+      toast.error('That app password did not work');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reconnectGoogle = async () => {
+    setSaving(true);
+    try {
+      await api.accounts_add_google(account.email);
+      await refresh();
+      toast.success('Account reconnected');
+    } catch {
+      toast.error('Could not reconnect this Google account');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 8,
+        alignItems: 'center',
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: '10px 12px',
+        background: 'var(--n1)',
+        flexWrap: 'wrap',
+      }}
+    >
+      <span
+        style={{
+          flex: 1,
+          fontSize: 13,
+          minWidth: 160,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {account.email}
+        {account.sync_state === 'reauth' && (
+          <span style={{ color: 'var(--danger)', marginLeft: 8 }}>Reconnect required</span>
+        )}
+      </span>
+      <select
+        aria-label="Account color"
+        value={account.color}
+        onChange={(event) => void api.accounts_update({ id: account.id, color: event.target.value })}
+        style={{
+          height: 28,
+          border: '1px solid var(--border-strong)',
+          borderRadius: 6,
+          padding: '0 8px',
+          background: 'var(--bg-raised)',
+          color: 'var(--fg)',
+        }}
+      >
+        {accents.map((color) => (
+          <option key={color} value={color}>
+            {color}
+          </option>
+        ))}
+      </select>
+      {account.auth_kind === 'app_password' ? (
+        <Button size="sm" variant="ghost" onClick={() => setEditingPassword((value) => !value)}>
+          Reconnect
+        </Button>
+      ) : (
+        <Button size="sm" variant="ghost" disabled={saving} onClick={() => void reconnectGoogle()}>
+          Reconnect
+        </Button>
+      )}
+      <Button size="sm" variant="danger" onClick={() => void api.accounts_remove(account.id).then(refresh)}>
+        Remove
+      </Button>
+      {editingPassword && (
+        <div style={{ width: '100%', display: 'flex', gap: 8 }}>
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="16-character Google app password"
+            aria-label={`App password for ${account.email}`}
+            autoComplete="off"
+            style={{
+              flex: 1,
+              height: 30,
+              border: '1px solid var(--border-strong)',
+              borderRadius: 6,
+              padding: '0 10px',
+              background: 'var(--bg-raised)',
+              color: 'var(--fg)',
+            }}
+          />
+          <Button
+            size="sm"
+            disabled={saving || password.trim().length < 16}
+            onClick={() => void reconnectAppPassword()}
+          >
+            {saving ? 'Checking…' : 'Save'}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const settings = useSettings((s) => s.settings);
   const set = useSettings((s) => s.set);
   const accounts = useAccounts((s) => s.accounts);
+  const refreshAccounts = useAccounts((s) => s.refresh);
   const [tab, setTab] = React.useState('General');
   const tabs = ['General', 'Appearance', 'Accounts', 'Shortcuts', 'Notifications', 'Privacy', 'Advanced'];
+
+  React.useEffect(() => {
+    if (open) void refreshAccounts();
+  }, [open, refreshAccounts]);
 
   return (
     <Dialog open={open} onClose={onClose} title="Settings" width={760}>
@@ -189,53 +319,8 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           )}
           {tab === 'Accounts' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {accounts.map((a) => (
-                <div
-                  key={a.id}
-                  style={{
-                    display: 'flex',
-                    gap: 8,
-                    alignItems: 'center',
-                    border: '1px solid var(--border)',
-                    borderRadius: 8,
-                    padding: '10px 12px',
-                    background: 'var(--n1)',
-                  }}
-                >
-                  <span
-                    style={{
-                      flex: 1,
-                      fontSize: 13,
-                      minWidth: 0,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {a.email}
-                  </span>
-                  <select
-                    aria-label="Account color"
-                    value={a.color}
-                    onChange={(e) => void api.accounts_update({ id: a.id, color: e.target.value })}
-                    style={{
-                      height: 28,
-                      border: '1px solid var(--border-strong)',
-                      borderRadius: 6,
-                      padding: '0 8px',
-                      background: 'var(--bg-raised)',
-                      color: 'var(--fg)',
-                    }}
-                  >
-                    {accents.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                  <Button size="sm" variant="danger" onClick={() => void api.accounts_remove(a.id)}>
-                    Remove
-                  </Button>
-                </div>
+              {accounts.map((account) => (
+                <AccountSettingsRow key={account.id} account={account} />
               ))}
               <Button onClick={() => void api.accounts_add_google()} style={{ alignSelf: 'flex-start' }}>
                 Add account

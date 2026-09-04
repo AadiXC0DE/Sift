@@ -40,23 +40,58 @@ pub async fn accounts_add_google(
     let info: crate::provider::gmail::types::Userinfo = {
         let base = std::env::var("SIFT_USERINFO_URL")
             .unwrap_or_else(|_| "https://openidconnect.googleapis.com/v1/userinfo".into());
-        let r = state
+        let response = state
             .http
             .get(base)
             .bearer_auth(&tokens.access_token)
             .send()
             .await
             .map_err(SiftError::from)?;
-        r.json().await.map_err(SiftError::from)?
+        response.json().await.map_err(SiftError::from)?
     };
-    if let Some(rt) = tokens.refresh_token {
-        crate::secrets::store_refresh_token(&info.email, &rt)?;
-    }
-    let acc = state
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .ok_or_else(|| SiftError::reauth("Google did not return a refresh token"))?;
+    crate::secrets::store_refresh_token(&info.email, refresh_token)?;
+
+    let existing = state
         .db
-        .new_account(&info.email, info.name, info.picture)
+        .accounts_list()
         .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+        .map_err(|error| SiftError::app("db", error.to_string(), false))?
+        .into_iter()
+        .find(|account| account.email.eq_ignore_ascii_case(&info.email));
+    let acc = if let Some(existing) = existing {
+        state
+            .db
+            .accounts_update_meta(&existing.id, None, info.name.clone(), None, None)
+            .await
+            .map_err(|error| SiftError::app("db", error.to_string(), false))?;
+        state
+            .db
+            .accounts_set_auth_kind(&existing.id, "oauth")
+            .await
+            .map_err(|error| SiftError::app("db", error.to_string(), false))?;
+        state
+            .db
+            .accounts_set_state(&existing.id, "partial")
+            .await
+            .map_err(|error| SiftError::app("db", error.to_string(), false))?;
+        state
+            .db
+            .accounts_get(&existing.id)
+            .await
+            .map_err(|error| SiftError::app("db", error.to_string(), false))?
+            .ok_or_else(|| SiftError::NotFound("account".into()))?
+    } else {
+        state
+            .db
+            .new_account(&info.email, info.name, info.picture)
+            .await
+            .map_err(|error| SiftError::app("db", error.to_string(), false))?
+    };
+
     state.tokens.write().await.insert(
         acc.id.clone(),
         crate::app_state::TokenInfo {
