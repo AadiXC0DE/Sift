@@ -60,13 +60,51 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
     // First pass: ammonia with custom config
     let mut builder = Builder::default();
     builder
+        .rm_clean_content_tags(["style"])
         .add_tags([
-            "table", "thead", "tbody", "tfoot", "tr", "td", "th", "col", "colgroup", "center",
-            "font", "span", "div", "img",
+            "table",
+            "thead",
+            "tbody",
+            "tfoot",
+            "tr",
+            "td",
+            "th",
+            "col",
+            "colgroup",
+            "center",
+            "font",
+            "span",
+            "div",
+            "img",
+            "style",
+            "p",
+            "br",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "strong",
+            "em",
+            "b",
+            "i",
+            "u",
+            "s",
+            "blockquote",
+            "pre",
+            "code",
+            "hr",
+            "ul",
+            "ol",
+            "li",
+            "dl",
+            "dt",
+            "dd",
         ])
         .rm_tags([
             "form", "input", "button", "select", "textarea", "iframe", "object", "embed", "script",
-            "style", "link", "meta", "base", "svg", "math", "video", "audio",
+            "link", "meta", "base", "svg", "math",
         ])
         .add_generic_attributes([
             "class",
@@ -81,6 +119,7 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
             "cellpadding",
             "cellspacing",
             "bgcolor",
+            "background",
             "color",
             "face",
             "size",
@@ -88,6 +127,8 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
             "rowspan",
             "dir",
             "lang",
+            "style",
+            "role",
         ])
         .add_tag_attributes("a", &["href"])
         .add_tag_attributes("img", &["src", "width", "height", "alt"])
@@ -299,7 +340,7 @@ pub fn embed_local_images(html: &str, message_id: &str, parts: &[InlinePart]) ->
 }
 
 fn strip_bad_styles(html: &str) -> String {
-    // Remove style="..." declarations containing url(, expression(, @import, position:fixed/absolute
+    // Keep layout CSS (including url() backgrounds). Drop only active XSS vectors.
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(i) = rest.find("style=\"") {
@@ -311,11 +352,13 @@ fn strip_bad_styles(html: &str) -> String {
                 .split(';')
                 .filter(|d| {
                     let l = d.to_lowercase();
-                    !(l.contains("url(")
-                        || l.contains("expression(")
+                    !(l.contains("expression(")
+                        || l.contains("javascript:")
                         || l.contains("@import")
+                        || l.contains("behavior:")
+                        || l.contains("-moz-binding")
                         || l.contains("position:fixed")
-                        || l.contains("position:absolute"))
+                        || l.contains("position: fixed"))
                 })
                 .collect();
             out.push_str(&format!("style=\"{}\"", kept.join(";")));
@@ -391,6 +434,17 @@ mod tests {
         assert!(safe.dark_safe);
         let unsafe_ = sanitize("m", "<div bgcolor=\"#123456\">hi</div>");
         assert!(!unsafe_.dark_safe);
+    }
+    #[test]
+    fn keeps_email_css() {
+        let out = sanitize(
+            "m1",
+            "<style>.x{color:red}</style><p style=\"color:#333;background-image:url(https://cdn.example/a.png)\">hi</p>",
+        );
+        assert!(out.html.contains("style=\"color:#333"));
+        assert!(out.html.contains("background-image:url("));
+        assert!(out.html.contains("<style"));
+        assert!(out.html.contains(".x{color:red}") || out.html.contains(".x { color: red }"));
     }
     impl SanitizeOut {
         fn tracker_count_plus(&self) -> i64 {

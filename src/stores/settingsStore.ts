@@ -21,23 +21,25 @@ function applyTheme(s: Settings) {
 }
 
 function applyPane(s: Settings) {
-  const pane = s.readingPane;
-  if (pane === 'right' || pane === 'bottom' || pane === 'off') {
-    useView.getState().setPane(pane as PaneLayout);
-  }
+  const pane: PaneLayout = s.readingPane === 'bottom' || s.readingPane === 'off' ? s.readingPane : 'right';
+  useView.getState().setPane(pane);
 }
 
 export const useSettings = create<S>((set, get) => ({
-  settings: defaultSettings,
+  settings: { ...defaultSettings, readingPane: 'right' },
   loaded: false,
   load: async () => {
     try {
-      const settings = await api.settings_get();
+      const raw = await api.settings_get();
+      const settings = { ...raw, readingPane: 'right' as const };
       set({ settings, loaded: true });
       applyTheme(settings);
       applyPane(settings);
+      if (raw.readingPane !== 'right') void api.settings_set({ readingPane: 'right' });
     } catch {
-      set({ loaded: true });
+      const settings = { ...defaultSettings, readingPane: 'right' as const };
+      set({ settings, loaded: true });
+      applyPane(settings);
     }
   },
   set: async (p) => {
