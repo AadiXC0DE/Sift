@@ -1,0 +1,5 @@
+From: evil@x.com
+Subject: x
+Content-Type: text/html
+
+<html><body><svg onload="window.__sift_xss=1"><p>hi</p></body></html>

@@ -1,0 +1,45 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+jobs:
+  build-release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.15.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-apple-darwin,x86_64-apple-darwin }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm tauri build --target universal-apple-darwin
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SIFT_GOOGLE_CLIENT_ID: ${{ secrets.SIFT_GOOGLE_CLIENT_ID }}
+          SIFT_GOOGLE_CLIENT_SECRET: ${{ secrets.SIFT_GOOGLE_CLIENT_SECRET }}
+      - run: bash scripts/check-bundle.sh
+      - run: codesign -dv --verbose=4 "src-tauri/target/universal-apple-darwin/release/bundle/macos/Sift.app" || true
+      - run: spctl -a -vv "src-tauri/target/universal-apple-darwin/release/bundle/macos/Sift.app" || true
+      - name: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz*
+            latest.json
+            SHA256SUMS
+      - name: rebuild site
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: sift-release

@@ -1,0 +1,65 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  background: var(--bg-app);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  cursor: default;
+}
+button {
+  font: inherit;
+}
+:focus {
+  outline: none;
+}
+:focus-visible {
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-sm);
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--n4);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::selection {
+  background: var(--accent-soft);
+}
+.sift-chrome {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}
+@media (hover: hover) and (pointer: fine) {
+  .hoverable {
+    transition: background-color 80ms ease;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

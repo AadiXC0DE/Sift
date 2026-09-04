@@ -1,0 +1,127 @@
+:root {
+  --n0: #ffffff;
+  --n1: #fafaf9;
+  --n2: #f4f4f2;
+  --n3: #ebebe8;
+  --n4: #dcdcd8;
+  --n5: #b9b9b4;
+  --n6: #6e6e69;
+  --n7: #5f5f5a;
+  --n8: #3a3a37;
+  --n9: #1f1f1d;
+  --n10: #111110;
+  --bg-app: var(--n1);
+  --bg-sidebar: var(--n2);
+  --bg-list: var(--n0);
+  --bg-pane: var(--n0);
+  --bg-row-hover: var(--n2);
+  --bg-row-selected: color-mix(in oklab, var(--accent) 10%, var(--n0));
+  --bg-row-focus: color-mix(in oklab, var(--accent) 16%, var(--n0));
+  --bg-elevated: var(--n0);
+  --border: var(--n3);
+  --border-strong: var(--n4);
+  --fg: var(--n9);
+  --fg-2: var(--n7);
+  --fg-3: var(--n6);
+  --fg-disabled: var(--n5);
+  --fg-on-accent: #fff;
+  --accent: #2f6df6;
+  --accent-hover: color-mix(in oklab, var(--accent) 88%, black);
+  --accent-soft: color-mix(in oklab, var(--accent) 12%, var(--n0));
+  --danger: #d93b3b;
+  --warning: #d98a1f;
+  --success: #2c9a5a;
+  --unread-dot: var(--accent);
+  --star: #f0b429;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-2xl: 20px;
+  --lh-tight: 1.25;
+  --lh-normal: 1.45;
+  --lh-relaxed: 1.6;
+  --tracking-tight: -0.01em;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --r-sm: 5px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-full: 999px;
+  --shadow-popover: 0 0 0 1px rgb(0 0 0 / 0.06), 0 4px 12px rgb(0 0 0 / 0.08), 0 12px 32px rgb(0 0 0 / 0.06);
+  --shadow-dialog: 0 0 0 1px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.12), 0 24px 64px rgb(0 0 0 / 0.1);
+  --shadow-sheet: 0 -1px 0 rgb(0 0 0 / 0.06), 0 -8px 32px rgb(0 0 0 / 0.1);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --d-press: 120ms;
+  --d-tooltip: 125ms;
+  --d-popover: 160ms;
+  --d-dialog: 200ms;
+  --d-sheet: 260ms;
+  --d-toast: 320ms;
+  --sidebar-w: 220px;
+  --list-w: 380px;
+  --row-h: 40px;
+  --toolbar-h: 44px;
+  --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
+}
+:root[data-theme='dark'] {
+  --n0: #161615;
+  --n1: #1b1b1a;
+  --n2: #202020;
+  --n3: #2a2a29;
+  --n4: #363635;
+  --n5: #55554f;
+  --n6: #8a8a85;
+  --n7: #b0b0aa;
+  --n8: #d3d3ce;
+  --n9: #ececea;
+  --n10: #ffffff;
+  --fg-on-accent: #fff;
+  --shadow-popover:
+    0 0 0 1px rgb(255 255 255 / 0.08), 0 4px 12px rgb(0 0 0 / 0.4), 0 12px 32px rgb(0 0 0 / 0.4);
+  --shadow-dialog:
+    0 0 0 1px rgb(255 255 255 / 0.08), 0 8px 24px rgb(0 0 0 / 0.5), 0 24px 64px rgb(0 0 0 / 0.5);
+}
+:root[data-density='compact'] {
+  --row-h: 32px;
+  --fs-md: 12.5px;
+}
+:root[data-density='comfortable'] {
+  --row-h: 48px;
+}
+:root[data-accent='indigo'] {
+  --accent: #5b5bd6;
+}
+:root[data-accent='violet'] {
+  --accent: #7c5cdb;
+}
+:root[data-accent='rose'] {
+  --accent: #d6456d;
+}
+:root[data-accent='orange'] {
+  --accent: #e0742a;
+}
+:root[data-accent='green'] {
+  --accent: #2c9a5a;
+}
+:root[data-accent='teal'] {
+  --accent: #1f9a94;
+}
+:root[data-accent='graphite'] {
+  --accent: #55554f;
+}
+:root[data-accent='blue'] {
+  --accent: #2f6df6;
+}

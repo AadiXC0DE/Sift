@@ -1,0 +1,5 @@
+From: test@example.com
+Subject: phishing-lookalike-link
+Content-Type: text/plain
+
+Fixture phishing-lookalike-link body with https://example.com link.

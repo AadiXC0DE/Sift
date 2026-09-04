@@ -1,0 +1,8 @@
+{
+  "sequence": [
+    { "id": "101", "messagesAdded": [{ "message": { "id": "mA", "threadId": "tA" } }] },
+    { "id": "102", "messagesDeleted": [{ "message": { "id": "mB", "threadId": "tB" } }] },
+    { "id": "103", "labelsAdded": [{ "message": { "id": "mC", "threadId": "tC" }, "labelIds": ["INBOX"] }] },
+    { "id": "404", "error": { "code": 404 } }
+  ]
+}

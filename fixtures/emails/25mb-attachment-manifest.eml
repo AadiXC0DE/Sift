@@ -1,0 +1,5 @@
+From: test@example.com
+Subject: 25mb-attachment-manifest
+Content-Type: text/plain
+
+Fixture 25mb-attachment-manifest body with https://example.com link.

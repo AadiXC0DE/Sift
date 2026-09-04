@@ -1,0 +1,7 @@
+product: Sift
+window: { w: 1280, h: 800 }
+scenarios:
+  - { id: S2, keys: ["cmd+q", "open"], region: [0, 38, 380, 200] }
+  - { id: S3, keys: ["j"], region: [0, 80, 380, 40] }
+  - { id: S4, keys: ["Enter"], region: [500, 100, 700, 500] }
+  - { id: S5, keys: ["e"], region: [0, 80, 380, 40] }

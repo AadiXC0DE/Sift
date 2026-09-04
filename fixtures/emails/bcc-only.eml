@@ -1,0 +1,5 @@
+From: test@example.com
+Subject: bcc-only
+Content-Type: text/plain
+
+Fixture bcc-only body with https://example.com link.
