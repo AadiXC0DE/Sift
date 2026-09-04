@@ -50,6 +50,12 @@ export function MailFrame({ messageId, html, allowed, dark }: Props) {
         }
       }
       if (e.data.type === 'hover') setHoverHref(e.data.href);
+      if (e.data.type === 'key' && typeof e.data.key === 'string') {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: e.data.key, bubbles: true }));
+      }
+      if (e.data.type === 'image') {
+        document.dispatchEvent(new CustomEvent('sift:load-remote', { detail: { messageId } }));
+      }
     };
     window.addEventListener('message', h);
     return () => window.removeEventListener('message', h);

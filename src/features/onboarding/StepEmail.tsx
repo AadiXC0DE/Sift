@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../../app/ipc/commands';
 import { useSetup } from '../../stores/setupStore';
+import { Button } from '../../ui/Button';
 
 export function StepEmail() {
   const email = useSetup((s) => s.email);
@@ -32,8 +33,8 @@ export function StepEmail() {
   }
 
   return (
-    <div style={{ width: 440, display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ fontSize: 20, fontWeight: 650 }}>Your address</div>
+    <div style={{ width: 440, display: 'flex', flexDirection: 'column', gap: 12, color: 'var(--fg)' }}>
+      <div style={{ fontSize: 20, fontWeight: 650, color: 'var(--fg)' }}>Your address</div>
       <input
         ref={inputRef}
         value={value}
@@ -51,11 +52,11 @@ export function StepEmail() {
         style={{
           height: 36,
           borderRadius: 8,
-          border: '1px solid var(--border)',
+          border: '1px solid var(--border-strong)',
           padding: '0 12px',
           fontSize: 14,
           background: 'var(--bg-raised)',
-          color: 'var(--fg-1)',
+          color: 'var(--fg)',
         }}
       />
       {showAnyway && (
@@ -72,23 +73,14 @@ export function StepEmail() {
           </button>
         </div>
       )}
-      <button
+      <Button
+        variant="primary"
         onClick={() => void cont()}
         disabled={!value.includes('@') || checking}
-        style={{
-          height: 36,
-          borderRadius: 8,
-          border: 'none',
-          background: 'var(--accent)',
-          color: '#fff',
-          fontSize: 14,
-          fontWeight: 600,
-          cursor: value.includes('@') ? 'pointer' : 'default',
-          opacity: value.includes('@') ? 1 : 0.5,
-        }}
+        style={{ height: 36, fontSize: 14, fontWeight: 600 }}
       >
         Continue
-      </button>
+      </Button>
     </div>
   );
 }

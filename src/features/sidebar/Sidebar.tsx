@@ -93,7 +93,7 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
                 borderRadius: 'var(--r-md)',
                 border: 'none',
                 cursor: 'pointer',
-                background: active ? 'color-mix(in oklab, var(--accent) 12%, transparent)' : 'transparent',
+                background: active ? 'color-mix(in oklab, var(--accent) 12%, transparent)' : undefined,
                 color: active ? 'var(--fg)' : 'var(--fg-2)',
                 fontSize: 13,
               }}
@@ -222,7 +222,7 @@ function LabelRow({ label, onClick, short }: { label: Label; onClick: () => void
         borderRadius: 'var(--r-md)',
         border: 'none',
         cursor: 'pointer',
-        background: active ? 'color-mix(in oklab, var(--accent) 12%, transparent)' : 'transparent',
+        background: active ? 'color-mix(in oklab, var(--accent) 12%, transparent)' : undefined,
         color: 'var(--fg-2)',
         fontSize: 13,
       }}

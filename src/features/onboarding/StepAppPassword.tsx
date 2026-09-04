@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../../app/ipc/commands';
 import { useSetup } from '../../stores/setupStore';
+import { Button } from '../../ui/Button';
 import { groupAppPassword, isValidAppPassword, looksLikeAppPassword } from './appPassword';
 
 const TWO_STEP_URL = 'https://myaccount.google.com/signinoptions/two-step-verification';
@@ -22,7 +23,7 @@ function Row({ n, done, children }: { n: number; done: boolean; children: React.
           fontSize: 13,
           fontWeight: 700,
           background: done ? 'var(--accent)' : 'var(--n3)',
-          color: done ? '#fff' : 'var(--fg-2)',
+          color: done ? 'var(--fg-on-accent)' : 'var(--fg-2)',
         }}
       >
         {done ? '✓' : n}
@@ -61,7 +62,6 @@ export function StepAppPassword() {
     }
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [undone, raw]);
 
   const valid = isValidAppPassword(raw);
@@ -71,7 +71,7 @@ export function StepAppPassword() {
   }
 
   return (
-    <div style={{ width: 440, display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ width: 440, display: 'flex', flexDirection: 'column', gap: 16, color: 'var(--fg)' }}>
       <div
         style={{
           alignSelf: 'flex-start',
@@ -90,72 +90,45 @@ export function StepAppPassword() {
           Change
         </button>
       </div>
-      <div style={{ fontSize: 20, fontWeight: 650 }}>Get an app password</div>
+      <div style={{ fontSize: 20, fontWeight: 650, color: 'var(--fg)' }}>Get an app password</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <Row n={1} done={touched2Step}>
-          <div style={{ fontSize: 14 }}>Turn on 2-Step Verification (skip if it&apos;s already on).</div>
+          <div style={{ fontSize: 14, color: 'var(--fg)' }}>
+            Turn on 2-Step Verification (skip if it&apos;s already on).
+          </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button
+            <Button
               onClick={() => {
                 setTouched2Step(true);
                 open(TWO_STEP_URL);
               }}
-              style={{
-                height: 32,
-                borderRadius: 8,
-                border: '1px solid var(--border)',
-                background: 'var(--bg-raised)',
-                padding: '0 12px',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
             >
               Open 2-Step Verification
-            </button>
-            <button
-              onClick={() => setTouched2Step(true)}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--fg-3)',
-                fontSize: 12,
-                cursor: 'pointer',
-              }}
-            >
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setTouched2Step(true)}>
               Already on? Skip.
-            </button>
+            </Button>
           </div>
         </Row>
         <Row n={2} done={touchedAppPw}>
-          <div style={{ fontSize: 14 }}>
+          <div style={{ fontSize: 14, color: 'var(--fg)' }}>
             Create an app password. Name it <strong>Sift</strong> and press Create.
           </div>
-          <button
+          <Button
             onClick={() => {
               setTouchedAppPw(true);
               open(APP_PASSWORDS_URL);
             }}
-            style={{
-              height: 32,
-              borderRadius: 8,
-              border: '1px solid var(--border)',
-              background: 'var(--bg-raised)',
-              padding: '0 12px',
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: 'pointer',
-              alignSelf: 'flex-start',
-            }}
+            style={{ alignSelf: 'flex-start' }}
           >
             Open App passwords
-          </button>
+          </Button>
           <div style={{ fontSize: 12, color: 'var(--fg-3)' }}>
             Google shows a 16-letter password once. Copy it.
           </div>
         </Row>
         <Row n={3} done={valid}>
-          <div style={{ fontSize: 14 }}>Paste the 16-letter password here.</div>
+          <div style={{ fontSize: 14, color: 'var(--fg)' }}>Paste the 16-letter password here.</div>
           <input
             ref={inputRef}
             value={groupAppPassword(raw) || raw}
@@ -175,13 +148,13 @@ export function StepAppPassword() {
             style={{
               height: 40,
               borderRadius: 8,
-              border: '1px solid var(--border)',
+              border: '1px solid var(--border-strong)',
               padding: '0 12px',
               fontSize: 15,
-              fontFamily: 'monospace',
+              fontFamily: 'var(--font-mono)',
               letterSpacing: '0.08em',
               background: 'var(--bg-raised)',
-              color: 'var(--fg-1)',
+              color: 'var(--fg)',
             }}
           />
           {hint && (
@@ -199,23 +172,14 @@ export function StepAppPassword() {
               </button>
             </div>
           )}
-          <button
+          <Button
+            variant="primary"
             disabled={!valid}
             onClick={() => set({ step: 'connecting', appPassword: raw })}
-            style={{
-              height: 36,
-              borderRadius: 8,
-              border: 'none',
-              background: 'var(--accent)',
-              color: '#fff',
-              fontSize: 14,
-              fontWeight: 600,
-              cursor: valid ? 'pointer' : 'default',
-              opacity: valid ? 1 : 0.5,
-            }}
+            style={{ height: 36, fontSize: 14, fontWeight: 600 }}
           >
             Connect
-          </button>
+          </Button>
           <button
             onClick={() => setShowWhy((v) => !v)}
             aria-expanded={showWhy}
