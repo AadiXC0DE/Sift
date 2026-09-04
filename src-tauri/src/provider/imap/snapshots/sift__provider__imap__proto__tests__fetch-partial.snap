@@ -1,0 +1,6 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1796
+expression: summarize(&rs)
+---
+FETCH seq=23 uid=Some(4521) flags=[] size=None modseq=None msgid=Some(1912345678901234567) thrid=None labels=[] bodies=1:2048b@Some(0) header=0 has_struct=false

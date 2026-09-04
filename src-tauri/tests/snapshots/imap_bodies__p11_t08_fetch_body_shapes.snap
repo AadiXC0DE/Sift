@@ -1,0 +1,87 @@
+---
+source: tests/imap_bodies.rs
+assertion_line: 102
+expression: rows
+---
+[
+    (
+        "Paper draft",
+        Some(
+            "donald@acme.com",
+        ),
+        true,
+        0,
+    ),
+    (
+        "Re: Kernel sync notes",
+        Some(
+            "jean@example.org",
+        ),
+        false,
+        0,
+    ),
+    (
+        "Re: Hiring loop",
+        Some(
+            "alan@initech.com",
+        ),
+        false,
+        0,
+    ),
+    (
+        "Invoice #2471",
+        Some(
+            "alan@example.org",
+        ),
+        true,
+        0,
+    ),
+    (
+        "Re: Security review",
+        Some(
+            "donald@example.org",
+        ),
+        false,
+        0,
+    ),
+    (
+        "Offsite notes",
+        Some(
+            "john@globex.io",
+        ),
+        false,
+        0,
+    ),
+    (
+        "Paper draft",
+        Some(
+            "donald@initech.com",
+        ),
+        true,
+        0,
+    ),
+    (
+        "Invoice #2475",
+        Some(
+            "donald@example.org",
+        ),
+        false,
+        0,
+    ),
+    (
+        "Compiler milestone",
+        Some(
+            "john@example.org",
+        ),
+        false,
+        1,
+    ),
+    (
+        "Re: Launch checklist",
+        Some(
+            "katherine@example.org",
+        ),
+        true,
+        0,
+    ),
+]

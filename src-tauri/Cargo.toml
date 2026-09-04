@@ -38,6 +38,7 @@ anyhow = "1"
 uuid = { version = "1", features = ["v7", "serde"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 governor = "0.6"
+log = "0.4"
 url = "2"
 futures = "0.3"
 async-trait = "0.1"
@@ -48,6 +49,7 @@ rustls-pki-types = "1"
 rustls-platform-verifier = "0.7"
 lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder", "pool", "hostname"] }
 hickory-resolver = { version = "0.26", features = ["tokio"] }
+encoding_rs = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 urlencoding = "2"

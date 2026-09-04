@@ -1,0 +1,12 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1877
+expression: summarize(&rs)
+---
+TAGGED a001 NO code=Some("AUTHENTICATIONFAILED") args=Some("AUTHENTICATIONFAILED") text="Invalid credentials (Failure)"
+TAGGED a001 NO code=Some("ALERT") args=Some("ALERT") text="Application-specific password required: https://support.google.com/accounts/answer/185833 (Failure)"
+TAGGED a001 NO code=Some("ALERT") args=Some("ALERT") text="Please log in via your web browser: https://support.google.com/mail/accounts/answer/78754 (Failure)"
+TAGGED a001 NO code=Some("ALERT") args=Some("ALERT") text="IMAP access is disabled for your domain. Please contact your domain administrator. (Failure)"
+TAGGED a001 NO code=None args=None text="Too many simultaneous connections. (Failure)"
+TAGGED a001 NO code=Some("UNAVAILABLE") args=Some("UNAVAILABLE") text="Temporary System Problem. Please try again later. (Failure)"
+TAGGED a001 NO code=Some("SERVERBUG") args=Some("SERVERBUG") text="Temporary System Problem. Please try again later. (Failure)"

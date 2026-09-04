@@ -57,6 +57,24 @@ export function App() {
     // Screenshot-pipeline driver (demo builds only emit demo:goto).
     on<{ scene: string }>('demo:goto', (p) => {
       const scene = (p as unknown as { scene: string }).scene;
+      if (scene === 'setup' || scene.startsWith('setup')) {
+        const step =
+          scene === 'setup-email'
+            ? 'email'
+            : scene === 'setup-app-password'
+              ? 'app-password'
+              : scene === 'setup-connecting'
+                ? 'connecting'
+                : 'welcome';
+        import('../stores/setupStore').then(({ useSetup }) =>
+          useSetup.setState({
+            step: step as 'welcome' | 'email' | 'app-password' | 'connecting',
+            email: 'you@gmail.com',
+            demoForce: true,
+          }),
+        );
+        return;
+      }
       const view = useView.getState();
       if (scene === 'palette') setPaletteOpen(true);
       else if (scene === 'compose') setComposeOpen({ mode: 'new' });

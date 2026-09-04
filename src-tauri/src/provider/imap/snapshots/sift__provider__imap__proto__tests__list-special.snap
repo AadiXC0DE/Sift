@@ -1,0 +1,14 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1822
+expression: summarize(&rs)
+---
+LIST flags=["\\HasNoChildren"] delim=Some('/') raw="INBOX" decoded="INBOX"
+LIST flags=["\\HasNoChildren", "\\All"] delim=Some('/') raw="[Gmail]/Alle Nachrichten" decoded="[Gmail]/Alle Nachrichten"
+LIST flags=["\\HasNoChildren", "\\Trash"] delim=Some('/') raw="[Gmail]/Papierkorb" decoded="[Gmail]/Papierkorb"
+LIST flags=["\\HasNoChildren", "\\Junk"] delim=Some('/') raw="[Gmail]/Spam" decoded="[Gmail]/Spam"
+LIST flags=["\\HasNoChildren", "\\Drafts"] delim=Some('/') raw="[Gmail]/Entw&APw-rfe" decoded="[Gmail]/Entwürfe"
+LIST flags=["\\HasNoChildren", "\\Sent"] delim=Some('/') raw="[Gmail]/Gesendet" decoded="[Gmail]/Gesendet"
+LIST flags=["\\HasChildren", "\\Noselect"] delim=Some('/') raw="[Gmail]" decoded="[Gmail]"
+LIST flags=["\\HasNoChildren"] delim=Some('/') raw="B&APw-ro" decoded="Büro"
+LIST flags=["\\HasNoChildren"] delim=Some('/') raw="Receipts" decoded="Receipts"

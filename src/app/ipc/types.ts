@@ -233,3 +233,6 @@ export const defaultSettings: Settings = {
   pollFocused: 15,
   pollBackground: 60,
 };
+
+export type SetupProgress =
+  'connecting' | 'authenticating' | 'listing' | 'syncing' | 'done' | { error: string };

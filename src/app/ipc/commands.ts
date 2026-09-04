@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { Channel } from '@tauri-apps/api/core';
 
 export async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const t0 = performance.now();
@@ -14,8 +15,25 @@ export const api = {
   accounts_list: () => call<import('./types').Account[]>('accounts_list'),
   accounts_add_google: (login_hint?: string) =>
     call<import('./types').Account>('accounts_add_google', { loginHint: login_hint }),
+  accounts_probe_email: (email: string) => call<boolean | null>('accounts_probe_email', { email }),
+  accounts_add_app_password: (
+    email: string,
+    appPassword: string,
+    onProgress: (p: import('./types').SetupProgress) => void,
+  ) => {
+    const ch = new Channel<import('./types').SetupProgress>();
+    ch.onmessage = onProgress;
+    return call<import('./types').Account>('accounts_add_app_password', {
+      email,
+      appPassword,
+      progress: ch,
+    });
+  },
+  accounts_update_app_password: (id: string, appPassword: string) =>
+    call<import('./types').Account>('accounts_update_app_password', { id, appPassword }),
   accounts_remove: (id: string) => call<void>('accounts_remove', { id }),
   accounts_update: (p: Record<string, unknown>) => call<import('./types').Account>('accounts_update', p),
+  system_info: () => call<{ version: string; oauth_available: boolean; demo: boolean }>('system_info'),
   sync_now: (account_id?: string) => call<void>('sync_now', { accountId: account_id }),
   sync_status: () => call<import('./types').SyncStatus[]>('sync_status'),
   labels_list: (account_id: string) =>
