@@ -304,12 +304,6 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
     );
   }
 
-  const darkMail = (darkSafe: boolean) => {
-    if (settings.darkModeEmails === 'always') return true;
-    if (settings.darkModeEmails === 'never') return false;
-    return darkSafe && document.documentElement.dataset.theme === 'dark';
-  };
-
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
       <div
@@ -457,66 +451,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                       </Button>
                     </div>
                   ) : body.html ? (
-                    <>
-                      {body.remoteImageCount > 0 && !body.remoteImagesAllowed && (
-                        <div
-                          style={{
-                            minHeight: 36,
-                            background: 'var(--n2)',
-                            color: 'var(--fg)',
-                            border: '1px solid var(--border)',
-                            borderRadius: 6,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 8,
-                            padding: '6px 12px',
-                            fontSize: 12,
-                            marginBottom: 8,
-                            flexWrap: 'nowrap',
-                            minWidth: 0,
-                          }}
-                        >
-                          <span style={{ color: 'var(--fg)', flex: 1, minWidth: 0, whiteSpace: 'nowrap' }}>
-                            Images hidden
-                          </span>
-                          <Button
-                            size="sm"
-                            onClick={() =>
-                              void api.remote_images_load(m.id, false).then((b) => {
-                                cacheSet(m.id, b);
-                                setBodies((p) => ({ ...p, [m.id]: b }));
-                              })
-                            }
-                          >
-                            Load
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              void api.remote_images_load(m.id, true).then((b) => {
-                                cacheSet(m.id, b);
-                                setBodies((p) => ({ ...p, [m.id]: b }));
-                              })
-                            }
-                            style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}
-                          >
-                            Always from {m.from.e}
-                          </Button>
-                        </div>
-                      )}
-                      <MailFrame
-                        messageId={m.id}
-                        html={body.html}
-                        allowed={body.remoteImagesAllowed}
-                        dark={darkMail(body.darkSafe)}
-                      />
-                      {body.trackerCount > 0 && (
-                        <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 4 }}>
-                          {body.trackerCount} trackers removed
-                        </div>
-                      )}
-                    </>
+                    <MailFrame messageId={m.id} html={body.html} allowed dark={false} />
                   ) : (
                     <pre
                       style={{

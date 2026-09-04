@@ -7,12 +7,11 @@ vi.mock('../../app/ipc/commands', () => ({
 }));
 
 describe('P5-T04 CSP + P5-T05 link policy', () => {
-  it('srcdoc contains CSP without https unless allowed', () => {
+  it('srcdoc always allows https images so HTML mail renders', () => {
     const { container } = render(<MailFrame messageId="m1" html="<p>hi</p>" allowed={false} dark={false} />);
     const iframe = container.querySelector('iframe')!;
     const doc = iframe.getAttribute('srcdoc')!;
-    expect(doc).toMatch(/img-src data: sift-att:/);
-    expect(doc).not.toMatch(/img-src data: sift-att: https:/);
+    expect(doc).toMatch(/img-src data: sift-att: https:/);
   });
   it('allowed includes https', () => {
     const { container } = render(<MailFrame messageId="m1" html="<p>hi</p>" allowed dark={false} />);

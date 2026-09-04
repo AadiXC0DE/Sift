@@ -2,7 +2,6 @@
   font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif;
   font-size: 14px;
   line-height: 1.55;
-  color: #1f1f1d;
   max-width: 100%;
   margin: 0 auto;
   padding: 4px 2px 12px;
@@ -21,15 +20,8 @@ body {
   height: auto;
 }
 .sift-mail table {
-  max-width: 100% !important;
-  width: auto !important;
+  max-width: 100%;
   border-collapse: collapse;
-}
-.sift-mail blockquote {
-  border-left: 2px solid #dcdcd8;
-  margin: 8px 0;
-  padding: 4px 12px;
-  color: #5f5f5a;
 }
 .sift-mail a {
   color: #2f6df6;
@@ -41,17 +33,11 @@ body {
   padding: 2px 10px;
   border-radius: 999px;
   background: #f4f4f2;
-  color: #8a8a85;
+  color: #5f5f5a;
   font-size: 12px;
 }
 .sift-mail .sift-quote > summary::-webkit-details-marker {
   display: none;
-}
-.sift-mail img.sift-blocked {
-  background: #f4f4f2;
-  border: 1px dashed #dcdcd8;
-  min-width: 24px;
-  min-height: 24px;
 }
 .sift-mail pre {
   white-space: pre-wrap;
@@ -61,26 +47,4 @@ body {
   padding: 12px;
   border-radius: 8px;
   overflow-x: auto;
-}
-body.dark .sift-mail,
-.sift-mail.dark {
-  color: #ececea;
-  background: #161615;
-}
-body.dark .sift-mail a,
-.sift-mail.dark a {
-  color: #8aa8ff;
-}
-body.dark .sift-mail blockquote,
-.sift-mail.dark blockquote {
-  border-color: #363635;
-  color: #b0b0aa;
-}
-body.dark .sift-mail pre,
-.sift-mail.dark pre {
-  background: #202020;
-}
-.sift-mail.smart-invert {
-  background: #161615 !important;
-  color: #ececea !important;
 }

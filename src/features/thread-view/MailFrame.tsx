@@ -11,16 +11,16 @@ interface Props {
 }
 
 // Pooled iframes (2) are managed by the parent; this component is the frame itself.
-export function MailFrame({ messageId, html, allowed, dark }: Props) {
+export function MailFrame({ messageId, html }: Props) {
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number | null>(null);
   const [hoverHref, setHoverHref] = useState<string | null>(null);
   const nonce = useMemo(() => Math.random().toString(36).slice(2), []);
 
   const srcdoc = useMemo(() => {
-    const csp = `default-src 'none'; img-src data: sift-att:${allowed ? ' https:' : ''}; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src 'none'; form-action 'none'; base-uri 'none'`;
-    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><style>${mailCss}</style></head><body class="sift-mail${dark ? ' dark' : ''}">${html ?? ''}<script nonce="${nonce}">${buildShim(nonce)}</script></body></html>`;
-  }, [html, allowed, dark, nonce]);
+    const csp = `default-src 'none'; img-src data: sift-att: https:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src 'none'; form-action 'none'; base-uri 'none'`;
+    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><style>${mailCss}</style></head><body class="sift-mail">${html ?? ''}<script nonce="${nonce}">${buildShim(nonce)}</script></body></html>`;
+  }, [html, nonce]);
 
   useEffect(() => {
     setHeight(null);
@@ -65,7 +65,7 @@ export function MailFrame({ messageId, html, allowed, dark }: Props) {
     <div style={{ position: 'relative' }}>
       <iframe
         ref={ref}
-        title={`message-${messageId}`}
+        title="Email"
         sandbox="allow-scripts"
         srcDoc={srcdoc}
         style={{
