@@ -1,6 +1,5 @@
 use ammonia::Builder;
 use base64::Engine;
-use std::collections::HashSet;
 
 pub struct SanitizeOut {
     pub html: String,
@@ -9,54 +8,7 @@ pub struct SanitizeOut {
     pub dark_safe: bool,
 }
 
-fn tracker_hosts() -> HashSet<String> {
-    include_str!("../../assets/trackers.txt")
-        .lines()
-        .map(|l| l.trim().to_lowercase())
-        .filter(|l| !l.is_empty())
-        .collect()
-}
-
-fn is_tracker(src: &str, hosts: &HashSet<String>) -> bool {
-    let lower = src.to_lowercase();
-    if lower.contains("/o.gif") || lower.contains("/open.php") {
-        return true;
-    }
-    // host match
-    if let Ok(url) = url::Url::parse(src) {
-        if let Some(h) = url.host_str() {
-            let h = h.to_lowercase();
-            for pat in hosts {
-                let p = pat.trim_matches('.');
-                if pat.starts_with('.') || pat.starts_with("*.") {
-                    if h.ends_with(p) || h == p.trim_start_matches("*.") {
-                        return true;
-                    }
-                } else if h == *pat || h.ends_with(&format!(".{pat}")) {
-                    return true;
-                }
-                if (h.starts_with("open.")
-                    || h.starts_with("click.")
-                    || h.starts_with("pixel.")
-                    || h.starts_with("track."))
-                    && h.contains('.')
-                {
-                    return true;
-                }
-            }
-        }
-    } else {
-        for pat in ["open.", "click.", "pixel.", "track.", "/o.gif", "/open.php"] {
-            if lower.contains(pat) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
-    let hosts = tracker_hosts();
     // First pass: ammonia with custom config
     let mut builder = Builder::default();
     builder
@@ -142,78 +94,24 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
     // style filtering is done post-pass
     let mut html = builder.clean(raw_html).to_string();
 
-    // Post-pass with a lightweight string walk for img/link/style rules.
-    // We do targeted rewrites without a full DOM lib to keep build light.
     let mut remote_images = 0i64;
-    let mut trackers = 0i64;
+    let trackers = 0i64;
 
     // Rewrite cid: -> sift-att:// (strip <angle brackets> Gmail puts on Content-ID)
     html = rewrite_cid_srcs(html, message_id);
 
-    // Process <img> tags: detect remote vs tracker
-    let mut out = String::with_capacity(html.len());
+    // Keep every image. Rendering wins over tracker stripping.
     let mut rest = html.as_str();
     while let Some(start) = rest.find("<img") {
-        out.push_str(&rest[..start]);
         let after = &rest[start..];
         let end = after.find('>').map(|i| i + 1).unwrap_or(after.len());
         let tag = &after[..end];
         rest = &after[end..];
-        // extract src
         let src = extract_attr(tag, "src").unwrap_or_default();
-        let w = extract_attr(tag, "width")
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0);
-        let h = extract_attr(tag, "height")
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0);
-        let is_remote = src.starts_with("http://") || src.starts_with("https://");
-        let tiny = (w > 0 && w <= 2) && (h > 0 && h <= 2);
-        if is_remote && (tiny || is_tracker(&src, &hosts)) {
-            trackers += 1;
-            continue; // drop
-        }
-        if is_remote {
+        if src.starts_with("http://") || src.starts_with("https://") {
             remote_images += 1;
-            // move src -> data-sift-src with 1x1 placeholder
-            let placeholder =
-                "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
-            let new_tag = tag
-                .replacen(
-                    &format!("src=\"{src}\""),
-                    &format!(
-                        "data-sift-src=\"{src}\" src=\"{placeholder}\" class=\"sift-blocked\""
-                    ),
-                    1,
-                )
-                .replacen(
-                    &format!("src='{src}'"),
-                    &format!("data-sift-src='{src}' src='{placeholder}' class='sift-blocked'"),
-                    1,
-                );
-            // if src had no quotes (rare), inject
-            if new_tag == tag {
-                out.push_str(&tag.replacen(
-                    "<img",
-                    &format!(
-                        "<img data-sift-src=\"{src}\" src=\"{placeholder}\" class=\"sift-blocked\""
-                    ),
-                    1,
-                ));
-            } else {
-                out.push_str(&new_tag);
-            }
-            continue;
         }
-        // data: images over 512KB -> drop
-        if src.starts_with("data:") && src.len() > 512 * 1024 {
-            trackers += 1;
-            continue;
-        }
-        out.push_str(tag);
     }
-    out.push_str(rest);
-    html = out;
 
     // Force links target blank (ammonia link_rel set; ensure target)
     html = html.replace("<a ", "<a target=\"_blank\" ");
@@ -421,12 +319,10 @@ mod tests {
     #[test]
     fn p3_t07_remote_and_tracker() {
         let out = sanitize("m1", "<img src=\"https://example.com/photo.jpg\" width=\"100\" height=\"50\"><img src=\"https://open.tracker.com/o.gif\" width=\"1\" height=\"1\">");
-        assert!(out
-            .html
-            .contains("data-sift-src=\"https://example.com/photo.jpg\""));
-        assert!(!out.html.contains("open.tracker.com"));
-        assert_eq!(out.tracker_count_plus(), 1);
-        assert_eq!(out.remote_images, 1);
+        assert!(out.html.contains("https://example.com/photo.jpg"));
+        assert!(out.html.contains("open.tracker.com"));
+        assert_eq!(out.trackers, 0);
+        assert_eq!(out.remote_images, 2);
     }
     #[test]
     fn p3_t08_dark_safe() {
@@ -445,10 +341,5 @@ mod tests {
         assert!(out.html.contains("background-image:url("));
         assert!(out.html.contains("<style"));
         assert!(out.html.contains(".x{color:red}") || out.html.contains(".x { color: red }"));
-    }
-    impl SanitizeOut {
-        fn tracker_count_plus(&self) -> i64 {
-            self.trackers
-        }
     }
 }

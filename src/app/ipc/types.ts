@@ -226,7 +226,7 @@ export const defaultSettings: Settings = {
   notifications: 'inbox',
   sound: 'subtle',
   dockBadge: 'unread',
-  remoteImages: 'ask',
+  remoteImages: 'always',
   stripTrackers: true,
   offlineBodyCache: '2y',
   attachmentCacheSize: '2GB',

@@ -368,7 +368,7 @@ impl Default for Settings {
             notifications: "inbox".into(),
             sound: "subtle".into(),
             dock_badge: "unread".into(),
-            remote_images: "ask".into(),
+            remote_images: "always".into(),
             strip_trackers: true,
             offline_body_cache: "2y".into(),
             attachment_cache_size: "2GB".into(),
