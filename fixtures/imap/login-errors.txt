@@ -1,0 +1,7 @@
+a001 NO [AUTHENTICATIONFAILED] Invalid credentials (Failure)
+a001 NO [ALERT] Application-specific password required: https://support.google.com/accounts/answer/185833 (Failure)
+a001 NO [ALERT] Please log in via your web browser: https://support.google.com/mail/accounts/answer/78754 (Failure)
+a001 NO [ALERT] IMAP access is disabled for your domain. Please contact your domain administrator. (Failure)
+a001 NO Too many simultaneous connections. (Failure)
+a001 NO [UNAVAILABLE] Temporary System Problem. Please try again later. (Failure)
+a001 NO [SERVERBUG] Temporary System Problem. Please try again later. (Failure)

@@ -29,7 +29,10 @@ async fn p6_t07_offline_order() {
     let dir = tempfile::tempdir().unwrap();
     let db = sift::db::Db::open(dir.path()).unwrap();
     let acc = db.new_account("a@x", None, None).await.unwrap();
-    let client = sift::gmail::client::GmailClient::new("t".into());
+    let provider = sift::provider::gmail::api::GmailApiProvider::new(
+        acc.id.clone(),
+        sift::provider::gmail::client::GmailClient::new("t".into()),
+    );
     let o1 = db
         .outbox_enqueue(
             &acc.id,
@@ -52,17 +55,17 @@ async fn p6_t07_offline_order() {
         .unwrap();
     assert!(o1 < o2);
     // offline: no drain
-    assert!(!sift::outbox::drain_one(&db, &client, &acc.id, false)
+    assert!(!sift::outbox::drain_one(&db, &provider, &acc.id, false)
         .await
         .unwrap());
     // online drains in order
-    assert!(sift::outbox::drain_one(&db, &client, &acc.id, true)
+    assert!(sift::outbox::drain_one(&db, &provider, &acc.id, true)
         .await
         .unwrap());
-    assert!(sift::outbox::drain_one(&db, &client, &acc.id, true)
+    assert!(sift::outbox::drain_one(&db, &provider, &acc.id, true)
         .await
         .unwrap());
-    assert!(!sift::outbox::drain_one(&db, &client, &acc.id, true)
+    assert!(!sift::outbox::drain_one(&db, &provider, &acc.id, true)
         .await
         .unwrap());
     assert_eq!(order.lock().unwrap().len(), 2);

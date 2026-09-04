@@ -1,0 +1,20 @@
+* 23 FETCH (UID 4521 FLAGS (\Seen) INTERNALDATE "12-Aug-2026 09:14:03 +0000" RFC822.SIZE 18432 MODSEQ (89123) X-GM-MSGID 1912345678901234567 X-GM-THRID 1912345678901234567 X-GM-LABELS (\Inbox \Important "Weekly Reports" "Clients/Acme") BODYSTRUCTURE (("text" "plain" ("charset" "utf-8") NIL NIL "quoted-printable" 312 12 NIL NIL NIL NIL)("text" "html" ("charset" "utf-8") NIL NIL "quoted-printable" 2048 40 NIL NIL NIL NIL) "alternative" ("boundary" "abc123") NIL NIL NIL) BODY[HEADER.FIELDS (FROM TO CC BCC REPLY-TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST)] {168}
+From: Ada Lovelace <ada@acme.com>
+To: Ben Carter <ben@globex.io>
+Subject: Launch checklist
+Date: Wed, 12 Aug 2026 09:14:03 +0000
+Message-ID: <launch-1@acme.com>
+
+)
+* 24 FETCH (UID 4522 FLAGS (\Flagged) INTERNALDATE "12-Aug-2026 10:02:44 +0000" RFC822.SIZE 45200 MODSEQ (89130) X-GM-MSGID 1912345678901234588 X-GM-THRID 1912345678901234001 X-GM-LABELS (\Starred "Büro" "🧾 Receipts") BODYSTRUCTURE (("text" "html" ("charset" "utf-8") NIL NIL "quoted-printable" 900 22 NIL NIL NIL NIL)("application" "pdf" ("name" "contract.pdf") NIL NIL "base64" 2100 NIL ("attachment" ("filename" "contract.pdf")) NIL NIL)("image" "png" ("name" "row14.png") "<ii_row14>" NIL "base64" 4520 NIL NIL NIL NIL) "mixed" ("boundary" "xyz789") NIL NIL NIL) BODY[HEADER.FIELDS (FROM TO CC BCC REPLY-TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST)] {351}
+From: Linus Torvalds <linus@globex.io>
+To: Ada Lovelace <ada@acme.com>
+Subject: Re: Q3 numbers
+Date: Wed, 12 Aug 2026 10:02:44 +0000
+Message-ID: <q3-re@globex.io>
+In-Reply-To: <q3@acme.com>
+References: <q3@acme.com>
+List-Unsubscribe: <https://example.com/unsub>, <mailto:leave@example.com>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+
+)

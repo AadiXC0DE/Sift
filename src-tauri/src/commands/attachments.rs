@@ -80,19 +80,16 @@ async fn ensure_downloaded(
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
         return Ok((ps, mime));
     }
-    // fetch
-    let client = state
-        .client_for(&message_id_by_att(state, attachment_id).await?)
+    // fetch (transport locator: Gmail attachmentId, or the IMAP section path
+    // stored in part_id when gmail_att_id is NULL)
+    let provider = state
+        .provider_for(&message_id_by_att(state, attachment_id).await?)
         .await?;
-    let att_id = gmail_att_id.ok_or_else(|| SiftError::app("nodata", "no data", true))?;
-    let att = client.get_attachment(&message_id, &att_id).await?;
-    let bytes = att
-        .data
-        .map(|d| {
-            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE, d)
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
+    let locator = gmail_att_id.as_deref().unwrap_or(&part_id);
+    if locator.is_empty() {
+        return Err(SiftError::app("nodata", "no data", true));
+    }
+    let bytes = provider.fetch_attachment(&message_id, locator).await?;
     let dir = state.data_dir.join("attachments");
     let _ = std::fs::create_dir_all(&dir);
     let p = dir.join(format!("{attachment_id}-bin"));

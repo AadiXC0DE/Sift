@@ -14,19 +14,11 @@ pub async fn drafts_upsert(state: State<'_, AppState>, draft: Draft) -> Result<D
 
 #[tauri::command]
 pub async fn drafts_delete(state: State<'_, AppState>, local_id: String) -> Result<(), SiftError> {
-    // delete remote if exists
+    // delete remote if exists (best effort; local row is the truth)
     if let Ok(Some(d)) = state.db.drafts_get(&local_id).await {
         if let Some(rid) = d.remote_draft_id {
-            if let Ok(c) = state.client_for(&d.account_id).await {
-                let base = std::env::var("SIFT_GMAIL_BASE")
-                    .unwrap_or_else(|_| "https://gmail.googleapis.com/gmail/v1/users/me".into());
-                let _ = state
-                    .http
-                    .delete(format!("{base}/drafts/{rid}"))
-                    .bearer_auth("x")
-                    .send()
-                    .await;
-                let _ = &c;
+            if let Ok(p) = state.provider_for(&d.account_id).await {
+                let _ = p.draft_delete(&rid).await;
             }
         }
     }

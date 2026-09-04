@@ -1,5 +1,5 @@
 use crate::errors::SiftError;
-use crate::gmail::types::*;
+use crate::provider::gmail::types::*;
 use governor::{Quota, RateLimiter};
 use std::num::NonZeroU32;
 use std::sync::Arc;

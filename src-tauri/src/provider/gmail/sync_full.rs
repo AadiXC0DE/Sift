@@ -1,6 +1,7 @@
-use crate::db::{messages::MsgUpsert, Db};
+use super::client::GmailClient;
+use crate::db::messages::MsgUpsert;
 use crate::dto::Label;
-use crate::gmail::client::GmailClient;
+use crate::provider::{Cursor, SyncSink};
 use anyhow::Result;
 
 fn sys_order(name: &str, i: usize) -> i64 {
@@ -16,31 +17,36 @@ fn sys_order(name: &str, i: usize) -> i64 {
 }
 
 pub async fn run_full_sync(
-    db: &Db,
+    sink: &dyn SyncSink,
     account_id: &str,
     client: &GmailClient,
-    emit: impl Fn(crate::dto::SyncStatus) + Send + Sync + 'static,
-) -> Result<()> {
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<Cursor> {
     // 1. profile FIRST (historyId before listing)
     let profile = client
         .get_profile()
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let start_hid = profile.history_id.clone();
-    emit(crate::dto::SyncStatus {
-        account_id: account_id.into(),
-        phase: "profile".into(),
-        done: 0,
-        total: 0,
-        last_error: None,
-    });
+    let progress = |phase: &str, done: i64, total: i64| {
+        sink.progress(crate::dto::SyncStatus {
+            account_id: account_id.into(),
+            phase: phase.into(),
+            done,
+            total,
+            last_error: None,
+        })
+    };
+    progress("profile", 0, 0);
     // 2. labels
     let labels = client
         .list_labels()
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    for (i, l) in labels.iter().enumerate() {
-        db.labels_upsert(&Label {
+    let dto_labels: Vec<Label> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, l)| Label {
             account_id: account_id.into(),
             id: l.id.clone(),
             name: l.name.clone(),
@@ -56,8 +62,8 @@ pub async fn run_full_sync(
             total_count: 0,
             sort_order: sys_order(&l.id, i),
         })
-        .await?;
-    }
+        .collect();
+    sink.upsert_labels(&dto_labels).await?;
     // 3. list ids
     let mut page: Option<String> = None;
     let mut ids: Vec<(String, String)> = vec![];
@@ -71,30 +77,24 @@ pub async fn run_full_sync(
         }
         // insert stubs progressively
         page = resp.next_page_token;
-        emit(crate::dto::SyncStatus {
-            account_id: account_id.into(),
-            phase: "listing".into(),
-            done: ids.len() as i64,
-            total: ids.len() as i64,
-            last_error: None,
-        });
+        progress("listing", ids.len() as i64, ids.len() as i64);
         if page.is_none() {
             break;
         }
     }
     // insert stubs
     for (id, tid) in &ids {
-        let (id, tid, aid) = (id.clone(), tid.clone(), account_id.to_string());
-        db.write(move |c| {
-      c.execute("INSERT OR IGNORE INTO messages (id,account_id,thread_id,internal_date,body_state) VALUES (?,?,?,0,'none')", rusqlite::params![id, aid, tid])?;
-      Ok(())
-    }).await?;
+        sink.insert_stub(id, account_id, tid).await?;
     }
     // 4. metadata newest-first in batches of 50 (Gmail returns newest first already)
     let total = ids.len() as i64;
     let mut done = 0i64;
+
     // newest-first: reverse? list returns newest first; keep order
     for chunk in ids.chunks(50) {
+        if cancel.is_cancelled() {
+            return Err(anyhow::anyhow!("cancelled"));
+        }
         let chunk_ids: Vec<String> = chunk.iter().map(|(i, _)| i.clone()).collect();
         let results = client
             .batch_get_messages(&chunk_ids, "metadata")
@@ -114,7 +114,7 @@ pub async fn run_full_sync(
                         .collect();
                     let get = |n: &str| hdrs.get(n).cloned().unwrap_or_default();
                     let from_raw = get("from");
-                    let parsed = crate::gmail::mime::parse_addrs(&from_raw);
+                    let parsed = super::mime::parse_addrs(&from_raw);
                     let up = MsgUpsert {
                         id: id.clone(),
                         account_id: account_id.into(),
@@ -149,44 +149,22 @@ pub async fn run_full_sync(
                         is_sent_by_me: labels.contains(&"SENT".to_string()),
                         label_ids: labels,
                     };
-                    let _ = db.messages_upsert(up).await;
+                    let _ = sink.upsert_message(up).await;
                 }
                 Err(crate::errors::SiftError::NotFound(_)) => {
-                    // added then deleted: skip
-                    let (id, aid, tid) = (id.clone(), account_id.to_string(), tid.clone());
-                    let _ = db
-                        .write(move |c| {
-                            c.execute("DELETE FROM messages WHERE id=?", rusqlite::params![id])?;
-                            Ok(())
-                        })
-                        .await;
-                    let _ = (aid, tid);
+                    // added then deleted: drop the stub so no ghost thread remains.
+                    let _ = sink.delete_message(id, account_id, tid).await;
                 }
                 Err(_) => {}
             }
         }
         done += chunk.len() as i64;
-        emit(crate::dto::SyncStatus {
-            account_id: account_id.into(),
-            phase: "metadata".into(),
-            done,
-            total,
-            last_error: None,
-        });
+        progress("metadata", done, total);
     }
-    db.accounts_set_history(account_id, &start_hid, crate::db::now_ms())
-        .await?;
-    db.accounts_set_state(account_id, "partial").await?;
-    db.write({
-        let aid = account_id.to_string();
-        move |c| {
-            c.execute(
-                "INSERT INTO sync_log (account_id,at,kind,detail) VALUES (?,?,?,?)",
-                rusqlite::params![aid, crate::db::now_ms(), "full", "done"],
-            )?;
-            Ok(())
-        }
+    sink.set_history_id(account_id, &start_hid).await?;
+    sink.set_sync_state(account_id, "partial").await?;
+    sink.log_sync(account_id, "full", "done").await?;
+    Ok(Cursor::Gmail {
+        history_id: start_hid,
     })
-    .await?;
-    Ok(())
 }

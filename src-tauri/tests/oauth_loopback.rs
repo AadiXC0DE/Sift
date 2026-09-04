@@ -4,7 +4,7 @@ use std::collections::HashMap;
 #[tokio::test]
 async fn p2_t02_loopback_state_and_timeout() {
     // Start a raw listener mimicking oauth::run_loopback behavior: use the real start_flow
-    let flow = sift::gmail::oauth::start_flow().unwrap();
+    let flow = sift::provider::gmail::oauth::start_flow().unwrap();
     let port = flow.port;
     let state = flow.state.clone();
     // wrong state -> 400 and flow keeps waiting
@@ -21,7 +21,7 @@ async fn p2_t02_loopback_state_and_timeout() {
     assert_eq!(code, "abc");
 
     // timeout
-    let flow2 = sift::gmail::oauth::start_flow().unwrap();
+    let flow2 = sift::provider::gmail::oauth::start_flow().unwrap();
     let e = flow2.wait(1).await.unwrap_err();
     let v = serde_json::to_value(&e).unwrap();
     assert_eq!(v["code"], "oauth_timeout");

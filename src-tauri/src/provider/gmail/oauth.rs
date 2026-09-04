@@ -109,7 +109,7 @@ async fn run_loopback(
     mut cancel: tokio::sync::oneshot::Receiver<()>,
 ) {
     let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
-    let success_html = include_str!("../../assets/oauth-done.html");
+    let success_html = include_str!("../../../assets/oauth-done.html");
     loop {
         tokio::select! {
           _ = &mut cancel => { let _ = done.send(Err(SiftError::app("oauth_cancelled", "cancelled", false))); return; }

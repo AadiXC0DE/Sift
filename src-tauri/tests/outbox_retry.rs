@@ -40,9 +40,12 @@ async fn p6_t06_retry_then_done_and_fail() {
         )
         .await
         .unwrap();
-    let client = sift::gmail::client::GmailClient::new("t".into());
+    let provider = sift::provider::gmail::api::GmailApiProvider::new(
+        acc.id.clone(),
+        sift::provider::gmail::client::GmailClient::new("t".into()),
+    );
     // drain until done (retries inside client send_with_retry handle 500s transparently, so one drain_one succeeds)
-    sift::outbox::drain_one(&db, &client, &acc.id, true)
+    sift::outbox::drain_one(&db, &provider, &acc.id, true)
         .await
         .unwrap();
     let state: String = db
@@ -86,8 +89,11 @@ async fn p6_t06_eight_failures_failed() {
         .await
         .unwrap();
     db.outbox_set(op, "pending", 7, 0, None).await.unwrap();
-    let client = sift::gmail::client::GmailClient::new("t".into());
-    let _ = sift::outbox::drain_one(&db, &client, &acc.id, true).await;
+    let provider = sift::provider::gmail::api::GmailApiProvider::new(
+        acc.id.clone(),
+        sift::provider::gmail::client::GmailClient::new("t".into()),
+    );
+    let _ = sift::outbox::drain_one(&db, &provider, &acc.id, true).await;
     let state: String = db
         .read(move |c| {
             Ok(c.query_row(

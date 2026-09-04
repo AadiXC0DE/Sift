@@ -4,10 +4,10 @@ pub mod db;
 pub mod demo;
 pub mod dto;
 pub mod errors;
-pub mod gmail;
 pub mod logging;
 pub mod notify;
 pub mod outbox;
+pub mod provider;
 pub mod render;
 pub mod runtime;
 pub mod scheduler;
@@ -147,8 +147,8 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
                         .await
                         .map_err(|e| e.to_string())?
                         .ok_or_else(|| "no message".to_string())?;
-                    let client = state.client_for(&aid).await.map_err(|e| e.to_string())?;
-                    crate::uri_scheme::resolve_attachment(&state.db, &client, &mid, &part)
+                    let provider = state.provider_for(&aid).await.map_err(|e| e.to_string())?;
+                    crate::uri_scheme::resolve_attachment(&state.db, &*provider, &mid, &part)
                         .await
                         .map_err(|e| e.to_string())
                 });

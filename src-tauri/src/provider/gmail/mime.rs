@@ -1,4 +1,4 @@
-use crate::gmail::types::{Message, MessagePart};
+use crate::provider::gmail::types::{Message, MessagePart};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 
 #[derive(Debug, Clone, Default)]

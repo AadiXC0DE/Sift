@@ -1,29 +1,18 @@
-use crate::db::{messages::MsgUpsert, Db};
-use crate::gmail::client::GmailClient;
+use super::client::GmailClient;
+use crate::db::messages::MsgUpsert;
+use crate::provider::{PartialOutcome, SyncSink};
 use anyhow::Result;
 
-pub struct PartialOut {
-    pub changed_threads: Vec<(String, String)>,
-    pub new_inbox: Vec<(String, String, String, String)>,
-}
-
 pub async fn run_partial_sync(
-    db: &Db,
+    sink: &dyn SyncSink,
     account_id: &str,
     client: &GmailClient,
-) -> Result<PartialOut> {
-    let acc = db
-        .accounts_get(account_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("no account"))?;
-    let mut start = acc.history_id.clone().unwrap_or_default();
+    start_history: &str,
+) -> Result<PartialOutcome> {
+    let mut start = start_history.to_string();
     if start.is_empty() {
-        // no cursor: fall back to reconcile
-        super::reconcile::run_reconcile(db, account_id, client).await?;
-        return Ok(PartialOut {
-            changed_threads: vec![],
-            new_inbox: vec![],
-        });
+        // No cursor: the caller reconciles, then continues from the new id.
+        return Ok(PartialOutcome::NeedsFull);
     }
     let mut changed: Vec<(String, String)> = vec![];
     let mut new_inbox = vec![];
@@ -32,11 +21,8 @@ pub async fn run_partial_sync(
         let resp = match client.history_list(&start, page.as_deref()).await {
             Ok(r) => r,
             Err(crate::errors::SiftError::NotFound(_)) => {
-                super::reconcile::run_reconcile(db, account_id, client).await?;
-                return Ok(PartialOut {
-                    changed_threads: changed,
-                    new_inbox,
-                });
+                // historyId too old (~1 week): caller reconciles and retries.
+                return Ok(PartialOutcome::NeedsFull);
             }
             Err(e) => return Err(anyhow::anyhow!(e.to_string())),
         };
@@ -57,7 +43,7 @@ pub async fn run_partial_sync(
                                 .collect();
                             let get = |n: &str| hdrs.get(n).cloned().unwrap_or_default();
                             let from_raw = get("from");
-                            let parsed = crate::gmail::mime::parse_addrs(&from_raw);
+                            let parsed = super::mime::parse_addrs(&from_raw);
                             let internal_date = m
                                 .internal_date
                                 .as_deref()
@@ -91,7 +77,7 @@ pub async fn run_partial_sync(
                                 label_ids: labels.clone(),
                             };
                             let tid = a.message.thread_id.clone();
-                            let _ = db.messages_upsert(up).await;
+                            let _ = sink.upsert_message(up).await;
                             changed.push((account_id.to_string(), tid.clone()));
                             if labels.contains(&"INBOX".into()) && labels.contains(&"UNREAD".into())
                             {
@@ -112,8 +98,8 @@ pub async fn run_partial_sync(
             if let Some(deleted) = rec.deleted {
                 for d in deleted {
                     // find thread then delete
-                    if let Some((a, t)) = db.message_thread(&d.message.id).await? {
-                        db.messages_delete(&d.message.id, &a, &t).await?;
+                    if let Some((a, t)) = sink.message_thread(&d.message.id).await? {
+                        sink.delete_message(&d.message.id, &a, &t).await?;
                         changed.push((a, t));
                     }
                 }
@@ -129,20 +115,9 @@ pub async fn run_partial_sync(
                 if let Ok(m) = client.get_message_meta(&chg.message.id).await {
                     let labels = m.label_ids.clone().unwrap_or_default();
                     // compute add/remove vs DB
-                    let cur: Vec<String> = db
-                        .read({
-                            let mid = chg.message.id.clone();
-                            move |c| {
-                                Ok(c.query_row(
-                                    "SELECT label_ids FROM messages WHERE id=?",
-                                    rusqlite::params![mid],
-                                    |r| r.get::<_, String>(0),
-                                )
-                                .unwrap_or("[]".into()))
-                            }
-                        })
+                    let cur: Vec<String> = sink
+                        .message_labels(&chg.message.id)
                         .await
-                        .map(|j| serde_json::from_str(&j).unwrap_or_default())
                         .unwrap_or_default();
                     let add: Vec<String> = labels
                         .iter()
@@ -155,8 +130,9 @@ pub async fn run_partial_sync(
                         .cloned()
                         .collect();
                     if !add.is_empty() || !remove.is_empty() {
-                        if let Ok((a, t)) =
-                            db.apply_label_change(&chg.message.id, &add, &remove).await
+                        if let Ok((a, t)) = sink
+                            .apply_label_change(&chg.message.id, &add, &remove)
+                            .await
                         {
                             changed.push((a, t));
                         }
@@ -170,9 +146,8 @@ pub async fn run_partial_sync(
             break;
         }
     }
-    db.accounts_set_history(account_id, &start, crate::db::now_ms())
-        .await?;
-    Ok(PartialOut {
+    sink.set_history_id(account_id, &start).await?;
+    Ok(PartialOutcome::Synced {
         changed_threads: changed,
         new_inbox,
     })

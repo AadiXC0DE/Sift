@@ -27,7 +27,7 @@ async fn p3_t04_ratelimit_window() {
         })
         .mount(&server)
         .await;
-    let c = sift::gmail::client::GmailClient::new("t".into());
+    let c = sift::provider::gmail::client::GmailClient::new("t".into());
     // 60 sequential 5-unit calls = 300 units; at 200/s must take >= ~1.2s
     let t0 = std::time::Instant::now();
     for _ in 0..60 {

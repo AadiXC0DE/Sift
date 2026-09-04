@@ -6,6 +6,8 @@ fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         .lock()
         .unwrap()
 }
+use sift::provider::Provider;
+
 // P3-T13: history 404 triggers reconcile
 #[tokio::test]
 async fn p3_t13_reconcile_on_404() {
@@ -69,8 +71,18 @@ async fn p3_t13_reconcile_on_404() {
       wiremock::ResponseTemplate::new(200).set_body_string(out).insert_header("content-type", format!("multipart/mixed; boundary={b}"))
     })
     .mount(&server).await;
-    let client = sift::gmail::client::GmailClient::new("t".into());
-    sift::sync::partial::run_partial_sync(&db, &acc.id, &client)
+    let provider = sift::provider::gmail::api::GmailApiProvider::new(
+        acc.id.clone(),
+        sift::provider::gmail::client::GmailClient::new("t".into()),
+    );
+    let sink = sift::provider::DbSink::new(db.clone());
+    provider
+        .partial_sync(
+            &sift::provider::Cursor::Gmail {
+                history_id: "old".into(),
+            },
+            &sink,
+        )
         .await
         .unwrap();
     // local extra deleted, server extra inserted

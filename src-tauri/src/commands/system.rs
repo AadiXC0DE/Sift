@@ -26,7 +26,7 @@ pub async fn sync_now(
             .collect(),
     };
     for aid in ids {
-        let client = match state.client_for(&aid).await {
+        let provider = match state.provider_for(&aid).await {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -34,9 +34,54 @@ pub async fn sync_now(
         let aid2 = aid.clone();
         let app2 = app.clone();
         tokio::spawn(async move {
-            if let Ok(out) = crate::sync::partial::run_partial_sync(&db, &aid2, &client).await {
-                let tids: Vec<String> = out
-                    .changed_threads
+            use crate::provider::{Cursor, PartialOutcome};
+            let raw: Option<String> = db
+                .accounts_get(&aid2)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|a| a.history_id);
+            let cursor = Cursor::parse(raw.as_deref().unwrap_or(""));
+            let sink = crate::provider::DbSink::new(db.clone());
+            let outcome = provider.partial_sync(&cursor, &sink).await;
+            // Manual sync recovers like the poll loop (reconcile REST,
+            // rebuild IMAP) instead of surfacing cursor internals.
+            let outcome = match outcome {
+                Ok(PartialOutcome::NeedsFull) => {
+                    if provider.kind() == crate::provider::ProviderKind::GmailImap {
+                        let cancel = tokio_util::sync::CancellationToken::new();
+                        match provider.full_sync(&sink, cancel).await {
+                            Ok(c) => {
+                                let _ = db
+                                    .accounts_set_history(&aid2, &c.render(), crate::db::now_ms())
+                                    .await;
+                                Ok(PartialOutcome::Synced {
+                                    changed_threads: vec![],
+                                    new_inbox: vec![],
+                                })
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        // REST providers reconcile internally on an empty
+                        // cursor, then continue from the fresh history id.
+                        provider
+                            .partial_sync(
+                                &Cursor::Gmail {
+                                    history_id: String::new(),
+                                },
+                                &sink,
+                            )
+                            .await
+                    }
+                }
+                other => other,
+            };
+            if let Ok(PartialOutcome::Synced {
+                changed_threads, ..
+            }) = outcome
+            {
+                let tids: Vec<String> = changed_threads
                     .iter()
                     .filter(|(a, _)| a == &aid2)
                     .map(|(_, t)| t.clone())

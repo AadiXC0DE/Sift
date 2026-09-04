@@ -1,0 +1,15 @@
+* FLAGS (\Answered \Flagged \Draft \Deleted \Seen $NotPhishing $Phishing)
+* OK [PERMANENTFLAGS (\Answered \Flagged \Draft \Deleted \Seen $NotPhishing $Phishing \*)] Flags permitted.
+* OK [UIDVALIDITY 987654] UIDs valid.
+* OK [UIDNEXT 4523] Predicted next UID.
+* OK [HIGHESTMODSEQ 89123] Highest mod-sequence.
+* 412 EXISTS
+* 0 RECENT
+* OK [READ-WRITE] Select completed.
+* STATUS "[Gmail]/Alle Nachrichten" (MESSAGES 412 UIDNEXT 4523 UIDVALIDITY 987654 HIGHESTMODSEQ 89123)
+* SEARCH 1 2 3 4521 4522
+* 4523 EXISTS
+* 2 EXPUNGE
+* 24 FETCH (UID 4522 FLAGS (\Seen \Flagged) MODSEQ (89140))
+a142 OK [APPENDUID 987654 4523] APPEND completed.
+a143 OK [COPYUID 987654 4521:4522 9001:9002] COPY completed.

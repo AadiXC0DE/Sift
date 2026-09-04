@@ -1,5 +1,5 @@
 use crate::db::Db;
-use crate::gmail::client::GmailClient;
+use crate::provider::Provider;
 
 fn bad_id(s: &str) -> bool {
     s.is_empty() || s.contains("..") || s.contains('/') || s.contains('\\')
@@ -8,7 +8,7 @@ fn bad_id(s: &str) -> bool {
 /// Resolve sift-att message/part to bytes + mime.
 pub async fn resolve_attachment(
     db: &Db,
-    client: &GmailClient,
+    provider: &dyn Provider,
     message_id: &str,
     part_id: &str,
 ) -> Result<(Vec<u8>, String), crate::errors::SiftError> {
@@ -38,10 +38,15 @@ pub async fn resolve_attachment(
         }
     }
     if let Some(att_id) = att_id_opt {
-        let att = client.get_attachment(message_id, &att_id).await?;
-        if let Some(d) = att.data {
-            let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE, d)
-                .unwrap_or_default();
+        // Transport locator: Gmail attachmentId, or the IMAP section path
+        // stored in part_id (gmail_att_id is NULL for IMAP rows).
+        let locator = if att_id.is_empty() {
+            part_id
+        } else {
+            att_id.as_str()
+        };
+        let bytes = provider.fetch_attachment(message_id, locator).await?;
+        if !bytes.is_empty() {
             return Ok((bytes, mime));
         }
     }
@@ -75,7 +80,10 @@ mod tests {
         })
         .await
         .unwrap();
-        let c = GmailClient::new("t".into());
+        let c = crate::provider::gmail::api::GmailApiProvider::new(
+            "a".into(),
+            crate::provider::gmail::client::GmailClient::new("t".into()),
+        );
         let (b, mime) = resolve_attachment(&db, &c, "m1", "p1").await.unwrap();
         assert_eq!(b, vec![1, 2, 3]);
         assert_eq!(mime, "image/png");
