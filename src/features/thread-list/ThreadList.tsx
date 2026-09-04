@@ -105,19 +105,23 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     });
   };
 
-  // keyboard for list scope (single-row actions yield to the open thread)
+  // keyboard for list scope (capture so j/k beat typeahead-find and iframes)
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const w = window as unknown as { __paletteOpen?: boolean; __composeOpen?: boolean };
+      if (w.__paletteOpen || w.__composeOpen) return;
       if (view.kind === 'search' && searching) return;
       const k = e.key;
       if (k === 'j' || k === 'ArrowDown') {
         e.preventDefault();
+        e.stopPropagation();
         moveCursor(1);
       } else if (k === 'k' || k === 'ArrowUp') {
         e.preventDefault();
+        e.stopPropagation();
         moveCursor(-1);
       } else if (k === 'x') {
         const r = rows[focusedIndex];
@@ -152,8 +156,8 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
         if (g) setPickerHost({ kind: k === 'l' ? 'label' : 'move', ...g });
       }
     };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, focusedIndex, setFocus, setThread, view.kind, searching, selectedIds]);
 
@@ -223,28 +227,17 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
         <button
           onClick={() => setUnreadOnly((v) => !v)}
           title="Unread only"
-          style={{
-            fontSize: 12,
-            background: unreadOnly ? 'var(--accent-soft)' : 'none',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            padding: '2px 8px',
-            cursor: 'pointer',
-          }}
+          aria-pressed={unreadOnly}
+          className="sift-chip-btn"
         >
           Unread
         </button>
         <button
           onClick={() => setHasAtt((v) => !v)}
           title="Has attachment"
-          style={{
-            fontSize: 12,
-            background: hasAtt ? 'var(--accent-soft)' : 'none',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            padding: '2px 8px',
-            cursor: 'pointer',
-          }}
+          aria-pressed={hasAtt}
+          className="sift-chip-btn"
+          aria-label="Has attachment"
         >
           <Paperclip size={14} />
         </button>
@@ -283,6 +276,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
                     top: 0,
                     left: 0,
                     width: '100%',
+                    height: rowH,
                     transform: `translateY(${vi.start}px)`,
                   }}
                 >

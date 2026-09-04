@@ -19,7 +19,12 @@ export function buildShim(nonce: string): string {
     if (a) { clearTimeout(hoverT); hoverT = setTimeout(function(){ post({ type:'hover', href: a.getAttribute('href') }); }, 300); }
   });
   document.addEventListener('keydown', function(e){
-    if (['j','k','e','#','s','h','l','r','n','p','o','/'].includes(e.key)) post({ type:'key', key: e.key });
+    var map = {ArrowDown:'j', ArrowUp:'k'};
+    var key = map[e.key] || e.key;
+    if (['j','k','e','#','s','h','l','r','n','p','o','/'].includes(key)) {
+      e.preventDefault();
+      post({ type:'key', key: key });
+    }
   });
   document.addEventListener('contextmenu', function(e){
     var t = e.target;

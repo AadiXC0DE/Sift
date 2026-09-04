@@ -22,7 +22,15 @@ interface Props {
   onAction?: (kind: RowAction) => void;
 }
 
-function HoverActions({ row, onAction }: { row: Row; onAction?: (kind: RowAction) => void }) {
+function HoverActions({
+  row,
+  onAction,
+  surface,
+}: {
+  row: Row;
+  onAction?: (kind: RowAction) => void;
+  surface: string;
+}) {
   if (!onAction) return null;
   const btn: React.CSSProperties = {
     width: 26,
@@ -30,18 +38,32 @@ function HoverActions({ row, onAction }: { row: Row; onAction?: (kind: RowAction
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: 'var(--bg-list)',
+    background: surface,
     border: '1px solid var(--border)',
     borderRadius: 6,
     cursor: 'pointer',
-    color: 'var(--fg-2)',
+    color: 'var(--fg)',
+    flexShrink: 0,
   };
   const stop = (fn: () => void) => (e: React.MouseEvent) => {
     e.stopPropagation();
     fn();
   };
   return (
-    <span style={{ display: 'inline-flex', gap: 2, flexShrink: 0 }} onMouseEnter={(e) => e.stopPropagation()}>
+    <span
+      style={{
+        position: 'absolute',
+        right: 8,
+        top: 0,
+        bottom: 0,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 2,
+        paddingLeft: 16,
+        background: `linear-gradient(to right, transparent, ${surface} 12px)`,
+        zIndex: 1,
+      }}
+    >
       <button title="Archive (e)" style={btn} onClick={stop(() => onAction('archive'))}>
         <Archive size={14} />
       </button>
@@ -50,7 +72,7 @@ function HoverActions({ row, onAction }: { row: Row; onAction?: (kind: RowAction
       </button>
       <button
         title={row.unreadCount > 0 ? 'Mark read' : 'Mark unread'}
-        style={{ ...btn, color: 'var(--fg)' }}
+        style={btn}
         onClick={stop(() => onAction('read'))}
       >
         {row.unreadCount > 0 ? <MailOpen size={14} /> : <Mail size={14} />}
@@ -60,6 +82,13 @@ function HoverActions({ row, onAction }: { row: Row; onAction?: (kind: RowAction
       </button>
     </span>
   );
+}
+
+function rowSurface(focused: boolean, selected: boolean, hover: boolean): string {
+  if (focused) return 'var(--bg-row-focus)';
+  if (selected) return 'var(--bg-row-selected)';
+  if (hover) return 'var(--bg-row-hover)';
+  return 'transparent';
 }
 
 export const ThreadRowView = memo(function ThreadRowView({
@@ -85,35 +114,39 @@ export const ThreadRowView = memo(function ThreadRowView({
     row.labelIds.filter(
       (l) => !['INBOX', 'UNREAD', 'STARRED', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'IMPORTANT'].includes(l),
     ).length - chips.length;
+  const surface = rowSurface(focused, selected, hover);
+  const shell: React.CSSProperties = {
+    height: h,
+    maxHeight: h,
+    overflow: 'hidden',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: density === 'compact' ? '0 12px 0 10px' : '4px 12px 4px 10px',
+    background: surface,
+    borderLeft: focused ? '2px solid var(--accent)' : '2px solid transparent',
+    cursor: 'default',
+    position: 'relative',
+    boxSizing: 'border-box',
+    transition: 'background-color 80ms ease',
+  };
+
+  const onClick = (e: React.MouseEvent) => {
+    onFocus();
+    if (e.metaKey || e.ctrlKey || e.shiftKey) onToggleSelect(e);
+    else onOpen();
+  };
 
   if (density === 'compact') {
     return (
       <div
         role="option"
         aria-selected={selected}
-        onMouseEnter={(e) => {
-          onFocus();
-          setHover(true);
-          void e;
-        }}
+        onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
-        onClick={(e) => {
-          onFocus();
-          if (e.metaKey || e.ctrlKey) onToggleSelect(e);
-          else onOpen();
-        }}
-        style={{
-          height: h,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '0 12px 0 10px',
-          background: focused ? 'var(--bg-row-focus)' : selected ? 'var(--bg-row-selected)' : 'transparent',
-          borderLeft: focused ? '2px solid var(--accent)' : '2px solid transparent',
-          cursor: 'default',
-          position: 'relative',
-        }}
-        className="hoverable"
+        onClick={onClick}
+        style={shell}
+        className="sift-row"
         data-testid={`row-${row.id}`}
       >
         {showStripe && (
@@ -162,13 +195,10 @@ export const ThreadRowView = memo(function ThreadRowView({
         >
           {row.subject} <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>— {row.snippet}</span>
         </span>
-        {hover && onAction ? (
-          <HoverActions row={row} onAction={onAction} />
-        ) : (
-          <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)', flexShrink: 0 }}>
-            {formatRowDate(row.lastMessageAt)}
-          </span>
-        )}
+        <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)', flexShrink: 0 }}>
+          {formatRowDate(row.lastMessageAt)}
+        </span>
+        {hover && onAction ? <HoverActions row={row} onAction={onAction} surface={surface} /> : null}
       </div>
     );
   }
@@ -177,29 +207,11 @@ export const ThreadRowView = memo(function ThreadRowView({
     <div
       role="option"
       aria-selected={selected}
-      onMouseEnter={() => {
-        onFocus();
-        setHover(true);
-      }}
+      onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      onClick={(e) => {
-        onFocus();
-        if (e.metaKey || e.ctrlKey) onToggleSelect(e);
-        else if (e.shiftKey) onToggleSelect(e);
-        else onOpen();
-      }}
-      style={{
-        height: h,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '4px 12px 4px 10px',
-        background: focused ? 'var(--bg-row-focus)' : selected ? 'var(--bg-row-selected)' : 'transparent',
-        borderLeft: focused ? '2px solid var(--accent)' : '2px solid transparent',
-        cursor: 'default',
-        position: 'relative',
-      }}
-      className="hoverable"
+      onClick={onClick}
+      style={shell}
+      className="sift-row"
       data-testid={`row-${row.id}`}
     >
       {showStripe && (
@@ -220,7 +232,7 @@ export const ThreadRowView = memo(function ThreadRowView({
         />
       )}
       {avatars && <Avatar email={row.participants[0]?.e ?? '?'} name={row.participants[0]?.n} size={24} />}
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
           <span
             style={{
@@ -234,15 +246,11 @@ export const ThreadRowView = memo(function ThreadRowView({
           >
             {participantsLabel(row.participants, row.messageCount)}
           </span>
-          {hover && onAction ? (
-            <HoverActions row={row} onAction={onAction} />
-          ) : (
-            <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)', flexShrink: 0 }}>
-              {formatRowDate(row.lastMessageAt)}
-            </span>
-          )}
+          <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)', flexShrink: 0 }}>
+            {formatRowDate(row.lastMessageAt)}
+          </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
           <span
             style={{
               fontWeight: unread ? 600 : 400,
@@ -274,6 +282,7 @@ export const ThreadRowView = memo(function ThreadRowView({
           {overflow > 0 && <span style={{ fontSize: 11, color: 'var(--fg-3)' }}>+{overflow}</span>}
         </div>
       </div>
+      {hover && onAction ? <HoverActions row={row} onAction={onAction} surface={surface} /> : null}
     </div>
   );
 });

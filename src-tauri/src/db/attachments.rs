@@ -93,12 +93,42 @@ impl Db {
     > {
         let (m, p) = (message_id.to_string(), part_id.to_string());
         self.read(move |c| {
-      let mut s = c.prepare("SELECT id,mime,gmail_att_id,data_z,local_path,filename,content_id FROM attachments WHERE message_id=? AND part_id=?")?;
-      let mut rows = s.query_map(params![m,p], |r| {
+      let mut s = c.prepare("SELECT id,mime,gmail_att_id,data_z,local_path,filename,content_id FROM attachments WHERE message_id=? AND (part_id=? OR id=? OR content_id=? OR TRIM(IFNULL(content_id,''), '<>')=?)")?;
+      let mut rows = s.query_map(params![m,p,p,p,p], |r| {
         let dz: Option<Vec<u8>> = r.get(3)?;
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(1)?, dz.map(|b| zstd::decode_all(b.as_slice()).unwrap_or_default()), r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?))
       })?;
       let __out = rows.next().transpose()?; Ok(__out)
     }).await
+    }
+    pub async fn attachments_with_bytes(
+        &self,
+        message_id: &str,
+    ) -> Result<Vec<(String, String, Option<String>, String, Vec<u8>)>> {
+        let mid = message_id.to_string();
+        self.read(move |c| {
+            let mut s = c.prepare(
+                "SELECT id,part_id,content_id,mime,data_z FROM attachments WHERE message_id=?",
+            )?;
+            {
+                let __v = s
+                    .query_map(params![mid], |r| {
+                        let dz: Option<Vec<u8>> = r.get(4)?;
+                        let data = dz
+                            .map(|b| zstd::decode_all(b.as_slice()).unwrap_or_default())
+                            .unwrap_or_default();
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                            r.get::<_, String>(3)?,
+                            data,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(__v)
+            }
+        })
+        .await
     }
 }

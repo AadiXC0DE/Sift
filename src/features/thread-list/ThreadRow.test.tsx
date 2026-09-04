@@ -33,6 +33,24 @@ describe('P4-T03 row renders', () => {
     expect(container.innerHTML).toMatch(/Hello/);
     expect(container.innerHTML).toMatch(/\+1/);
   });
+  it('keeps a fixed height and does not expand on hover', () => {
+    const { container } = render(
+      <ThreadRowView
+        row={base}
+        focused={false}
+        selected={false}
+        showStripe={false}
+        onFocus={() => {}}
+        onToggleSelect={() => {}}
+        onOpen={() => {}}
+        onAction={() => {}}
+      />,
+    );
+    const row = container.querySelector('[data-testid="row-t1"]') as HTMLElement;
+    expect(row.style.overflow).toBe('hidden');
+    expect(row.style.height).toBe('40px');
+    expect(row.style.maxHeight).toBe('40px');
+  });
 });
 
 describe('P4-T04 memo', () => {
