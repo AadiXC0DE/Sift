@@ -19,6 +19,7 @@ import { LabelPicker } from '../actions/LabelPicker';
 import { on } from '../../app/ipc/events';
 import type { Label } from '../../app/ipc/types';
 import { Button } from '../../ui/Button';
+import { decodeRfc2047 } from '../../lib/rfc2047';
 
 const bodyCache = new Map<string, MessageBody>();
 function cacheGet(id: string) {
@@ -29,6 +30,30 @@ function cacheSet(id: string, b: MessageBody) {
   if (bodyCache.size > 50) {
     const first = bodyCache.keys().next().value;
     if (first) bodyCache.delete(first);
+  }
+}
+
+async function pollBody(id: string, onUpdate: (b: MessageBody) => void) {
+  let delay = 400;
+  for (let i = 0; i < 10; i++) {
+    try {
+      const b = await api.message_body(id);
+      cacheSet(id, b);
+      onUpdate(b);
+      if (b.state === 'ready' || b.state === 'error') return;
+    } catch {
+      onUpdate({
+        messageId: id,
+        state: 'error',
+        remoteImageCount: 0,
+        trackerCount: 0,
+        darkSafe: true,
+        remoteImagesAllowed: false,
+      });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(Math.round(delay * 1.4), 2000);
   }
 }
 
@@ -77,37 +102,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
       });
       setExpanded(exp);
       setFocusMsg(d.messages.findIndex((m) => m.isUnread));
-      // bodies
-      for (const m of d.messages) {
-        if (!exp[m.id]) continue;
-        const cached = cacheGet(m.id);
-        if (cached) {
-          setBodies((b) => ({ ...b, [m.id]: cached }));
-          continue;
-        }
-        api
-          .message_body(m.id)
-          .then((b) => {
-            cacheSet(m.id, b);
-            setBodies((prev) => ({ ...prev, [m.id]: b }));
-            if (b.state === 'loading') {
-              // poll once after 800ms
-              setTimeout(() => {
-                api
-                  .message_body(m.id)
-                  .then((b2) => {
-                    if (b2.state === 'ready') {
-                      cacheSet(m.id, b2);
-                      setBodies((p) => ({ ...p, [m.id]: b2 }));
-                    }
-                  })
-                  .catch(() => {});
-              }, 800);
-            }
-          })
-          .catch(() => {});
-      }
-      // prefetch focused±1,+2 (list-level prefetch happens in ThreadList; here warm next messages)
+      // bodies fetched in the expanded-ids effect below
       // mark as read
       if (markAsRead === 'on-open') {
         const unread = d.messages.some((m) => m.isUnread);
@@ -130,6 +125,28 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId]);
+
+  useEffect(() => {
+    if (!detail) return;
+    let cancelled = false;
+    const ids = detail.messages.filter((m) => expanded[m.id]).map((m) => m.id);
+    void (async () => {
+      for (const id of ids) {
+        if (cancelled) return;
+        const cached = cacheGet(id);
+        if (cached?.state === 'ready' || cached?.state === 'error') {
+          setBodies((p) => (p[id] ? p : { ...p, [id]: cached }));
+          continue;
+        }
+        await pollBody(id, (b) => {
+          if (!cancelled) setBodies((p) => ({ ...p, [id]: b }));
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [detail, expanded]);
 
   useEffect(() => {
     const h = (e: Event) => {
@@ -285,13 +302,32 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
           borderBottom: '1px solid var(--border)',
           padding: '12px 20px 8px',
           zIndex: 2,
+          minWidth: 0,
+          overflow: 'hidden',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em', flex: 1, margin: 0 }}>
-            {detail.subject || '(No subject)'}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0 }}>
+          <h1
+            style={{
+              fontSize: 20,
+              fontWeight: 600,
+              letterSpacing: '-0.01em',
+              flex: 1,
+              minWidth: 0,
+              margin: 0,
+              overflow: 'hidden',
+              display: '-webkit-box',
+              WebkitLineClamp: 3,
+              WebkitBoxOrient: 'vertical',
+              overflowWrap: 'anywhere',
+              lineHeight: 1.25,
+            }}
+          >
+            {decodeRfc2047(detail.subject) || '(No subject)'}
           </h1>
-          <HeaderActions detail={detail} onReply={(mode) => onReply(mode, detail.id)} />
+          <div style={{ flexShrink: 0 }}>
+            <HeaderActions detail={detail} onReply={(mode) => onReply(mode, detail.id)} />
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
           {detail.labelIds
@@ -377,12 +413,32 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                   </div>
                   {m.hasAttachments && <AttachmentStrip messageId={m.id} attachments={m.attachments} />}
                   {!body || body.state === 'loading' ? (
-                    <BodySkeleton />
+                    body?.text ? (
+                      <pre
+                        style={{
+                          whiteSpace: 'pre-wrap',
+                          fontFamily: 'var(--font-ui)',
+                          fontSize: 14,
+                          color: 'var(--fg)',
+                        }}
+                      >
+                        {body.text}
+                      </pre>
+                    ) : (
+                      <BodySkeleton />
+                    )
                   ) : body.state === 'error' ? (
                     <div style={{ color: 'var(--danger)', fontSize: 13 }}>
-                      Couldn&apos;t load this message.
+                      Couldn&apos;t load this message.{' '}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void pollBody(m.id, (b) => setBodies((p) => ({ ...p, [m.id]: b })))}
+                      >
+                        Retry
+                      </Button>
                     </div>
-                  ) : (
+                  ) : body.html ? (
                     <>
                       {body.remoteImageCount > 0 && !body.remoteImagesAllowed && (
                         <div
@@ -398,9 +454,13 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                             padding: '6px 12px',
                             fontSize: 12,
                             marginBottom: 8,
+                            flexWrap: 'nowrap',
+                            minWidth: 0,
                           }}
                         >
-                          <span style={{ color: 'var(--fg)', flex: 1 }}>Images hidden to block trackers</span>
+                          <span style={{ color: 'var(--fg)', flex: 1, minWidth: 0, whiteSpace: 'nowrap' }}>
+                            Images hidden
+                          </span>
                           <Button
                             size="sm"
                             onClick={() =>
@@ -421,6 +481,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                                 setBodies((p) => ({ ...p, [m.id]: b }));
                               })
                             }
+                            style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}
                           >
                             Always from {m.from.e}
                           </Button>
@@ -438,6 +499,17 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                         </div>
                       )}
                     </>
+                  ) : (
+                    <pre
+                      style={{
+                        whiteSpace: 'pre-wrap',
+                        fontFamily: 'var(--font-ui)',
+                        fontSize: 14,
+                        color: 'var(--fg)',
+                      }}
+                    >
+                      {body.text || 'No content'}
+                    </pre>
                   )}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     <button

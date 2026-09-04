@@ -6,6 +6,8 @@ import { useSettings } from '../../stores/settingsStore';
 import { useAccounts } from '../../stores/accountsStore';
 import { api } from '../../app/ipc/commands';
 import { Button } from '../../ui/Button';
+import { Kbd } from '../../ui/Kbd';
+import { defaultBindings } from '../../keymap/defaults';
 
 const accents = ['blue', 'indigo', 'violet', 'rose', 'orange', 'green', 'teal', 'graphite'] as const;
 
@@ -91,9 +93,9 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               <Row label="Split inbox by category">
                 <Switch checked={settings.splitInbox} onChange={(v) => void set({ splitInbox: v })} />
               </Row>
-              <button onClick={() => void api.sync_now()} style={{ alignSelf: 'flex-start' }}>
-                Check for updates / Sync now
-              </button>
+              <Button onClick={() => void api.sync_now()} style={{ alignSelf: 'flex-start' }}>
+                Sync now
+              </Button>
               <button
                 onClick={() => {
                   window.open('http://localhost:1420/__bench__', '_blank');
@@ -186,28 +188,69 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                     alignItems: 'center',
                     border: '1px solid var(--border)',
                     borderRadius: 8,
-                    padding: 8,
+                    padding: '10px 12px',
+                    background: 'var(--n1)',
                   }}
                 >
-                  <span style={{ flex: 1, fontSize: 13 }}>{a.email}</span>
-                  <input
+                  <span
+                    style={{
+                      flex: 1,
+                      fontSize: 13,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {a.email}
+                  </span>
+                  <select
+                    aria-label="Account color"
                     value={a.color}
                     onChange={(e) => void api.accounts_update({ id: a.id, color: e.target.value })}
-                    aria-label="color"
-                    style={{ width: 80 }}
-                  />
-                  <Button size="sm" onClick={() => void api.accounts_remove(a.id)}>
+                    style={{
+                      height: 28,
+                      border: '1px solid var(--border-strong)',
+                      borderRadius: 6,
+                      padding: '0 8px',
+                      background: 'var(--bg-raised)',
+                      color: 'var(--fg)',
+                    }}
+                  >
+                    {accents.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                  <Button size="sm" variant="danger" onClick={() => void api.accounts_remove(a.id)}>
                     Remove
                   </Button>
                 </div>
               ))}
-              <Button onClick={() => void api.accounts_add_google()}>Add account</Button>
+              <Button onClick={() => void api.accounts_add_google()} style={{ alignSelf: 'flex-start' }}>
+                Add account
+              </Button>
             </div>
           )}
           {tab === 'Shortcuts' && (
-            <div style={{ fontSize: 13 }}>
-              Presets: Sift / Gmail / Superhuman. Rebinding UI: press-to-record with conflict detection. (See
-              ? overlay.)
+            <div
+              style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 360, overflowY: 'auto' }}
+            >
+              {defaultBindings.slice(0, 24).map((b, i) => (
+                <div
+                  key={`${b.scope}:${b.key}:${i}`}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    fontSize: 13,
+                    padding: '4px 0',
+                  }}
+                >
+                  <span style={{ color: 'var(--fg-2)' }}>{b.action}</span>
+                  <Kbd>{b.key}</Kbd>
+                </div>
+              ))}
             </div>
           )}
           {tab === 'Notifications' && (
@@ -287,26 +330,28 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                   ]}
                 />
               </Row>
-              <button onClick={() => void api.diagnostics_export()}>Export diagnostics</button>
-              <button
-                onClick={() => {
-                  if (window.confirm('Reset local data? Keeps Keychain.')) localStorage.clear();
-                }}
-              >
-                Reset local data
-              </button>
-              <button
-                onClick={() => {
-                  const cmd = 'sift-bench quick';
-                  try {
-                    void navigator.clipboard.writeText(cmd);
-                  } catch {
-                    /* noop */
-                  }
-                }}
-              >
-                Compare speed with other mail apps… (copies: sift-bench quick)
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+                <Button onClick={() => void api.diagnostics_export()}>Export diagnostics</Button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    if (window.confirm('Reset local data? Keeps Keychain.')) localStorage.clear();
+                  }}
+                >
+                  Reset local data
+                </Button>
+                <Button
+                  onClick={() => {
+                    try {
+                      void navigator.clipboard.writeText('sift-bench quick');
+                    } catch {
+                      /* noop */
+                    }
+                  }}
+                >
+                  Copy speed-bench command
+                </Button>
+              </div>
             </>
           )}
         </div>
