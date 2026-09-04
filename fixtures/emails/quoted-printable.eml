@@ -1,0 +1,5 @@
+From: test@example.com
+Subject: quoted-printable
+Content-Type: text/plain
+
+Fixture quoted-printable body with https://example.com link.

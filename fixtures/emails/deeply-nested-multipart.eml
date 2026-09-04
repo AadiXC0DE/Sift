@@ -1,0 +1,5 @@
+From: test@example.com
+Subject: deeply-nested-multipart
+Content-Type: text/plain
+
+Fixture deeply-nested-multipart body with https://example.com link.

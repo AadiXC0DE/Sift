@@ -1,0 +1,5 @@
+From: test@example.com
+Subject: calendar-invite
+Content-Type: text/plain
+
+Fixture calendar-invite body with https://example.com link.

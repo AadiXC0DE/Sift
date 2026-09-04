@@ -1,0 +1,5 @@
+From: evil@x.com
+Subject: x
+Content-Type: text/html
+
+<html><body><script>window.__sift_xss=1</script><p>hi</p></body></html>

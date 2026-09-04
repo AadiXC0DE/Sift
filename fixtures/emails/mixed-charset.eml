@@ -1,0 +1,5 @@
+From: test@example.com
+Subject: mixed-charset
+Content-Type: text/plain
+
+Fixture mixed-charset body with https://example.com link.
