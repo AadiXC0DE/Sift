@@ -1,0 +1,67 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1282
+expression: lists
+---
+[
+    (
+        [
+            "\\HasNoChildren",
+        ],
+        "INBOX",
+    ),
+    (
+        [
+            "\\HasNoChildren",
+            "\\All",
+        ],
+        "[Gmail]/Alle Nachrichten",
+    ),
+    (
+        [
+            "\\HasNoChildren",
+            "\\Trash",
+        ],
+        "[Gmail]/Papierkorb",
+    ),
+    (
+        [
+            "\\HasNoChildren",
+            "\\Junk",
+        ],
+        "[Gmail]/Spam",
+    ),
+    (
+        [
+            "\\HasNoChildren",
+            "\\Drafts",
+        ],
+        "[Gmail]/Entw&APw-rfe",
+    ),
+    (
+        [
+            "\\HasNoChildren",
+            "\\Sent",
+        ],
+        "[Gmail]/Gesendet",
+    ),
+    (
+        [
+            "\\HasChildren",
+            "\\Noselect",
+        ],
+        "[Gmail]",
+    ),
+    (
+        [
+            "\\HasNoChildren",
+        ],
+        "B&APw-ro",
+    ),
+    (
+        [
+            "\\HasNoChildren",
+        ],
+        "Receipts",
+    ),
+]

@@ -1,0 +1,13 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1253
+expression: gmail_meta(attrs)
+---
+GmailMeta {
+    msgid: Some(
+        1912345678901234567,
+    ),
+    thrid: None,
+    labels: [],
+    modseq: None,
+}

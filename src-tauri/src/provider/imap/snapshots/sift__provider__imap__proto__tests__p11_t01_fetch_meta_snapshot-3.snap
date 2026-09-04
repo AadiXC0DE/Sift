@@ -1,0 +1,75 @@
+---
+source: src/provider/imap/proto.rs
+assertion_line: 1230
+expression: bs
+---
+Multipart {
+    parts: [
+        Single {
+            mime: "text",
+            subtype: "html",
+            params: [
+                (
+                    "charset",
+                    "utf-8",
+                ),
+            ],
+            id: None,
+            encoding: "quoted-printable",
+            size: 900,
+            lines: Some(
+                22,
+            ),
+            disposition: None,
+        },
+        Single {
+            mime: "application",
+            subtype: "pdf",
+            params: [
+                (
+                    "name",
+                    "contract.pdf",
+                ),
+            ],
+            id: None,
+            encoding: "base64",
+            size: 2100,
+            lines: None,
+            disposition: Some(
+                (
+                    "attachment",
+                    [
+                        (
+                            "filename",
+                            "contract.pdf",
+                        ),
+                    ],
+                ),
+            ),
+        },
+        Single {
+            mime: "image",
+            subtype: "png",
+            params: [
+                (
+                    "name",
+                    "row14.png",
+                ),
+            ],
+            id: Some(
+                "<ii_row14>",
+            ),
+            encoding: "base64",
+            size: 4520,
+            lines: None,
+            disposition: None,
+        },
+    ],
+    subtype: "mixed",
+    params: [
+        (
+            "boundary",
+            "xyz789",
+        ),
+    ],
+}

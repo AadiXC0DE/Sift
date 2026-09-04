@@ -42,6 +42,34 @@ impl Db {
         .await?;
         Ok(merged)
     }
+    /// Raw key/value cell in the settings table (feature counters, etc.).
+    /// Separate keys from the typed `settings` document above.
+    pub async fn setting_get_raw(&self, key: &str) -> Result<Option<String>> {
+        let k = key.to_string();
+        self.read(move |c| {
+            let mut v: Option<String> = None;
+            if let Ok(mut st) = c.prepare("SELECT value FROM settings WHERE key=?") {
+                if let Ok(mut rows) = st.query(rusqlite::params![k]) {
+                    if let Ok(Some(r)) = rows.next() {
+                        v = r.get(0).ok();
+                    }
+                }
+            }
+            Ok(v)
+        })
+        .await
+    }
+    pub async fn setting_set_raw(&self, key: &str, value: &str) -> Result<()> {
+        let (k, v) = (key.to_string(), value.to_string());
+        self.write(move |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)",
+                rusqlite::params![k, v],
+            )?;
+            Ok(())
+        })
+        .await
+    }
 }
 #[cfg(test)]
 mod tests {
