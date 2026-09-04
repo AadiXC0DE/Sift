@@ -368,32 +368,91 @@ pub async fn message_body(
             remote_images_allowed: global_allow,
         });
     }
-    // schedule foreground fetch (dedup via body_state? just spawn)
-    let (db, mid, aid) = (state.db.clone(), message_id.clone(), account_id.clone());
-    // mark fetching to dedup second call: set a temp row? use fetched_at check in real loop; here spawn once
-    let st2 = state.db.clone();
-    let _ = st2;
-    tokio::spawn(async move {
-        let _g = db;
-        let _ = (mid, aid);
-    });
-    // Actually perform fetch now inline if online? Spec: return loading, fetch in background.
-    // We kick a real fetch task via client if available.
-    let dbc = state.db.clone();
-    let mid2 = message_id.clone();
-    let provider = state.provider_for(&account_id).await.ok();
-    tokio::spawn(async move {
-        if let Some(provider) = provider {
-            if let Ok(parsed) = provider.fetch_body(&mid2).await {
-                let sink = crate::provider::DbSink::new(dbc.clone());
-                let _ = crate::provider::store_parsed(&sink, &mid2, &parsed).await;
-                let _ = dbc;
+    // Foreground fetch: wait so the open thread gets HTML/text instead of an
+    // endless skeleton. Backfill stays in the supervisor.
+    let provider = match state.provider_for(&account_id).await {
+        Ok(p) => p,
+        Err(_) => {
+            return Ok(MessageBody {
+                message_id,
+                state: "error".into(),
+                html: None,
+                text: None,
+                remote_image_count: 0,
+                tracker_count: 0,
+                dark_safe: true,
+                remote_images_allowed: global_allow,
+            });
+        }
+    };
+    match provider.fetch_body(&message_id).await {
+        Ok(parsed) => {
+            let sink = crate::provider::DbSink::new(state.db.clone());
+            if crate::provider::store_parsed(&sink, &message_id, &parsed)
+                .await
+                .is_err()
+            {
+                return Ok(MessageBody {
+                    message_id,
+                    state: "error".into(),
+                    html: None,
+                    text: parsed.text,
+                    remote_image_count: 0,
+                    tracker_count: 0,
+                    dark_safe: true,
+                    remote_images_allowed: global_allow,
+                });
             }
         }
-    });
+        Err(_) => {
+            return Ok(MessageBody {
+                message_id,
+                state: "error".into(),
+                html: None,
+                text: None,
+                remote_image_count: 0,
+                tracker_count: 0,
+                dark_safe: true,
+                remote_images_allowed: global_allow,
+            });
+        }
+    }
+    if let Some((html, text, ri, tc, ds, _q)) = state
+        .db
+        .bodies_get(&message_id)
+        .await
+        .map_err(|e| SiftError::app("db", e.to_string(), false))?
+    {
+        let html_out = if global_allow {
+            html.map(|h| crate::render::sanitize::restore_remote_images(&h))
+        } else {
+            html
+        };
+        let html_out = match html_out {
+            Some(h) => match state.db.attachments_with_bytes(&message_id).await {
+                Ok(parts) => Some(crate::render::sanitize::embed_local_images(
+                    &h,
+                    &message_id,
+                    &parts,
+                )),
+                Err(_) => Some(h),
+            },
+            None => None,
+        };
+        return Ok(MessageBody {
+            message_id,
+            state: "ready".into(),
+            html: html_out,
+            text,
+            remote_image_count: ri,
+            tracker_count: tc,
+            dark_safe: ds,
+            remote_images_allowed: global_allow,
+        });
+    }
     Ok(MessageBody {
         message_id,
-        state: "loading".into(),
+        state: "error".into(),
         html: None,
         text: None,
         remote_image_count: 0,
