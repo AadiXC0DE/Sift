@@ -202,8 +202,15 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `SIFT_TOKEN_URL` is process-global: these tests must not run
+    /// concurrently or one's mock server answers another's refresh.
+    static TOKEN_ENV_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    fn token_env_lock() -> &'static tokio::sync::Mutex<()> {
+        TOKEN_ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
     #[tokio::test]
     async fn p2_t04_singleflight_refresh() {
+        let _env = token_env_lock().lock().await;
         // wiremock token endpoint counting refresh requests
         let server = wiremock::MockServer::start().await;
         std::env::set_var("SIFT_TOKEN_URL", format!("{}/token", server.uri()));
@@ -217,8 +224,11 @@ mod tests {
             .await;
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
-        let a = db.new_account("u@x.com", None, None).await.unwrap();
-        crate::secrets::store_refresh_token("u@x.com", "rt").unwrap();
+        let a = db
+            .new_account("singleflight@x.com", None, None)
+            .await
+            .unwrap();
+        crate::secrets::store_refresh_token("singleflight@x.com", "rt").unwrap();
         let st = std::sync::Arc::new(AppState::new(db, dir.path().to_path_buf()));
         // seed expired token
         st.tokens.write().await.insert(
@@ -247,6 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn p2_t05_invalid_grant_reauth() {
+        let _env = token_env_lock().lock().await;
         let server = wiremock::MockServer::start().await;
         std::env::set_var("SIFT_TOKEN_URL", format!("{}/token", server.uri()));
         wiremock::Mock::given(wiremock::matchers::method("POST"))
