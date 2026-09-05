@@ -31,11 +31,15 @@ export const useSettings = create<S>((set, get) => ({
   load: async () => {
     try {
       const raw = await api.settings_get();
-      const settings = { ...raw, readingPane: 'right' as const };
+      // Legacy 'ask' mode was removed: remote images now load by default
+      // like any other email client. Treat stored 'ask' as 'always'.
+      const remoteImages = raw.remoteImages === 'ask' ? 'always' : raw.remoteImages;
+      const settings = { ...raw, remoteImages, readingPane: 'right' as const };
       set({ settings, loaded: true });
       applyTheme(settings);
       applyPane(settings);
       if (raw.readingPane !== 'right') void api.settings_set({ readingPane: 'right' });
+      if (raw.remoteImages === 'ask') void api.settings_set({ remoteImages: 'always' });
     } catch {
       const settings = { ...defaultSettings, readingPane: 'right' as const };
       set({ settings, loaded: true });

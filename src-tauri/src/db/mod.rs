@@ -31,6 +31,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
         "0004_mail_rendering",
         include_str!("migrations/0004_mail_rendering.sql"),
     ),
+    (
+        "0005_remote_images_default",
+        include_str!("migrations/0005_remote_images_default.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -73,6 +77,8 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         let _ = conn.execute_batch(MIGRATIONS[1].1);
         conn.execute_batch(MIGRATIONS[2].1)?;
         conn.execute("UPDATE schema_version SET version=4", [])?;
+        conn.execute_batch(MIGRATIONS[3].1)?;
+        conn.execute("UPDATE schema_version SET version=5", [])?;
         return Ok(());
     }
     let v: i64 = conn
@@ -98,6 +104,10 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     if v < 4 {
         conn.execute_batch(MIGRATIONS[3].1)?;
         conn.execute("UPDATE schema_version SET version=4", [])?;
+    }
+    if v < 5 {
+        conn.execute_batch(MIGRATIONS[4].1)?;
+        conn.execute("UPDATE schema_version SET version=5", [])?;
     }
     Ok(())
 }
@@ -175,7 +185,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 5);
         for t in [
             "accounts",
             "labels",

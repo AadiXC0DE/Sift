@@ -14,8 +14,6 @@ export function buildShim(nonce: string): string {
   document.addEventListener('click', function(e){
     var a = e.target.closest ? e.target.closest('a') : null;
     if (a) { e.preventDefault(); post({ type:'link', href: a.getAttribute('href'), text: a.textContent.slice(0,120) }); return; }
-    var img = e.target.closest ? e.target.closest('img.sift-blocked') : null;
-    if (img) { post({ type:'image', src: img.getAttribute('data-sift-src') }); return; }
   });
   var hoverT = null;
   document.addEventListener('mouseover', function(e){

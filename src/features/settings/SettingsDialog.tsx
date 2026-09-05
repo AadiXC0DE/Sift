@@ -387,12 +387,11 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
             <>
               <Row label="Remote images">
                 <Segmented
-                  value={settings.remoteImages as never}
+                  value={(settings.remoteImages === 'ask' ? 'always' : settings.remoteImages) as never}
                   onChange={(v) => void set({ remoteImages: v })}
                   options={[
-                    { value: 'never', label: 'Never' },
-                    { value: 'ask', label: 'Ask' },
                     { value: 'always', label: 'Always' },
+                    { value: 'never', label: 'Never' },
                   ]}
                 />
               </Row>

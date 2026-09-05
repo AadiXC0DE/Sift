@@ -234,7 +234,9 @@ fn normalize_protocol_relative_urls(html: String) -> String {
         .replace("url(&#x27;//", "url(&#x27;https://")
 }
 
-/// Turn blocked remote images back into real `src` (Load / always-allow).
+/// Legacy helper kept for compatibility: sanitize now keeps remote `src` as-is
+/// and gating is via iframe CSP (`remoteImagesAllowed`). Remote images load
+/// by default; only an explicit Never blocks them.
 pub fn restore_remote_images(html: &str) -> String {
     const PLACEHOLDER: &str =
         "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";

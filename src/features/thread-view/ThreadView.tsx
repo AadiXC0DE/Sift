@@ -43,16 +43,6 @@ async function pollBody(id: string, onUpdate: (b: MessageBody) => void) {
       cacheSet(id, b);
       onUpdate(b);
       if (b.state === 'ready' || b.state === 'error') {
-        if (
-          b.state === 'ready' &&
-          b.remoteImageCount > 0 &&
-          !b.remoteImagesAllowed &&
-          useSettings.getState().settings.remoteImages === 'always'
-        ) {
-          const loaded = await api.remote_images_load(id, false);
-          cacheSet(id, loaded);
-          onUpdate(loaded);
-        }
         return;
       }
     } catch {
@@ -165,19 +155,6 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
       cancelled = true;
     };
   }, [detail, expanded]);
-
-  useEffect(() => {
-    const h = (e: Event) => {
-      const id = (e as CustomEvent).detail?.messageId as string | undefined;
-      if (!id) return;
-      void api.remote_images_load(id, false).then((b) => {
-        cacheSet(id, b);
-        setBodies((p) => ({ ...p, [id]: b }));
-      });
-    };
-    document.addEventListener('sift:load-remote', h as EventListener);
-    return () => document.removeEventListener('sift:load-remote', h as EventListener);
-  }, []);
 
   // Re-fetch the open thread when its rows change (actions, undo, sync).
   useEffect(() => {
@@ -451,32 +428,12 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                       </Button>
                     </div>
                   ) : body.html ? (
-                    <>
-                      {body.remoteImageCount > 0 &&
-                        !body.remoteImagesAllowed &&
-                        settings.remoteImages === 'ask' && (
-                          <div style={{ marginBottom: 8 }}>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() =>
-                                void api.remote_images_load(m.id, false).then((loaded) => {
-                                  cacheSet(m.id, loaded);
-                                  setBodies((previous) => ({ ...previous, [m.id]: loaded }));
-                                })
-                              }
-                            >
-                              Load remote images
-                            </Button>
-                          </div>
-                        )}
-                      <MailFrame
-                        messageId={m.id}
-                        html={body.html}
-                        allowed={body.remoteImagesAllowed}
-                        dark={false}
-                      />
-                    </>
+                    <MailFrame
+                      messageId={m.id}
+                      html={body.html}
+                      allowed={body.remoteImagesAllowed}
+                      dark={false}
+                    />
                   ) : (
                     <pre
                       style={{

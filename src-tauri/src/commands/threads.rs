@@ -343,45 +343,15 @@ pub async fn message_body(
             remote_images_allowed: false,
         });
     };
-    // from email for sender prefs
-    let from_email: String = state
-        .db
-        .read({
-            let mid = message_id.clone();
-            move |c| {
-                Ok(c.query_row(
-                    "SELECT COALESCE(from_email,'') FROM messages WHERE id=?",
-                    rusqlite::params![mid],
-                    |r| r.get(0),
-                )
-                .unwrap_or_default())
-            }
-        })
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-    let allowed_sender: bool = state
-        .db
-        .read({
-            let e = from_email.clone();
-            move |c| {
-                Ok(c.query_row(
-                    "SELECT allow_remote_images FROM sender_prefs WHERE email=?",
-                    rusqlite::params![e],
-                    |r| r.get::<_, i64>(0),
-                )
-                .map(|v| v != 0)
-                .unwrap_or(false))
-            }
-        })
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+    // Remote images load by default like any other email client.
+    // Only an explicit Settings → Privacy → Never blocks them (via CSP).
+    // Legacy 'ask' values and per-sender allow-lists are treated as allowed.
     let settings = state
         .db
         .settings_get()
         .await
         .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-    let global_allow =
-        settings.remote_images == "always" || (allowed_sender && settings.remote_images != "never");
+    let global_allow = settings.remote_images != "never";
     if let Some((html, text, ri, tc, ds, _q)) = state
         .db
         .bodies_get(&message_id)

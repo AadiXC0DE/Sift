@@ -107,7 +107,7 @@ export const fixtureBackend: Record<string, (args: never) => unknown> = {
     remoteImageCount: 0,
     trackerCount: 0,
     darkSafe: true,
-    remoteImagesAllowed: false,
+    remoteImagesAllowed: true,
   })) as never,
   threads_action: () => ({ undo_group: 'g1' }),
   action_undo: () => null,
