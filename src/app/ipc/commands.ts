@@ -21,12 +21,20 @@ export const api = {
     appPassword: string,
     onProgress: (p: import('./types').SetupProgress) => void,
   ) => {
-    const ch = new Channel<import('./types').SetupProgress>();
-    ch.onmessage = onProgress;
+    // new Channel() touches Tauri internals synchronously and throws in a
+    // plain browser (e2e, previews). Fall back to no progress channel so the
+    // failure surfaces as an async rejection the wizard can render.
+    let progress: Channel<import('./types').SetupProgress> | undefined;
+    try {
+      progress = new Channel<import('./types').SetupProgress>();
+      progress.onmessage = onProgress;
+    } catch {
+      progress = undefined;
+    }
     return call<import('./types').Account>('accounts_add_app_password', {
       email,
       appPassword,
-      progress: ch,
+      progress,
     });
   },
   accounts_update_app_password: (id: string, appPassword: string) =>
