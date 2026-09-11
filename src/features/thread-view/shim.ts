@@ -61,6 +61,17 @@ export function buildShim(nonce: string): string {
     var a = e.target.closest ? e.target.closest('a') : null;
     if (a) { clearTimeout(hoverT); hoverT = setTimeout(function(){ post({ type:'hover', href: a.getAttribute('href') }); }, 300); }
   });
+  // Clear the link preview as soon as the pointer leaves the link (or the
+  // document), so it does not linger over the message.
+  document.addEventListener('mouseout', function(e){
+    var a = e.target.closest ? e.target.closest('a') : null;
+    if (!a) return;
+    var to = e.relatedTarget;
+    if (to && to.closest && to.closest('a') === a) return;
+    clearTimeout(hoverT);
+    post({ type:'hover', href: '' });
+  });
+  window.addEventListener('blur', function(){ clearTimeout(hoverT); post({ type:'hover', href: '' }); });
   document.addEventListener('keydown', function(e){
     var map = {ArrowDown:'j', ArrowUp:'k'};
     var key = map[e.key] || e.key;

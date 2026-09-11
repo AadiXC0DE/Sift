@@ -153,6 +153,27 @@ select {
   overflow: hidden;
   contain: layout style;
 }
+@keyframes sift-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes sift-indeterminate {
+  0% {
+    transform: translateX(-40%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+.sync-indeterminate {
+  animation: sift-indeterminate 1.1s var(--ease-in-out) infinite;
+}
 @media (hover: hover) and (pointer: fine) {
   .hoverable {
     transition: background-color 80ms ease;

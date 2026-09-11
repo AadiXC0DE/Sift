@@ -256,7 +256,7 @@ async fn recover_full(
                     );
                     let _ = app.emit(
                         "sync:state",
-                        serde_json::json!({"account_id": account_id, "phase": "full", "done": 0, "total": 0, "last_error": null}),
+                        serde_json::json!({"account_id": account_id, "phase": "done", "done": 0, "total": 0, "last_error": null}),
                     );
                 }
                 Err(e) => {

@@ -63,10 +63,12 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
 
   return (
     <div
+      data-tauri-drag-region
       style={{
         width: 'var(--sidebar-w)',
         background: 'var(--bg-sidebar)',
         borderRight: '1px solid var(--border)',
+        paddingTop: 'var(--titlebar-h)',
         display: 'flex',
         flexDirection: 'column',
         flexShrink: 0,
@@ -260,25 +262,45 @@ function LabelRow({ label, onClick, short }: { label: Label; onClick: () => void
 
 function SyncProgress() {
   const byAccount = useSync((s) => s.byAccount);
-  const entries = Object.values(byAccount).filter((s) => s.phase === 'listing' || s.phase === 'metadata');
+  const entries = Object.values(byAccount).filter(
+    (s) => s.phase === 'listing' || s.phase === 'metadata' || s.phase === 'full',
+  );
   if (!entries.length) return null;
+  const s = entries[0];
+  const pct = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
   return (
-    <div style={{ padding: '0 12px 4px' }}>
-      {entries.map((s) => (
+    <div style={{ padding: '2px 12px 8px' }} role="status" aria-live="polite">
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          gap: 8,
+          fontSize: 11.5,
+          color: 'var(--fg-3)',
+          marginBottom: 5,
+        }}
+      >
+        <span style={{ whiteSpace: 'nowrap' }}>
+          {s.phase === 'metadata' ? 'Downloading mail' : 'Getting your mail'}
+        </span>
+        {s.total > 0 && (
+          <span className="num" style={{ fontVariantNumeric: 'tabular-nums' }}>
+            {s.done.toLocaleString()} / {s.total.toLocaleString()}
+          </span>
+        )}
+      </div>
+      <div style={{ height: 3, background: 'var(--n3)', borderRadius: 999, overflow: 'hidden' }}>
         <div
-          key={s.account_id}
-          style={{ height: 2, background: 'var(--n3)', borderRadius: 1, overflow: 'hidden' }}
-        >
-          <div
-            style={{
-              width: s.total ? `${(s.done / s.total) * 100}%` : '30%',
-              height: '100%',
-              background: 'var(--accent)',
-              transition: 'width 160ms ease',
-            }}
-          />
-        </div>
-      ))}
+          className={s.total ? undefined : 'sync-indeterminate'}
+          style={{
+            width: s.total ? `${Math.max(3, pct)}%` : '35%',
+            height: '100%',
+            background: 'var(--accent)',
+            borderRadius: 999,
+            transition: 'width 240ms var(--ease-out)',
+          }}
+        />
+      </div>
     </div>
   );
 }

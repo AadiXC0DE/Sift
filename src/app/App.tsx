@@ -12,6 +12,7 @@ import { useAccounts } from '../stores/accountsStore';
 import { api } from './ipc/commands';
 import { on } from './ipc/events';
 import { useSync } from '../stores/syncStore';
+import type { SyncStatus } from './ipc/types';
 import { engine } from '../keymap/engine';
 import { undoLast } from '../features/actions/dispatch';
 import { Kbd } from '../ui/Kbd';
@@ -189,6 +190,33 @@ export function App() {
     refreshAccounts();
   }, [refreshAccounts]);
 
+  // Sync progress, outbox depth, and connectivity feed the first-run UI and
+  // the sidebar status. Without this the mailbox looked empty during the
+  // initial download with no feedback.
+  useEffect(() => {
+    const unsubs: (() => void)[] = [];
+    on<SyncStatus>('sync:state', (s) => {
+      useSync.getState().setStatus(s);
+      if (s.phase === 'done' || s.phase === 'error') void useAccounts.getState().refresh();
+    })
+      .then((u) => unsubs.push(u))
+      .catch(() => {});
+    on<{ account_id: string; pending: number }>('outbox:state', (p) => {
+      useSync.getState().setPending(p.account_id, p.pending);
+    })
+      .then((u) => unsubs.push(u))
+      .catch(() => {});
+    const setOnline = () => useSync.getState().setOnline(navigator.onLine);
+    setOnline();
+    window.addEventListener('online', setOnline);
+    window.addEventListener('offline', setOnline);
+    return () => {
+      unsubs.forEach((u) => u());
+      window.removeEventListener('online', setOnline);
+      window.removeEventListener('offline', setOnline);
+    };
+  }, []);
+
   const showOnboarding = accounts.length === 0;
   const paneOffOpen = paneLayout === 'off' && threadId != null;
   const bottom = paneLayout === 'bottom';
@@ -211,7 +239,6 @@ export function App() {
         minWidth: 0,
       }}
     >
-      <div data-tauri-drag-region style={{ height: 28, flexShrink: 0 }} />
       <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
         {!sidebarHidden && <Sidebar onSettings={() => setSettingsOpen(true)} />}
         <div
@@ -236,11 +263,13 @@ export function App() {
           >
             {showList && (
               <div
+                data-tauri-drag-region
                 style={{
                   width: bottom ? 'auto' : 'var(--list-w)',
                   flex: bottom ? '0 0 38%' : '0 1 var(--list-w)',
                   minWidth: 0,
                   minHeight: 0,
+                  paddingTop: 'var(--titlebar-h)',
                   maxWidth: bottom ? 'none' : 560,
                   borderRight: bottom ? 'none' : '1px solid var(--border)',
                   borderBottom: bottom ? '1px solid var(--border)' : 'none',
@@ -271,11 +300,13 @@ export function App() {
             )}
             {showThread && (
               <div
+                data-tauri-drag-region
                 style={{
                   flex: 1,
                   display: 'flex',
                   minWidth: 0,
                   minHeight: 0,
+                  paddingTop: 'var(--titlebar-h)',
                   overflow: 'hidden',
                   background: 'var(--bg-pane)',
                 }}
