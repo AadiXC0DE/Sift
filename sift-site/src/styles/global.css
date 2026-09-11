@@ -437,3 +437,15 @@ footer.site { border-top: 1px solid var(--line); margin-top: 76px; }
   .preview-side { display: none; }
   .footer-right { margin-left: 0; }
 }
+
+/* Larger tap targets on phones. The theme button was a 34px square, which is
+   below the comfortable 44px minimum and hard to hit. */
+@media (max-width: 640px) {
+  .nav-inner { gap: 12px; padding: 0 16px; }
+  .brand { font-size: 15.5px; }
+  .icon-btn { width: 44px; height: 44px; font-size: 20px; }
+  .btn-sm { height: 40px; padding: 0 16px; font-size: 13.5px; }
+  .section { padding: 56px 16px 0; }
+  .page { padding: 48px 16px 0; }
+}
+
