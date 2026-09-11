@@ -263,7 +263,7 @@ fn assert_no_pii(s: &str) -> Result<(), SiftError> {
 
 /// Build info for the setup wizard (Step A button + CI P11-T21).
 /// `oauth_available` is true only when a Google client ID was present at
-/// build time (`SIFT_GOOGLE_CLIENT_ID` runtime or compile-time) — public
+/// build time (`SIFT_GOOGLE_CLIENT_ID` runtime or compile-time) - public
 /// builds without it show the app-password path only.
 #[tauri::command]
 pub fn system_info() -> Result<serde_json::Value, SiftError> {

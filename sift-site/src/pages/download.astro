@@ -1,7 +1,41 @@
-<html lang="en"><head><meta charset="utf-8" /><title>Sift — download</title></head>
-<body><main style="max-width:860px;margin:0 auto;padding:40px 20px"><h1>download</h1>
-<h2 id="how-to">How to connect</h2>
-<ol><li>2-Step Verification on.</li><li>App password named Sift.</li><li>Paste it in the app.</li></ol>
-<p>Run it yourself: <code>brew install ownpath/tap/sift-bench</code> then <code>sift-bench quick</code>.</p>
-<p><a href="/benchmarks">Methodology</a> · <a href="/">Home</a></p>
-</main></body></html>
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+const version = 'v1.0.0';
+const size = '9.8 MB';
+const dmg =
+  'https://github.com/AadiXC0DE/Sift/releases/download/v1.0.0/Sift_1.0.0_universal.dmg';
+---
+<SiteLayout title="Download" description="Download Sift for macOS. A 9.8 MB native Gmail client with no bundled browser." path="/download">
+  <div class="page-head">
+    <h1>Download Sift</h1>
+    <p>{version} · {size} · macOS 13 Ventura or newer · Apple Silicon and Intel.</p>
+  </div>
+
+  <div class="card-block" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+    <a class="btn btn-primary" href={dmg}>Download for macOS</a>
+    <a class="btn btn-secondary" href="https://github.com/AadiXC0DE/Sift/releases">All releases</a>
+    <span class="pill-row"><span class="chip">9.8 MB</span><span class="chip">universal</span><span class="chip">free beta</span></span>
+  </div>
+
+  <div class="prose">
+    <h2>Install</h2>
+    <ol>
+      <li>Open the downloaded DMG and drag <strong>Sift</strong> into Applications.</li>
+      <li>Launch Sift. On first run macOS may ask you to confirm opening an app downloaded from the internet.</li>
+      <li>Connect your Gmail with an app password, which takes about two minutes.</li>
+    </ol>
+
+    <h2>Connect Gmail</h2>
+    <ol class="steps">
+      <li><span class="step-n">1</span><p>Turn on 2-Step Verification in your <a href="https://myaccount.google.com/signinoptions/two-step-verification">Google account settings</a>.</p></li>
+      <li><span class="step-n">2</span><p>Create an app password named Sift on the <a href="https://myaccount.google.com/apppasswords">App passwords page</a>. Google shows the 16 letter password once.</p></li>
+      <li><span class="step-n">3</span><p>Paste it into Sift and press Connect.</p></li>
+    </ol>
+
+    <h2>Checksums</h2>
+    <p>Every release ships a <code>SHA-256</code> sum next to the DMG on GitHub. The download button points at an immutable release asset, so the hash you verify is the file you get.</p>
+
+    <h2>Updates</h2>
+    <p>Sift checks for updates in the background and installs them on quit. You can also download any version from the <a href="https://github.com/AadiXC0DE/Sift/releases">releases page</a>.</p>
+  </div>
+</SiteLayout>

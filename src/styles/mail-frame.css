@@ -6,16 +6,65 @@ body {
 }
 
 body.sift-mail {
-  font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
   font-size: 14px;
-  line-height: normal;
-  color: #111;
+  line-height: 1.5;
+  color: #1a1a1a;
   background: #fff;
   color-scheme: light;
   text-rendering: optimizeLegibility;
+  -webkit-text-size-adjust: 100%;
   overflow-x: auto;
   overflow-y: hidden;
+  /* Long tracking URLs and unbroken tokens must not blow out the layout. */
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
-/* Never override descendant image dimensions, table spacing, colors, or
-   backgrounds. Those presentation details are structural in HTML email. */
+/* Keep images inside the reading pane. Do not force `height:auto`: any 1x1
+   spacer image with a width/height attribute would blow up to full size.
+   Authored inline styles (specificity) still win. */
+body.sift-mail img {
+  max-width: 100%;
+}
+
+/* Never override descendant table spacing, colors, or backgrounds: those are
+   structural in HTML email. */
+
+/* Plain-text mail keeps authored whitespace (indentation, code, ASCII art). */
+body.sift-mail .sift-plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Collapsed quoted replies, matching Apple Mail / Gmail. */
+body.sift-mail details.sift-quote {
+  margin: 8px 0 0;
+  color: #666;
+}
+
+body.sift-mail details.sift-quote > summary {
+  cursor: pointer;
+  color: #888;
+  font-size: 12px;
+  list-style: none;
+  user-select: none;
+}
+
+body.sift-mail details.sift-quote > summary::-webkit-details-marker {
+  display: none;
+}
+
+body.sift-mail details.sift-quote > summary::before {
+  content: '••• ';
+}
+
+body.sift-mail details.sift-quote[open] > summary::before {
+  content: '▾ ';
+}
+
+body.sift-mail .sift-quote-body {
+  margin-top: 6px;
+}

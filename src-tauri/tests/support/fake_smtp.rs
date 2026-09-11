@@ -83,7 +83,7 @@ async fn handle(
         if upper.starts_with("EHLO") || upper.starts_with("HELO") {
             write(&mut wh, "250-HELLO\r\n250 AUTH PLAIN LOGIN\r\n").await;
         } else if upper.starts_with("AUTH PLAIN") {
-            // AUTH PLAIN [b64] — credentials may arrive inline or challenged.
+            // AUTH PLAIN [b64] - credentials may arrive inline or challenged.
             let mut b64 = line["AUTH PLAIN".len()..].trim().to_string();
             if b64.is_empty() {
                 write(&mut wh, "334 \r\n").await;

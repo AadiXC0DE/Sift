@@ -1,6 +1,33 @@
-<html lang="en"><head><meta charset="utf-8" /><title>Sift — privacy</title></head>
-<body><main style="max-width:860px;margin:0 auto;padding:40px 20px"><h1>privacy</h1>
-<p>Your credentials live in your Mac's Keychain. Your mail lives in a local database on your Mac. Sift has no servers — nothing is sent anywhere except Google (IMAP/SMTP for mail, and Google sign-in only if you choose it).</p>
-<p>Run it yourself: <code>brew install ownpath/tap/sift-bench</code> then <code>sift-bench quick</code>.</p>
-<p><a href="/benchmarks">Methodology</a> · <a href="/">Home</a></p>
-</main></body></html>
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+---
+<SiteLayout title="Privacy" description="Sift talks only to Google. No telemetry, no ads, no Sift server." path="/privacy">
+  <div class="page-head">
+    <h1>Privacy</h1>
+    <p>Short version: Sift talks only to Google, keeps everything on your Mac, and collects nothing.</p>
+  </div>
+
+  <div class="prose">
+    <h2>What leaves your Mac</h2>
+    <p>Only the requests needed to read and send your mail, made directly to Google over TLS. Sift has no backend, no analytics endpoint, no crash reporter, and no ads.</p>
+
+    <h2>What stays on your Mac</h2>
+    <ul>
+      <li>A local SQLite database with your mailbox, search index, attachments, and drafts.</li>
+      <li>Your Gmail app password or OAuth refresh token, stored in the macOS Keychain.</li>
+      <li>Logs and diagnostics, which are written locally and never uploaded.</li>
+    </ul>
+
+    <h2>Remote images</h2>
+    <p>Like most mail clients, Sift loads remote images by default so messages look the way they were designed. If you prefer, set <strong>Settings → Privacy → Remote images</strong> to Never and they will be blocked before they reach the renderer.</p>
+
+    <h2>Credentials</h2>
+    <p>Sift authenticates with an app password or an OAuth refresh token. Tokens are held in the Keychain and only ever sent to Google. The local database never stores them.</p>
+
+    <h2>Deleting your data</h2>
+    <p>Removing an account deletes its Keychain entry and every row associated with it in the local database. Uninstalling the app and deleting its application support folder removes everything else.</p>
+
+    <h2>Questions</h2>
+    <p>Open an issue on <a href="https://github.com/AadiXC0DE/Sift">GitHub</a> if anything here is unclear.</p>
+  </div>
+</SiteLayout>

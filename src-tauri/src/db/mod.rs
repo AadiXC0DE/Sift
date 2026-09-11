@@ -159,7 +159,7 @@ impl Db {
         let pool = self.pool.clone();
         // Hold the async guard across spawn_blocking via an owned permit: instead hold a
         // synchronous mutex around the actual write. We keep the async lock held by
-        // blocking the thread briefly — acceptable and guarantees serialization.
+        // blocking the thread briefly - acceptable and guarantees serialization.
         let res = tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow::anyhow!(e.to_string()))?;
             f(&conn)

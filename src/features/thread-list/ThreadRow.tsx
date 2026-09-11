@@ -195,7 +195,7 @@ export const ThreadRowView = memo(function ThreadRowView({
           }}
         >
           {decodeRfc2047(row.subject)}{' '}
-          <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>— {decodeRfc2047(row.snippet)}</span>
+          <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>· {decodeRfc2047(row.snippet)}</span>
         </span>
         <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)', flexShrink: 0 }}>
           {formatRowDate(row.lastMessageAt)}

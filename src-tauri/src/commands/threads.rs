@@ -127,7 +127,7 @@ pub async fn thread_get(
         })
         .await
         .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-    // messages ascending, page 50+ (spec: page at 50 for huge threads — we return all up to 200, else latest 50)
+    // messages ascending, page 50+ (spec: page at 50 for huge threads - we return all up to 200, else latest 50)
     let msgs: Vec<MsgTuple> = state.db.read({
     let (a, t) = (account_id.clone(), thread_id.clone());
     move |c| -> anyhow::Result<Vec<MsgTuple>> {

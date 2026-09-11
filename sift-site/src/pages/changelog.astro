@@ -1,5 +1,40 @@
-<html lang="en"><head><meta charset="utf-8" /><title>Sift — changelog</title></head>
-<body><main style="max-width:860px;margin:0 auto;padding:40px 20px"><h1>changelog</h1>
-<p>Run it yourself: <code>brew install ownpath/tap/sift-bench</code> then <code>sift-bench quick</code>.</p>
-<p><a href="/benchmarks">Methodology</a> · <a href="/">Home</a></p>
-</main></body></html>
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+const releases = [
+  {
+    version: 'v1.0.0',
+    date: 'September 4, 2026',
+    notes: [
+      'Multi-account Gmail and Google Workspace with a unified inbox.',
+      'Local-first sync into SQLite with full offline reading and triage.',
+      'Keyboard-first triage, command palette, and remappable shortcuts.',
+      'HTML mail rendering with a sandboxed frame and sanitized content.',
+      'Undo, snooze, compose with drafts, and background updates.',
+    ],
+  },
+];
+---
+<SiteLayout title="Changelog" description="What shipped in each Sift release." path="/changelog">
+  <div class="page-head">
+    <h1>Changelog</h1>
+    <p>Notable changes in each release. Full history is on <a href="https://github.com/AadiXC0DE/Sift/releases">GitHub</a>.</p>
+  </div>
+
+  <div class="prose">
+    {
+      releases.map((r) => (
+        <section>
+          <h2 style="margin-top:0">
+            {r.version} <span style="color:var(--faint);font-weight:400;font-size:0.62em">{r.date}</span>
+          </h2>
+          <ul>
+            {r.notes.map((n) => (
+              <li>{n}</li>
+            ))}
+          </ul>
+        </section>
+      ))
+    }
+    <p>Release builds are signed and notarized, with SHA-256 checksums published next to each DMG.</p>
+  </div>
+</SiteLayout>

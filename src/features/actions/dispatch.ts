@@ -36,7 +36,7 @@ export async function dispatchAction(
     if (msg.includes('not_in_trash')) {
       toast.error('Only Trash or Spam can be deleted forever');
     } else {
-      toast.error('Action failed — will retry', {
+      toast.error('Action failed. Will retry', {
         action: { label: 'Retry', onClick: () => void dispatchAction(action, opts) },
       });
     }

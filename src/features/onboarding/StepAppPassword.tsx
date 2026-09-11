@@ -57,7 +57,7 @@ export function StepAppPassword() {
           setHint('Pasted from your clipboard');
         }
       } catch {
-        // Clipboard unavailable (permissions) — user pastes manually.
+        // Clipboard unavailable (permissions) - user pastes manually.
       }
     }
     window.addEventListener('focus', onFocus);

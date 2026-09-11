@@ -236,7 +236,10 @@ pub fn parse_full(msg: &Message) -> ParsedMessage {
             if let Some(b) = &p.body {
                 if let Some(d) = &b.data {
                     let bytes = b64url(d);
-                    let s = String::from_utf8_lossy(&bytes).into_owned();
+                    // Gmail returns the raw body bytes; honor the part's charset.
+                    // IMAP leaves carry no Content-Type here (mail-parser already
+                    // decoded to UTF-8), so the UTF-8 default is correct there.
+                    let s = decode_body_bytes(&bytes, part_charset(p).as_deref());
                     let depth = 0;
                     if mime == "text/html" && html.is_none() {
                         html = Some((s.clone(), depth));
@@ -331,6 +334,44 @@ pub fn parse_full(msg: &Message) -> ParsedMessage {
     pm
 }
 
+/// Declared charset for a part, from its Content-Type header. IMAP leaves carry
+/// no Content-Type here, so they resolve to None and decode as UTF-8.
+fn part_charset(p: &MessagePart) -> Option<String> {
+    let ct = p
+        .headers
+        .as_ref()?
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("content-type"))?
+        .value
+        .clone();
+    let lower = ct.to_ascii_lowercase();
+    let idx = lower.find("charset=")?;
+    let rest = ct[idx + "charset=".len()..].trim_start();
+    let value = if let Some(s) = rest.strip_prefix('"') {
+        s.split('"').next().unwrap_or("").to_string()
+    } else if let Some(s) = rest.strip_prefix('\'') {
+        s.split('\'').next().unwrap_or("").to_string()
+    } else {
+        rest.split(|c: char| c == ';' || c.is_whitespace())
+            .next()
+            .unwrap_or("")
+            .to_string()
+    };
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn decode_body_bytes(bytes: &[u8], charset: Option<&str>) -> String {
+    let label = charset.unwrap_or("utf-8").trim().to_ascii_lowercase();
+    match encoding_rs::Encoding::for_label(label.as_bytes()) {
+        Some(enc) => enc.decode_without_bom_handling(bytes).0.into_owned(),
+        None => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
 fn find_quote(t: &str) -> Option<usize> {
     for (i, line) in t.lines().enumerate() {
         let l = line.trim();
@@ -421,5 +462,38 @@ mod tests {
         assert_eq!(parsed.inline.len(), 1);
         assert_eq!(parsed.inline[0].content_id.as_deref(), Some("logo"));
         assert_eq!(parsed.inline[0].data, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn decodes_body_by_declared_charset() {
+        use crate::provider::gmail::types::{Body, Header};
+        let latin1 = vec![0xE9_u8]; // "é" in ISO-8859-1
+        let msg = Message {
+            id: "m1".into(),
+            thread_id: "t1".into(),
+            label_ids: None,
+            snippet: None,
+            history_id: None,
+            internal_date: None,
+            size_estimate: None,
+            raw: None,
+            payload: Some(MessagePart {
+                part_id: Some("1".into()),
+                mime_type: Some("text/html".into()),
+                filename: None,
+                headers: Some(vec![Header {
+                    name: "Content-Type".into(),
+                    value: "text/html; charset=iso-8859-1".into(),
+                }]),
+                body: Some(Body {
+                    attachment_id: None,
+                    size: Some(1),
+                    data: Some(URL_SAFE.encode(&latin1)),
+                }),
+                parts: None,
+            }),
+        };
+        let parsed = parse_full(&msg);
+        assert_eq!(parsed.html.as_deref(), Some("é"));
     }
 }

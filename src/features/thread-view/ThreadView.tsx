@@ -95,7 +95,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
     const run = async () => {
       // When unified, we need accountId: look up via threads_query? Simplify: use detail?.accountId or first account.
       // For now, if scope is 'all', fetch via all accounts by trying thread_get on each is expensive;
-      // the list row knows accountId — ThreadList should set it. Fallback: use stored last account.
+      // the list row knows accountId - ThreadList should set it. Fallback: use stored last account.
       const account =
         aid ?? detail?.accountId ?? (window as unknown as { __lastAccount?: string }).__lastAccount ?? '';
       if (!account) return;

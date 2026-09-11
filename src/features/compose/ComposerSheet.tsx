@@ -176,7 +176,7 @@ export function ComposerSheet({
         }
       }, 200);
     } catch {
-      toast.error('Send failed — draft kept');
+      toast.error('Send failed. Draft kept');
       setSending(false);
     }
   };

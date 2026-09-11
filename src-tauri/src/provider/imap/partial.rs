@@ -1,4 +1,4 @@
-//! IMAP incremental sync (Phase 11 task 7): per folder — new messages by
+//! IMAP incremental sync (Phase 11 task 7): per folder - new messages by
 //! UIDNEXT, flag/label deltas by CHANGEDSINCE (newest-2000 diff without
 //! CONDSTORE, which Gmail always advertises), deletions by UID-set diff,
 //! UIDVALIDITY mismatch → NeedsFull. A quiet poll is one SELECT plus one
@@ -19,7 +19,7 @@ const FULL_SCAN_INTERVAL_MS: i64 = 6 * 3_600_000;
 
 /// Run one partial tick over all/trash/junk. `prev` holds the stored folder
 /// cursors; `force_uid_diff` forces the UID-set reconciliation (every 10th
-/// poll per spec — the caller owns the counter).
+/// poll per spec - the caller owns the counter).
 pub async fn run_partial_sync(
     pool: &ImapPool,
     sink: &dyn SyncSink,

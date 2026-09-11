@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(v["code"], "x");
         assert_eq!(v["message"], "y");
         assert_eq!(v["retryable"], true);
-        // timeout maps retryable:true — construct via app since reqwest err construction is complex
+        // timeout maps retryable:true - construct via app since reqwest err construction is complex
         let t = SiftError::app("http", "timeout", true);
         let v2 = serde_json::to_value(&t).unwrap();
         assert_eq!(v2["retryable"], true);

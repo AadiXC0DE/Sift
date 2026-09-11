@@ -1,4 +1,4 @@
-//! P11-T10: SMTP send via fake sink — MIME preserved, errors mapped,
+//! P11-T10: SMTP send via fake sink - MIME preserved, errors mapped,
 //! retryable 421 stays pending (outbox policy), success triggers partial.
 #[path = "support/mod.rs"]
 mod support;

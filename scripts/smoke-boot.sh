@@ -18,16 +18,16 @@ echo "smoke-boot: launching (20s budget)..."
 (set -o pipefail; timeout -s KILL 20 "$BIN" >"$LOG" 2>&1 || true)
 
 if grep -q "panicked\|PluginInitialization" "$LOG"; then
-  echo "smoke-boot: FAIL — panic during startup:"
+  echo "smoke-boot: FAIL: panic during startup:"
   grep -B1 -A6 "panicked\|PluginInitialization" "$LOG" | head -n 30
   exit 1
 fi
 
 if ! grep -q "perf:window-shown" "$LOG"; then
-  echo "smoke-boot: FAIL — no perf:window-shown marker (setup did not complete):"
+  echo "smoke-boot: FAIL: no perf:window-shown marker (setup did not complete):"
   head -n 30 "$LOG"
   exit 1
 fi
 
-echo "smoke-boot: PASS — window shown, no panics"
+echo "smoke-boot: PASS: window shown, no panics"
 rm -f "$LOG"

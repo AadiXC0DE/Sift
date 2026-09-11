@@ -1,9 +1,62 @@
-<html lang="en"><head><meta charset="utf-8" /><title>Sift — faq</title></head>
-<body><main style="max-width:860px;margin:0 auto;padding:40px 20px"><h1>faq</h1>
-<h2>Do I need a Google Cloud project? No.</h2>
-<p>Download Sift, create an app password on your Google account, paste it in. No consoles, no client IDs, no verification screens.</p>
-<h2>Is an app password safe?</h2>
-<p>Google lets you give one app its own password instead of your real one. It only works for Sift, you can revoke it any time on the same page, and Sift keeps it in your Mac's Keychain. Nothing is sent anywhere except Google.</p>
-<p>Run it yourself: <code>brew install ownpath/tap/sift-bench</code> then <code>sift-bench quick</code>.</p>
-<p><a href="/benchmarks">Methodology</a> · <a href="/">Home</a></p>
-</main></body></html>
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+const faqs = [
+  {
+    q: 'Is Sift free?',
+    a: 'Yes, free while in beta. Download the build, connect a Gmail account, and use it as your daily client.',
+  },
+  {
+    q: 'Which accounts work?',
+    a: 'Gmail and Google Workspace. Sift speaks IMAP and SMTP with an app password, and the Gmail REST API for OAuth accounts. Other providers are not supported yet.',
+  },
+  {
+    q: 'Does my mail pass through a Sift server?',
+    a: 'No. There is no Sift server. The app talks directly to Google over TLS and keeps a local mirror of your mailbox on your Mac.',
+  },
+  {
+    q: 'Why an app password instead of a Google sign in?',
+    a: 'An app password means you can install Sift and connect in about two minutes with no Google Cloud project and no review process. If you prefer the sign in button, developers can bake in an OAuth client as described in the docs.',
+  },
+  {
+    q: 'Where are my credentials stored?',
+    a: 'In the macOS Keychain. The local database never contains tokens, and nothing is sent anywhere except Google.',
+  },
+  {
+    q: 'Does it work offline?',
+    a: 'Yes. Your whole mailbox is mirrored into a local SQLite database, so reading, search, and triage work with no connection. Actions queue and sync when you are back online.',
+  },
+  {
+    q: 'Can I add more than one account?',
+    a: 'Yes. Every account syncs independently, and the unified inbox interleaves them with a color stripe per account. Switch with the number keys.',
+  },
+  {
+    q: 'How is HTML email handled?',
+    a: 'Messages are sanitized once when they arrive, then rendered in a sandboxed frame with the sender CSS, tables, and layout preserved. Scripts and event handlers are stripped. Trackers and remote images follow your privacy setting.',
+  },
+  {
+    q: 'Is there a Windows or Linux version?',
+    a: 'macOS first. The Rust core is portable, but there is no release for other platforms yet.',
+  },
+  {
+    q: 'How do I report a bug or request a feature?',
+    a: 'Open an issue on GitHub. Include the app version from Settings and, if it helps, the diagnostics export, which stays on your machine until you choose to share it.',
+  },
+];
+---
+<SiteLayout title="FAQ" description="Common questions about Sift, Gmail, privacy, and offline use." path="/faq">
+  <div class="page-head">
+    <h1>Frequently asked</h1>
+    <p>Short answers to the things people ask before they switch.</p>
+  </div>
+
+  <div>
+    {
+      faqs.map((f) => (
+        <details class="faq-item">
+          <summary>{f.q}</summary>
+          <p>{f.a}</p>
+        </details>
+      ))
+    }
+  </div>
+</SiteLayout>

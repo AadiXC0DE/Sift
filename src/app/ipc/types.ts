@@ -1,4 +1,4 @@
-// DTO mirror of src-tauri/src/dto.rs — check-dto-sync.ts enforces field parity.
+// DTO mirror of src-tauri/src/dto.rs - check-dto-sync.ts enforces field parity.
 export interface Account {
   id: string;
   provider: string;

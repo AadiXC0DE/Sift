@@ -34,7 +34,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
         &ada.id,
         Some("blue".into()),
         None,
-        Some("<p>— Ada</p>".into()),
+        Some("<p>- Ada</p>".into()),
         Some(0),
     )
     .await?;
@@ -128,7 +128,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
             1,
             "Grace Hopper",
             "grace@acme.com",
-            "Launch checklist — final review",
+            "Launch checklist: final review",
             "Went through the list twice, one open item on…",
             vec!["INBOX", "UNREAD", "IMPORTANT"],
             true,
@@ -155,7 +155,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
             "Ada Lovelace",
             "ada@acme.com",
             "Re: Q3 numbers",
-            "Fixed — take another look?",
+            "Fixed, take another look?",
             vec!["SENT"],
             false,
             false,
@@ -207,7 +207,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
             "Ada Lovelace",
             "ada@acme.com",
             "Invoice #1042",
-            "Thanks — receipt attached.",
+            "Thanks, receipt attached.",
             vec!["SENT", "L-receipts"],
             false,
             false,
@@ -365,7 +365,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
             "Ben Carter",
             "ben@globex.io",
             "Re: Sprint demo recording",
-            "Watched — shipping it.",
+            "Watched: shipping it.",
             vec!["SENT"],
             false,
             false,
@@ -430,7 +430,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
             "Grace Hopper",
             "grace@acme.com",
             "Intro: Ben <> Alan",
-            "Alan — meet Ben…",
+            "Alan, meet Ben…",
             vec!["INBOX"],
             false,
             false,
@@ -494,7 +494,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
 
     // Bodies for the newest messages (HTML goes through the real sanitizer).
     let bodies: Vec<(&str, &str)> = vec![
-        ("da-m1", "<h2>Launch checklist</h2><p>Went through the list twice. One open item on the <b>release notes</b> — see <a href=\"https://example.com/notes\">notes</a>.</p>"),
+        ("da-m1", "<h2>Launch checklist</h2><p>Went through the list twice. One open item on the <b>release notes</b> (see <a href=\"https://example.com/notes\">notes</a>).</p>"),
         ("da-m2", "<p>Looks good, one thing on row 14.</p><div class=\"gmail_quote\"><p>On Tuesday, Ada wrote: here are the Q3 numbers…</p></div>"),
         ("da-m4", "<table><tr><td><h3>Weekly digest</h3></td></tr><tr><td>Edge runtimes, local-first sync, and keyboard-first triage.</td></tr></table><img src=\"https://example.com/hero.jpg\" width=\"600\" height=\"200\"><img src=\"https://open.tracker.example/o.gif\" width=\"1\" height=\"1\">"),
         ("da-m5", "<p>Signed copy attached, please countersign.</p>"),

@@ -162,7 +162,7 @@ pub async fn accounts_update(
 }
 
 /// MX probe for Step B (P11-T15). Returns google_hosted true/false, or None
-/// (null) when DNS fails/offline — the wizard proceeds silently then.
+/// (null) when DNS fails/offline - the wizard proceeds silently then.
 #[tauri::command]
 pub async fn accounts_probe_email(email: String) -> Result<Option<bool>, SiftError> {
     Ok(probe_google_hosted(&email).await)
