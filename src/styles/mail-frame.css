@@ -18,9 +18,10 @@ body.sift-mail {
   -webkit-text-size-adjust: 100%;
   overflow-x: auto;
   overflow-y: hidden;
-  /* Long tracking URLs and unbroken tokens must not blow out the layout. */
+  /* Break only when a single token cannot fit (long URLs). Do NOT use
+     `word-break: break-word` / `overflow-wrap: anywhere`: they shrink table
+     columns to one character and collapse headings like "Status" vertically. */
   overflow-wrap: break-word;
-  word-break: break-word;
 }
 
 /* Keep images inside the reading pane. Do not force `height:auto`: any 1x1

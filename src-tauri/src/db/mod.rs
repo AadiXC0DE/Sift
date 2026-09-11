@@ -35,6 +35,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
         "0005_remote_images_default",
         include_str!("migrations/0005_remote_images_default.sql"),
     ),
+    (
+        "0006_rerender_bodies",
+        include_str!("migrations/0006_rerender_bodies.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -79,6 +83,9 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         conn.execute("UPDATE schema_version SET version=4", [])?;
         conn.execute_batch(MIGRATIONS[3].1)?;
         conn.execute("UPDATE schema_version SET version=5", [])?;
+        let _ = conn.execute_batch(MIGRATIONS[4].1);
+        conn.execute_batch(MIGRATIONS[5].1)?;
+        conn.execute("UPDATE schema_version SET version=6", [])?;
         return Ok(());
     }
     let v: i64 = conn
@@ -108,6 +115,10 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     if v < 5 {
         conn.execute_batch(MIGRATIONS[4].1)?;
         conn.execute("UPDATE schema_version SET version=5", [])?;
+    }
+    if v < 6 {
+        conn.execute_batch(MIGRATIONS[5].1)?;
+        conn.execute("UPDATE schema_version SET version=6", [])?;
     }
     Ok(())
 }
@@ -185,7 +196,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
         for t in [
             "accounts",
             "labels",
@@ -220,7 +231,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rendering_upgrade_preserves_cached_bodies() {
+    async fn rendering_upgrade_invalidates_cached_bodies() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let account = db
@@ -249,19 +260,24 @@ mod tests {
         .await
         .unwrap();
         db.write(|connection| {
-            connection.execute("UPDATE schema_version SET version=3", [])?;
+            connection.execute("UPDATE schema_version SET version=5", [])?;
             Ok(())
         })
         .await
         .unwrap();
         drop(db);
 
+        // 0006 drops bodies rendered by older builds and lets them refetch, so
+        // the leaked <title> and stale layout in cached mail are re-rendered.
         let reopened = Db::open(dir.path()).unwrap();
-        let body = reopened.bodies_get("m1").await.unwrap();
-        assert_eq!(
-            body.and_then(|value| value.0).as_deref(),
-            Some("<p>cached mail</p>")
-        );
+        assert!(reopened.bodies_get("m1").await.unwrap().is_none());
+        let conn = reopened.pool.get().unwrap();
+        let state: String = conn
+            .query_row("SELECT body_state FROM messages WHERE id='m1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(state, "none");
     }
     #[test]
     fn p1_t03_pragmas() {

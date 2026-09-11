@@ -40,7 +40,7 @@ If you want the "Sign in with Google" button instead, see [`docs/oauth.md`](docs
 
 `j`/`k` move · `e` archive · `#` trash · `s` star · `h` snooze · `l` label · `r`/`a`/`f` reply · `c` compose · `/` search · `⌘K` palette · `?` help
 
-Every binding is listed on the [shortcuts page](https://sift.ownpath.xyz/shortcuts) and can be remapped in Settings.
+Every binding is listed in the app under Settings and can be remapped.
 
 ## How it works
 
@@ -78,7 +78,7 @@ To run the offline demo mailbox without connecting an account, start the app wit
 
 ## Privacy
 
-Sift talks directly to Google over TLS. No analytics, no crash reporting, no third party endpoints. Credentials are stored in the macOS Keychain, and the local database never contains tokens. See the [privacy page](https://sift.ownpath.xyz/privacy) for the full statement.
+Sift talks directly to Google over TLS. No analytics, no crash reporting, no third party endpoints. Credentials are stored in the macOS Keychain, and the local database never contains tokens. See [`sift-site/src/pages/privacy.astro`](sift-site/src/pages/privacy.astro) for the full statement.
 
 ## Contributing
 

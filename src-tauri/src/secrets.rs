@@ -1,7 +1,7 @@
 use crate::errors::SiftError;
 
 #[cfg(not(test))]
-const SERVICE: &str = "xyz.ownpath.sift";
+const SERVICE: &str = "com.aadixc0de.sift";
 
 #[cfg(not(test))]
 pub fn store_refresh_token(email: &str, token: &str) -> Result<(), SiftError> {
