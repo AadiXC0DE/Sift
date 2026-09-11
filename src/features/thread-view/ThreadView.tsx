@@ -20,6 +20,7 @@ import { on } from '../../app/ipc/events';
 import type { Label } from '../../app/ipc/types';
 import { Button } from '../../ui/Button';
 import { decodeRfc2047 } from '../../lib/rfc2047';
+import { toast } from 'sonner';
 
 const bodyCache = new Map<string, MessageBody>();
 function cacheGet(id: string) {
@@ -400,7 +401,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                     )}
                     {m.listUnsubscribe && <UnsubPill messageId={m.id} />}
                   </div>
-                  {m.hasAttachments && <AttachmentStrip messageId={m.id} attachments={m.attachments} />}
+                  {<AttachmentStrip messageId={m.id} attachments={m.attachments} />}
                   {!body || body.state === 'loading' ? (
                     body?.text ? (
                       <pre
@@ -703,7 +704,42 @@ function AttachmentStrip({
   attachments: { id: string; filename?: string | null; mime: string; size: number }[];
 }) {
   const files = attachments.filter((a) => a.filename);
+  const [busy, setBusy] = useState<string | null>(null);
   if (!files.length) return null;
+
+  const errorText = (e: unknown): string => {
+    if (typeof e === 'string') return e;
+    const msg = (e as { message?: string })?.message;
+    return msg && msg.length < 200
+      ? msg
+      : 'Could not fetch this attachment. Check your connection and try again.';
+  };
+
+  const open = async (id: string) => {
+    setBusy(id);
+    try {
+      await api.attachments_open(id);
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const save = async (id: string, filename: string) => {
+    setBusy(id);
+    try {
+      const r = await api.attachments_save_as(id);
+      if (r?.path) toast.success(`Saved ${filename}`);
+    } catch (e) {
+      // A cancelled save dialog is not an error.
+      const text = errorText(e);
+      if (!/cancel/i.test(text)) toast.error(text);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', gap: 8, margin: '8px 0', flexWrap: 'wrap' }}>
       {files.map((a) => (
@@ -720,7 +756,8 @@ function AttachmentStrip({
           }}
         >
           <button
-            onClick={() => void api.attachments_open(a.id)}
+            onClick={() => void open(a.id)}
+            disabled={busy === a.id}
             title={`Open ${a.filename}`}
             style={{
               display: 'flex',
@@ -735,7 +772,9 @@ function AttachmentStrip({
               maxWidth: 280,
             }}
           >
-            {a.mime.startsWith('image/') ? (
+            {busy === a.id ? (
+              <Spinner size={16} />
+            ) : a.mime.startsWith('image/') ? (
               <img
                 src={`sift-att://${messageId}/${a.id}`}
                 alt=""
@@ -749,7 +788,8 @@ function AttachmentStrip({
             </span>
           </button>
           <button
-            onClick={() => void api.attachments_save_as(a.id)}
+            onClick={() => void save(a.id, a.filename ?? 'attachment')}
+            disabled={busy === a.id}
             title="Save to disk"
             aria-label={`Save ${a.filename}`}
             style={{

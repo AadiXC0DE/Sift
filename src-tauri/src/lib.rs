@@ -49,6 +49,26 @@ pub mod opener {
             Ok(())
         }
     }
+
+    /// Open a local file with the system's default application. Distinct from
+    /// [`open`], which takes a URL; handing `open_url` a filesystem path makes
+    /// the plugin reject it, so attachments silently did nothing.
+    pub fn open_path(_app: &tauri::AppHandle, path: &str) -> Result<(), String> {
+        if path.is_empty() {
+            return Err("empty".into());
+        }
+        #[cfg(not(test))]
+        {
+            use tauri_plugin_opener::OpenerExt;
+            _app.opener()
+                .open_path(path, None::<&str>)
+                .map_err(|e| e.to_string())
+        }
+        #[cfg(test)]
+        {
+            Ok(())
+        }
+    }
 }
 
 /// Pin rustls to the `ring` crypto backend. Both `ring` (via reqwest) and

@@ -11,7 +11,7 @@ pub async fn attachments_open(
     let (path, mime) = ensure_downloaded(&state, &attachment_id).await?;
     // executables need confirm - frontend shows dialog; backend double-checks extension
     let _ = mime;
-    crate::opener::open(&app, &path).map_err(|e| SiftError::app("open", e.to_string(), false))
+    crate::opener::open_path(&app, &path).map_err(|e| SiftError::app("open", e.to_string(), false))
 }
 
 #[tauri::command]
