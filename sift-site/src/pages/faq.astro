@@ -42,8 +42,18 @@ const faqs = [
     a: 'Open an issue on GitHub. Include the app version from Settings and, if it helps, the diagnostics export, which stays on your machine until you choose to share it.',
   },
 ];
+const faqLd = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: faqs.map((f) => ({
+    '@type': 'Question',
+    name: f.q,
+    acceptedAnswer: { '@type': 'Answer', text: f.a },
+  })),
+};
 ---
 <SiteLayout title="FAQ" description="Common questions about Sift, Gmail, privacy, and offline use." path="/faq">
+  <script type="application/ld+json" set:html={JSON.stringify(faqLd)} />
   <div class="page-head">
     <h1>Frequently asked</h1>
     <p>Short answers to the things people ask before they switch.</p>

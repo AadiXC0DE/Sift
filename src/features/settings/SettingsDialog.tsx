@@ -434,17 +434,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                 >
                   Reset local data
                 </Button>
-                <Button
-                  onClick={() => {
-                    try {
-                      void navigator.clipboard.writeText('sift-bench quick');
-                    } catch {
-                      /* noop */
-                    }
-                  }}
-                >
-                  Copy speed-bench command
-                </Button>
               </div>
             </>
           )}

@@ -38,12 +38,8 @@ const rows = [
       <li><strong>What is not counted:</strong> network latency and remote image loads. Those belong to the network, not to the app. Sift never blocks an interaction on them.</li>
     </ul>
 
-    <h2>Reproduce it</h2>
-    <p>Run the same harness against your own account and machine:</p>
-    <div class="card-block">
-      <code>brew install AadiXC0DE/tap/sift-bench</code><br /><br />
-      <code>sift-bench quick</code>
-    </div>
-    <p>The harness is a small CLI that drives the same Rust core the app uses and reports a JSON result you can diff. Numbers vary with mailbox size and disk speed, so judge the shape of the result, not the exact millisecond.</p>
+    <h2>About these numbers</h2>
+    <p>Sift is measured on the same machine you will run it on, not in a lab. The cold-start figure is the first useful paint of the inbox with a warm OS cache. Interaction figures are input-to-paint on a local mirror, so network latency and remote image loads are not counted. Those belong to the network, and Sift never blocks an interaction on them.</p>
+    <p>Numbers vary with mailbox size and disk speed, so judge the shape of the result rather than the exact millisecond. The benchmark harness lives in <a href="https://github.com/AadiXC0DE/Sift/tree/main/tools/sift-bench">tools/sift-bench</a> in the repository; a published build is coming soon.</p>
   </div>
 </SiteLayout>

@@ -10,7 +10,7 @@ import { Chip } from '../../ui/Chip';
 import { Spinner } from '../../ui/Spinner';
 import { EmptyState } from '../../ui/EmptyState';
 import { dispatchAction } from '../actions/dispatch';
-import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Paperclip, Tag } from 'lucide-react';
+import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Paperclip, Tag, Download } from 'lucide-react';
 import { IconButton } from '../../ui/IconButton';
 import { Popover } from '../../ui/Popover';
 import { Menu } from '../../ui/Menu';
@@ -702,32 +702,37 @@ function AttachmentStrip({
   messageId: string;
   attachments: { id: string; filename?: string | null; mime: string; size: number }[];
 }) {
-  void messageId;
-  if (!attachments.length) return null;
+  const files = attachments.filter((a) => a.filename);
+  if (!files.length) return null;
   return (
     <div style={{ display: 'flex', gap: 8, margin: '8px 0', flexWrap: 'wrap' }}>
-      {attachments
-        .filter((a) => a.filename)
-        .map((a) => (
+      {files.map((a) => (
+        <div
+          key={a.id}
+          style={{
+            display: 'flex',
+            alignItems: 'stretch',
+            height: 56,
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            background: 'var(--n1)',
+            overflow: 'hidden',
+          }}
+        >
           <button
-            key={a.id}
             onClick={() => void api.attachments_open(a.id)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              void api.attachments_save_as(a.id);
-            }}
+            title={`Open ${a.filename}`}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              height: 56,
               padding: '0 12px',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              background: 'var(--n1)',
+              border: 'none',
+              background: 'none',
               color: 'var(--fg)',
               cursor: 'pointer',
               fontSize: 12,
+              maxWidth: 280,
             }}
           >
             {a.mime.startsWith('image/') ? (
@@ -739,11 +744,30 @@ function AttachmentStrip({
             ) : (
               <Paperclip size={16} />
             )}
-            <span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {a.filename} <span style={{ color: 'var(--fg-3)' }}>{(a.size / 1024).toFixed(0)}KB</span>
             </span>
           </button>
-        ))}
+          <button
+            onClick={() => void api.attachments_save_as(a.id)}
+            title="Save to disk"
+            aria-label={`Save ${a.filename}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 40,
+              border: 'none',
+              borderLeft: '1px solid var(--border)',
+              background: 'none',
+              color: 'var(--fg-2)',
+              cursor: 'pointer',
+            }}
+          >
+            <Download size={15} />
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

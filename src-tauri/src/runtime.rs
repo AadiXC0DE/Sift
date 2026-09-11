@@ -98,9 +98,17 @@ fn spawn_account_loops(app: AppHandle, account_id: String) {
                 }
             }
             if let Ok(n) = state.db.outbox_pending_count(&aid).await {
+                let summary = state
+                    .db
+                    .outbox_summary(&aid)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(label, count)| serde_json::json!({ "label": label, "count": count }))
+                    .collect::<Vec<_>>();
                 let _ = app3.emit(
                     "outbox:state",
-                    serde_json::json!({"account_id": aid, "pending": n, "failed": 0}),
+                    serde_json::json!({"account_id": aid, "pending": n, "failed": 0, "summary": summary}),
                 );
             }
             tokio::time::sleep(std::time::Duration::from_secs(if worked { 1 } else { 5 })).await;

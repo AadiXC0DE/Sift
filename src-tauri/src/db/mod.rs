@@ -65,6 +65,17 @@ fn apply_pragmas(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Startup repair for the outbox. An op left `inflight` means the app exited
+/// mid-send, so requeue it. Ops whose account no longer exists are orphaned by
+/// account removal and would otherwise count as "pending" forever.
+fn recover_outbox(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "UPDATE outbox_ops SET state='pending', attempts=0, not_before=0, last_error=NULL WHERE state='inflight';
+         DELETE FROM outbox_ops WHERE account_id NOT IN (SELECT id FROM accounts);",
+    )?;
+    Ok(())
+}
+
 fn run_migrations(conn: &Connection) -> Result<()> {
     // Ensure schema_version exists (fresh DB has no tables)
     let has_version: bool = conn
@@ -133,6 +144,7 @@ impl Db {
             let conn = pool.get()?;
             apply_pragmas(&conn)?;
             run_migrations(&conn)?;
+            recover_outbox(&conn)?;
             apply_pragmas(&conn)?;
         }
         Ok(Self {
@@ -228,6 +240,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _ = Db::open(dir.path()).unwrap();
         let _ = Db::open(dir.path()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn outbox_recovery_requeues_inflight_and_purges_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let acc = db
+            .new_account("outbox@example.com", None, None)
+            .await
+            .unwrap();
+        let aid = acc.id.clone();
+        db.outbox_enqueue(
+            &aid,
+            "modify_labels",
+            "{\"add\":[],\"remove\":[\"UNREAD\"]}",
+            None,
+            0,
+        )
+        .await
+        .unwrap();
+        db.outbox_enqueue(
+            &aid,
+            "modify_labels",
+            "{\"add\":[\"STARRED\"],\"remove\":[]}",
+            None,
+            0,
+        )
+        .await
+        .unwrap();
+        // Simulate a send interrupted by app exit.
+        let op = db.outbox_next(&aid).await.unwrap().unwrap();
+        db.outbox_set(op.id, "inflight", 0, 0, None).await.unwrap();
+        // Orphaned op from an account that no longer exists.
+        db.outbox_enqueue("gone", "trash", "{}", None, 0)
+            .await
+            .unwrap();
+        drop(db);
+
+        let reopened = Db::open(dir.path()).unwrap();
+        assert_eq!(reopened.outbox_pending_count(&aid).await.unwrap(), 2);
+        assert_eq!(reopened.outbox_pending_count("gone").await.unwrap(), 0);
+        let summary = reopened.outbox_summary(&aid).await.unwrap();
+        assert!(
+            summary.iter().any(|(l, _)| l == "Marking as read"),
+            "{summary:?}"
+        );
+        assert!(summary.iter().any(|(l, _)| l == "Starring"), "{summary:?}");
     }
 
     #[tokio::test]

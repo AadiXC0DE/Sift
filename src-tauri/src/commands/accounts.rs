@@ -133,6 +133,7 @@ pub async fn accounts_remove(state: State<'_, AppState>, id: String) -> Result<(
     }
     state.providers.write().await.remove(&id);
     state.tokens.write().await.remove(&id);
+    let _ = state.db.outbox_delete_account(&id).await;
     state
         .db
         .accounts_remove(&id)

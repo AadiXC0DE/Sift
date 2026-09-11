@@ -82,9 +82,7 @@ async fn ensure_downloaded(
     }
     // fetch (transport locator: Gmail attachmentId, or the IMAP section path
     // stored in part_id when gmail_att_id is NULL)
-    let provider = state
-        .provider_for(&message_id_by_att(state, attachment_id).await?)
-        .await?;
+    let provider = state.provider_for(&message_id).await?;
     let locator = gmail_att_id.as_deref().unwrap_or(&part_id);
     if locator.is_empty() {
         return Err(SiftError::app("nodata", "no data", true));
@@ -110,22 +108,4 @@ async fn ensure_downloaded(
         .map_err(|e| SiftError::app("db", e.to_string(), false))?;
     let _ = part_id;
     Ok((ps, mime))
-}
-
-async fn message_id_by_att(state: &AppState, attachment_id: &str) -> Result<String, SiftError> {
-    state
-        .db
-        .read({
-            let id = attachment_id.to_string();
-            move |c| {
-                Ok(c.query_row(
-                    "SELECT message_id FROM attachments WHERE id=?",
-                    rusqlite::params![id],
-                    |r| r.get(0),
-                )
-                .unwrap_or_default())
-            }
-        })
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))
 }

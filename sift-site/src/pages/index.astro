@@ -3,21 +3,58 @@ import '../styles/global.css';
 const version = "v1.0.0";
 const size = "9.8 MB";
 const dmg = "https://github.com/AadiXC0DE/Sift/releases/download/v1.0.0/Sift_1.0.0_universal.dmg";
+const origin = new URL("https://usesift.xyz");
+const canonical = new URL("/", origin).href;
+const ogImage = new URL("/og.png", origin).href;
+const description =
+  "Sift is a fast, keyboard-first Gmail client for macOS. A Rust core and a local SQLite mirror keep every action under 100 ms, offline by default.";
+const softwareLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Sift",
+  applicationCategory: "BusinessApplication",
+  applicationSubCategory: "Email client",
+  operatingSystem: "macOS 13+",
+  softwareVersion: "1.0.0",
+  description,
+  url: canonical,
+  downloadUrl: dmg,
+  screenshot: ogImage,
+  fileSize: "9.8MB",
+  inLanguage: "en",
+  isAccessibleForFree: true,
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  author: { "@type": "Person", name: "Aaditya", url: "https://github.com/AadiXC0DE" },
+};
 ---
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width" />
-  <meta name="description" content="A fast, keyboard-first Gmail client for Mac. Every action under 100 ms." />
-  <meta property="og:title" content="Sift · Email that keeps up with you" />
-  <meta property="og:description" content="A fast, keyboard-first Gmail client for Mac. Every action under 100 ms." />
-  <meta property="og:image" content="/og.png" />
+  <meta name="description" content={description} />
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+  <link rel="canonical" href={canonical} />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content={canonical} />
+  <meta property="og:site_name" content="Sift" />
+  <meta property="og:locale" content="en_US" />
+  <meta property="og:title" content="Sift · Fast, quiet Gmail for macOS" />
+  <meta property="og:description" content={description} />
+  <meta property="og:image" content={ogImage} />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Sift, a fast keyboard-first Gmail client for macOS" />
   <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Sift · Fast, quiet Gmail for macOS" />
+  <meta name="twitter:description" content={description} />
+  <meta name="twitter:image" content={ogImage} />
   <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0a0a0c" media="(prefers-color-scheme: dark)" />
   <link rel="icon" type="image/png" href="/favicon-32.png" />
-  <title>Sift · Email that keeps up with you</title>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Sift","applicationCategory":"BusinessApplication","operatingSystem":"macOS","offers":{"@type":"Offer","price":"0"}}</script>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="apple-touch-icon" href="/logo.png" />
+  <title>Sift · Fast, quiet Gmail for macOS</title>
+  <script type="application/ld+json" set:html={JSON.stringify(softwareLd)} />
   <script>
     try {
       const t = localStorage.getItem('sift-theme');
@@ -116,7 +153,7 @@ const dmg = "https://github.com/AadiXC0DE/Sift/releases/download/v1.0.0/Sift_1.0
           <div class="bar-row"><span class="bar-name"><strong>Sift</strong></span><span class="bar-track"><span class="bar-fill sift" style="--w:16%"></span></span><span class="bar-val">0.31 s</span></div>
           <div class="bar-row"><span class="bar-name">Apple Mail</span><span class="bar-track"><span class="bar-fill rival" style="--w:100%"></span></span><span class="bar-val">1.9 s</span></div>
         </div>
-        <p class="metric-foot">Six times quicker to a working inbox. The rest is measured the same way. <a href="/benchmarks">Run it yourself in one command</a>.</p>
+        <p class="metric-foot">Six times quicker to a working inbox. The rest is measured the same way. <a href="/benchmarks">Read the methodology</a>.</p>
       </div>
       <div class="bench-pair">
         <div class="bench-card">
@@ -260,7 +297,7 @@ const dmg = "https://github.com/AadiXC0DE/Sift/releases/download/v1.0.0/Sift_1.0
       <span class="flow-arrow" aria-hidden="true">→</span>
       <div class="flow-node"><span class="flow-k">Your screen</span><span class="flow-d">reads local, never waits</span></div>
     </div>
-    <p class="rust-cta">Sift is open source. <a href="https://github.com/AadiXC0DE/Sift">Read the code</a> · <a href="/benchmarks">reproduce the benchmarks</a></p>
+    <p class="rust-cta">Sift is open source. <a href="https://github.com/AadiXC0DE/Sift">Read the code</a> · <a href="/benchmarks">see the methodology</a></p>
   </section>
 
   <section class="section" aria-label="Connect">

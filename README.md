@@ -1,6 +1,6 @@
 # Sift
 
-Fast, quiet email for Gmail on macOS.
+Fast, quiet email for Gmail on macOS. Website: <https://usesift.xyz>.
 
 Sift is a keyboard-first Gmail client built as a native Mac app. A Rust core mirrors your whole mailbox into a local SQLite database, so every read comes off your disk instead of the network. It starts in about a third of a second, idles around 35 MB, and ships as a 9.8 MB download with no bundled browser.
 
@@ -78,7 +78,7 @@ To run the offline demo mailbox without connecting an account, start the app wit
 
 ## Privacy
 
-Sift talks directly to Google over TLS. No analytics, no crash reporting, no third party endpoints. Credentials are stored in the macOS Keychain, and the local database never contains tokens. See [`sift-site/src/pages/privacy.astro`](sift-site/src/pages/privacy.astro) for the full statement.
+Sift talks directly to Google over TLS. No analytics, no crash reporting, no third party endpoints. Credentials are stored in the macOS Keychain, and the local database never contains tokens. See <https://usesift.xyz/privacy> for the full statement.
 
 ## Contributing
 

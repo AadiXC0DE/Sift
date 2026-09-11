@@ -307,9 +307,40 @@ function SyncProgress() {
 
 function PendingFooter() {
   const pending = useSync((s) => s.pending);
+  const summaries = useSync((s) => s.pendingSummary);
   const total = Object.values(pending).reduce((a, b) => a + b, 0);
   if (total <= 0) return null;
+  const details = Object.values(summaries).flat();
+  const inline = details
+    .slice(0, 2)
+    .map((d) => `${d.label}${d.count > 1 ? ` (${d.count})` : ''}`)
+    .join(', ');
+  const tooltip = details.length
+    ? `Sending your changes to Gmail:\n${details.map((d) => `• ${d.label} (${d.count})`).join('\n')}`
+    : 'Sending your changes to Gmail';
   return (
-    <div style={{ padding: '4px 12px', fontSize: 12, color: 'var(--fg-3)' }}>{total} changes pending</div>
+    <div
+      title={tooltip}
+      role="status"
+      aria-live="polite"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 7,
+        padding: '6px 12px',
+        borderTop: '1px solid var(--border)',
+        fontSize: 12,
+        color: 'var(--fg-2)',
+        minWidth: 0,
+      }}
+    >
+      <span className="spin" aria-hidden style={{ color: 'var(--accent)' }}>
+        ◌
+      </span>
+      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        Sending {total} change{total === 1 ? '' : 's'} to Gmail
+        {inline ? `: ${inline}` : ''}
+      </span>
+    </div>
   );
 }

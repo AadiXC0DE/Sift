@@ -201,9 +201,12 @@ export function App() {
     })
       .then((u) => unsubs.push(u))
       .catch(() => {});
-    on<{ account_id: string; pending: number }>('outbox:state', (p) => {
-      useSync.getState().setPending(p.account_id, p.pending);
-    })
+    on<{ account_id: string; pending: number; summary?: { label: string; count: number }[] }>(
+      'outbox:state',
+      (p) => {
+        useSync.getState().setPending(p.account_id, p.pending, p.summary ?? []);
+      },
+    )
       .then((u) => unsubs.push(u))
       .catch(() => {});
     const setOnline = () => useSync.getState().setOnline(navigator.onLine);

@@ -224,6 +224,28 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     }
   }, [rows, focusedIndex, setThread]);
 
+  // If the open conversation leaves the current view (trashed, archived, moved
+  // away, or removed by sync), move the reading pane to the closest remaining
+  // one instead of leaving a stale message on screen.
+  useEffect(() => {
+    if (useView.getState().paneLayout === 'off') return;
+    const openId = useView.getState().threadId;
+    if (openId == null) return;
+    if (loading) return;
+    if (rows.some((r) => r.id === openId)) return;
+    if (!rows.length) {
+      setThread(null);
+      return;
+    }
+    const i = Math.min(focusedIndex, rows.length - 1);
+    const r = rows[i];
+    if (r) {
+      (window as unknown as { __lastAccount?: string }).__lastAccount = r.accountId;
+      setFocus(i);
+      setThread(r.id);
+    }
+  }, [rows, loading, focusedIndex, setFocus, setThread]);
+
   const title = useMemo(() => {
     if (view.kind === 'label') return labelName ?? (view as { labelId: string }).labelId;
     if (view.kind === 'search') return `Results for “${(view as { q: string }).q}”`;
