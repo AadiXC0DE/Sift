@@ -5,5 +5,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: npm run build
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm, cache-dependency-path: sift-site/pnpm-lock.yaml }
+      - run: pnpm install --frozen-lockfile
+        working-directory: sift-site
+      - run: pnpm build
+        working-directory: sift-site
+      - run: pnpm test
         working-directory: sift-site

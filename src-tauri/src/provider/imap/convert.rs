@@ -196,7 +196,7 @@ fn leaf(msg: &mail_parser::Message, id: usize, section: String) -> MessagePart {
 }
 
 /// Raw header value from a part's byte offsets. Raw (not pre-decoded)
-/// text is what the Gmail tree wants — `parse_full` decodes RFC2047 itself.
+/// text is what the Gmail tree wants - `parse_full` decodes RFC2047 itself.
 fn header_raw(msg: &mail_parser::Message, id: usize, name: &str) -> Option<String> {
     let raw = msg.raw_message();
     let part = msg.parts.get(id)?;

@@ -9,11 +9,37 @@ pub struct SanitizeOut {
 }
 
 pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
+    // Document-level presentation (bgcolor/background/inline style on <body>)
+    // is otherwise discarded when ammonia parses the message as a fragment.
+    let body_css = body_presentation(raw_html);
+
     // First pass: ammonia with custom config
     let mut builder = Builder::default();
     builder
         .rm_clean_content_tags(["style"])
+        // `<title>` text is otherwise emitted as a bare text node at the top of
+        // the message (ammonia parses fragments, so head content becomes body).
+        .add_clean_content_tags(["title", "meta", "link", "base"])
         .add_tags([
+            "big",
+            "tt",
+            "address",
+            "caption",
+            "ins",
+            "del",
+            "wbr",
+            "ruby",
+            "rt",
+            "rp",
+            "samp",
+            "kbd",
+            "var",
+            "mark",
+            "time",
+            "abbr",
+            "cite",
+            "q",
+            "dfn",
             "table",
             "thead",
             "tbody",
@@ -138,6 +164,12 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
     // style filtering is done post-pass
     let mut html = builder.clean(raw_html).to_string();
 
+    // Re-apply the message's page background/colors as the first stylesheet so
+    // the email's own <style> rules still win on equal specificity.
+    if let Some(css) = body_css {
+        html = format!("<style>html,body{{{css}}}</style>{html}");
+    }
+
     let mut remote_images = 0i64;
     let trackers = 0i64;
 
@@ -193,14 +225,28 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
 }
 
 fn extract_attr(tag: &str, name: &str) -> Option<String> {
-    for q in ['"', '\''] {
-        let pat = format!("{name}={q}");
-        if let Some(i) = tag.find(&pat) {
-            let rest = &tag[i + pat.len()..];
-            if let Some(e) = rest.find(q) {
-                return Some(rest[..e].to_string());
+    // ASCII-lowercasing preserves byte length, so indices match `tag`.
+    let lower = tag.to_ascii_lowercase();
+    let mut from = 0;
+    while from < lower.len() {
+        let i = lower[from..].find(name)? + from;
+        let before_ok =
+            i == 0 || matches!(tag.as_bytes()[i - 1], b' ' | b'\t' | b'\n' | b'\r' | b'<');
+        let after = i + name.len();
+        if before_ok && tag.as_bytes().get(after) == Some(&b'=') {
+            let val = tag[after + 1..].trim_start();
+            if let Some(rest) = val.strip_prefix('"') {
+                return rest.find('"').map(|e| rest[..e].to_string());
             }
+            if let Some(rest) = val.strip_prefix('\'') {
+                return rest.find('\'').map(|e| rest[..e].to_string());
+            }
+            let end = val
+                .find(|c: char| c.is_whitespace() || c == '>')
+                .unwrap_or(val.len());
+            return Some(val[..end].to_string());
         }
+        from = i + name.len();
     }
     None
 }
@@ -212,7 +258,7 @@ fn rewrite_cid_srcs(html: String, message_id: &str) -> String {
         out.push_str(&rest[..i]);
         let after = &rest[i + 4..];
         let mut end = after
-            .find(['"', '\'', ' ', '>', '&'])
+            .find(['"', '\'', ' ', '>', '&', ')', ',', '\n', '\r', '\t'])
             .unwrap_or(after.len());
         let raw = &after[..end];
         let cid = raw.trim_matches(|c: char| c == '<' || c == '>');
@@ -234,7 +280,9 @@ fn normalize_protocol_relative_urls(html: String) -> String {
         .replace("url(&#x27;//", "url(&#x27;https://")
 }
 
-/// Turn blocked remote images back into real `src` (Load / always-allow).
+/// Legacy helper kept for compatibility: sanitize now keeps remote `src` as-is
+/// and gating is via iframe CSP (`remoteImagesAllowed`). Remote images load
+/// by default; only an explicit Never blocks them.
 pub fn restore_remote_images(html: &str) -> String {
     const PLACEHOLDER: &str =
         "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
@@ -326,28 +374,104 @@ fn strip_bad_styles(html: &str) -> String {
     while let Some(i) = rest.find("style=\"") {
         out.push_str(&rest[..i]);
         let after = &rest[i + 7..];
-        if let Some(e) = after.find('"') {
-            let style = &after[..e];
-            let kept: Vec<&str> = style
-                .split(';')
-                .filter(|d| {
-                    let l = d.to_lowercase();
-                    !(l.contains("expression(")
-                        || l.contains("javascript:")
-                        || l.contains("@import")
-                        || l.contains("behavior:")
-                        || l.contains("-moz-binding"))
-                })
-                .collect();
-            out.push_str(&format!("style=\"{}\"", kept.join(";")));
-            rest = &after[e + 1..];
-        } else {
+        let Some(e) = after.find('"') else {
             out.push_str(rest);
             break;
-        }
+        };
+        let style = &after[..e];
+        let kept: Vec<&str> = style.split(';').filter(|d| !is_active_css(d)).collect();
+        out.push_str("style=\"");
+        out.push_str(&kept.join(";"));
+        out.push('"');
+        rest = &after[e + 1..];
     }
     out.push_str(rest);
     out
+}
+
+fn is_active_css(declaration: &str) -> bool {
+    let l = declaration.to_lowercase();
+    l.contains("expression(")
+        || l.contains("javascript:")
+        || l.contains("@import")
+        || l.contains("behavior:")
+        || l.contains("-moz-binding")
+        || l.contains("-o-link")
+        || l.contains("vbscript:")
+}
+
+/// Build CSS declarations from the top-level `<body>` element so page
+/// backgrounds, text colors, and inline body styling survive sanitization.
+/// Values are sanitized because they are embedded in a generated `<style>`.
+fn body_presentation(raw_html: &str) -> Option<String> {
+    let start = find_body_tag(raw_html)?;
+    let tag = &raw_html[start..];
+    let end = tag.find('>')?;
+    let tag = &tag[..end];
+    let mut decls: Vec<String> = Vec::new();
+    let attr = |name: &str| extract_attr(tag, name);
+    if let Some(v) = attr("style") {
+        let cleaned = clean_css_value(&v);
+        let cleaned: String = cleaned
+            .split(';')
+            .filter(|d| !is_active_css(d))
+            .collect::<Vec<_>>()
+            .join(";");
+        if !cleaned.is_empty() {
+            decls.push(cleaned);
+        }
+    }
+    if let Some(v) = attr("bgcolor") {
+        let v = clean_css_value(&v);
+        if !v.is_empty() {
+            decls.push(format!("background-color:{v}"));
+        }
+    }
+    if let Some(v) = attr("background") {
+        let v = clean_css_value(&v);
+        if !v.is_empty() && !v.starts_with("data:") {
+            decls.push(format!("background-image:url({v})"));
+        }
+    }
+    if let Some(v) = attr("text") {
+        let v = clean_css_value(&v);
+        if !v.is_empty() {
+            decls.push(format!("color:{v}"));
+        }
+    }
+    if decls.is_empty() {
+        None
+    } else {
+        Some(decls.join(";"))
+    }
+}
+
+fn find_body_tag(html: &str) -> Option<usize> {
+    let lower = html.to_lowercase();
+    let mut from = 0;
+    while let Some(i) = lower[from..].find("<body") {
+        let at = from + i;
+        let next = lower.as_bytes().get(at + 5).copied();
+        if matches!(
+            next,
+            None | Some(b'>') | Some(b' ') | Some(b'\n') | Some(b'\t') | Some(b'\r')
+        ) {
+            return Some(at);
+        }
+        from = at + 5;
+    }
+    None
+}
+
+/// Drop characters that could terminate the generated CSS rule or introduce a
+/// new one; active-CSS vectors are removed by `is_active_css` downstream.
+fn clean_css_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !matches!(c, '<' | '>' | '{' | '}'))
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -502,5 +626,51 @@ mod tests {
         );
         assert!(short_only.contains("sift-att://m1/image-large"));
         assert!(!short_only.contains("data:image/png;base64,AQ==-large"));
+    }
+
+    #[test]
+    fn strips_document_title_but_keeps_email_style() {
+        let out = sanitize(
+            "m1",
+            "<html><head><title>Weekly Digest</title><style>.a{color:red}</style></head><body><p>Body text</p></body></html>",
+        );
+        assert!(!out.html.contains("Weekly Digest"), "{}", out.html);
+        assert!(out.html.contains(".a{color:red}"));
+        assert!(out.html.contains("<p>Body text</p>"));
+    }
+
+    #[test]
+    fn preserves_body_presentation() {
+        let out = sanitize(
+            "m1",
+            "<body bgcolor=\"#f4f4f4\" background=\"https://cdn.example/bg.png\" style=\"margin:0;padding:20px\"><p>hi</p></body>",
+        );
+        assert!(
+            out.html.contains("background-color:#f4f4f4"),
+            "{}",
+            out.html
+        );
+        assert!(out.html.contains("padding:20px"), "{}", out.html);
+        assert!(out
+            .html
+            .contains("background-image:url(https://cdn.example/bg.png)"));
+        assert!(out.html.contains("<p>hi</p>"));
+    }
+
+    #[test]
+    fn cid_in_css_url_stops_cleanly() {
+        let out = sanitize("m1", "<div style=\"background:url(cid:logo)\"></div>");
+        assert!(out.html.contains("url(sift-att://m1/logo)"), "{}", out.html);
+        assert_eq!(inline_image_refs(&out.html, "m1"), vec!["logo".to_string()]);
+    }
+
+    #[test]
+    fn body_presentation_drops_active_css() {
+        let out = sanitize(
+            "m1",
+            "<body style=\"color:#111;background:url(javascript:alert(1));width:expression(alert(1))\"><p>x</p></body>",
+        );
+        assert!(!out.html.contains("javascript:"));
+        assert!(!out.html.contains("expression("));
     }
 }

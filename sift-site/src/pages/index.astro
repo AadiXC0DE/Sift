@@ -1,66 +1,417 @@
 ---
+import '../styles/global.css';
 const version = "v1.0.0";
 const size = "9.8 MB";
+const dmg = "https://github.com/AadiXC0DE/Sift/releases/download/v1.0.0/Sift_1.0.0_universal.dmg";
+const origin = new URL("https://usesift.xyz");
+const canonical = new URL("/", origin).href;
+const ogImage = new URL("/og.png", origin).href;
+const description =
+  "Sift is a fast, keyboard-first Gmail client for macOS. A Rust core and a local SQLite mirror keep every action under 100 ms, offline by default.";
+const softwareLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Sift",
+  applicationCategory: "BusinessApplication",
+  applicationSubCategory: "Email client",
+  operatingSystem: "macOS 13+",
+  softwareVersion: "1.0.0",
+  description,
+  url: canonical,
+  downloadUrl: dmg,
+  screenshot: ogImage,
+  fileSize: "9.8MB",
+  inLanguage: "en",
+  isAccessibleForFree: true,
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  author: { "@type": "Person", name: "Aaditya", url: "https://github.com/AadiXC0DE" },
+};
 ---
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width" />
-  <meta property="og:image" content="/og.png" />
+  <meta name="description" content={description} />
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+  <link rel="canonical" href={canonical} />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content={canonical} />
+  <meta property="og:site_name" content="Sift" />
+  <meta property="og:locale" content="en_US" />
+  <meta property="og:title" content="Sift · Fast, quiet Gmail for macOS" />
+  <meta property="og:description" content={description} />
+  <meta property="og:image" content={ogImage} />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Sift, a fast keyboard-first Gmail client for macOS" />
   <meta name="twitter:card" content="summary_large_image" />
-  <title>Sift — Email that keeps up with you</title>
-  <meta name="description" content="A fast, keyboard-first Gmail client for Mac. Every action under 100 ms." />
+  <meta name="twitter:title" content="Sift · Fast, quiet Gmail for macOS" />
+  <meta name="twitter:description" content={description} />
+  <meta name="twitter:image" content={ogImage} />
+  <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0a0a0c" media="(prefers-color-scheme: dark)" />
+  <link rel="icon" type="image/png" href="/favicon-32.png" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="apple-touch-icon" href="/logo.png" />
+  <title>Sift · Fast, quiet Gmail for macOS</title>
+  <script type="application/ld+json" set:html={JSON.stringify(softwareLd)} />
+  <script>
+    try {
+      const t = localStorage.getItem('sift-theme');
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    } catch { /* private mode: follow the system */ }
+  </script>
 </head>
 <body>
-  <nav style="height:56px;display:flex;align-items:center;gap:16px;padding:0 20px;border-bottom:1px solid #eee;position:sticky;top:0;backdrop-filter:blur(8px)">
-    <strong>Sift</strong>
-    <a href="/benchmarks">Benchmarks</a>
-    <a href="/changelog">Changelog</a>
-    <span style="flex:1"></span>
-    <a id="download-nav" href="/download">Download for Mac</a>
-  </nav>
-  <main style="max-width:960px;margin:0 auto;padding:48px 20px">
-    <h1>Email that keeps up with you.</h1>
-    <p>A fast, keyboard-first Gmail client for Mac. Every action under 100 ms. No setup. Connect with an app password in two minutes.</p>
-    <section id="how-to-connect">
-      <h2>How to connect</h2>
-      <ol>
-        <li>Turn on 2-Step Verification (<a href="https://myaccount.google.com/signinoptions/two-step-verification">open settings</a>).</li>
-        <li>Create an app password named Sift (<a href="https://myaccount.google.com/apppasswords">open App passwords</a>).</li>
-        <li>Paste the 16-letter password in Sift → Connect.</li>
-      </ol>
-      <p><a href="/download#how-to">Full guide →</a></p>
-    </section>
-    <p><a id="download-hero" href="https://github.com/ownpath/sift/releases/download/v1.0.0/Sift_1.0.0_universal.dmg">Download for macOS</a></p>
-    <p><small>{version} · {size} · macOS 13+</small></p>
-    <p><a href="/benchmarks">See the benchmarks →</a></p>
-    <section id="speed-strip">
-      <div>Cold start 0.31 s <small>vs Apple Mail 1.9 s</small></div>
-      <div>Open a thread 14 ms</div>
-      <div>Archive 22 ms</div>
-    </section>
-    <section id="feel-it">
-      <h2>Feel it</h2>
-      <video src="/clips/jk.webm" muted playsinline></video>
-      <video src="/clips/archive.webm" muted playsinline></video>
-      <video src="/clips/palette.webm" muted playsinline></video>
-    </section>
-    <section>
-      <h2>Make it yours</h2>
-      <div id="accent-island">
-        <button data-accent="blue">Blue</button>
-        <button data-accent="violet">Violet</button>
+  <header class="nav" id="nav">
+    <div class="nav-inner">
+      <a class="brand" href="/"><img src="/logo.png" alt="Sift" width="23" height="23" />Sift</a>
+      <nav class="nav-links" aria-label="Site">
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="/changelog">Changelog</a>
+        <a href="/shortcuts">Shortcuts</a>
+        <a href="https://github.com/AadiXC0DE/Sift">GitHub</a>
+      </nav>
+      <span class="nav-spacer"></span>
+      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
+      <a class="btn btn-primary btn-sm" id="download-nav" href="/download">Download for Mac</a>
+    </div>
+  </header>
+
+  <div class="hero-stage">
+    <section class="hero">
+      <div>
+        <p class="eyebrow rise">macOS 13+ · Gmail · Rust core · 9.8 MB</p>
+        <h1 class="rise rise-1">Email that keeps up <span class="thin">with you.</span></h1>
+        <p class="sub rise rise-2">A fast, keyboard-first Gmail client for Mac. Every action under 100 ms. Your mail lives on your machine.</p>
+        <div class="hero-ctas rise rise-2">
+          <a class="btn btn-primary" id="download-hero" href={dmg}>Download for macOS</a>
+          <a class="btn btn-secondary" href="/benchmarks">See the benchmarks</a>
+        </div>
+        <p class="hero-spec rise rise-3"><span>9.8 MB download</span><span class="sep"></span><span>~35 MB idle</span><span class="sep"></span><span>no Electron</span><span class="sep"></span><span>local-first SQLite</span></p>
+      </div>
+      <div class="preview rise rise-2" id="preview" data-density="comfortable" tabindex="0" aria-label="Sift inbox preview. Focus and press j or k to move.">
+        <div class="preview-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="preview-title">Sift · Inbox</span>
+          <span class="preview-kbd-hint"><kbd>j</kbd><kbd>k</kbd> to move</span>
+        </div>
+        <div class="preview-body">
+          <div class="preview-side">
+            <span class="preview-label active">Inbox <span class="count">3</span></span>
+            <span class="preview-label">Starred</span>
+            <span class="preview-label">Snoozed <span class="count">2</span></span>
+            <span class="preview-label">Sent</span>
+            <span class="preview-label">Drafts <span class="count">1</span></span>
+          </div>
+          <div class="preview-list" id="preview-list">
+            <div class="thread unread open">
+              <span class="stripe" style="background:#2f6df6"></span>
+              <div class="thread-top"><span class="thread-from">Figma</span><span class="star">★</span><span class="thread-time">09:41</span></div>
+              <div class="thread-subject">Your prototype got 12 new comments</div>
+              <div class="thread-snippet">Maya and 3 others left feedback on Checkout v4…</div>
+            </div>
+            <div class="thread unread">
+              <span class="stripe" style="background:#d6456d"></span>
+              <div class="thread-top"><span class="thread-from">Ada Lovelace</span><span class="thread-time">08:17</span></div>
+              <div class="thread-subject">Re: launch checklist</div>
+              <div class="thread-snippet">Two items left. I took the release notes…</div>
+            </div>
+            <div class="thread unread">
+              <span class="stripe" style="background:#2f6df6"></span>
+              <div class="thread-top"><span class="thread-from">GitHub</span><span class="thread-time">07:52</span></div>
+              <div class="thread-subject">[sift] CI passed on main</div>
+              <div class="thread-snippet">All 34 e2e green. Ready to merge…</div>
+            </div>
+            <div class="thread">
+              <span class="stripe" style="background:#1f9a94"></span>
+              <div class="thread-top"><span class="thread-from">Airline</span><span class="thread-time">Tue</span></div>
+              <div class="thread-subject">Your trip to Berlin is confirmed</div>
+              <div class="thread-snippet">Booking ref KX-2214 · departs Fri 18:40…</div>
+            </div>
+            <div class="thread">
+              <span class="stripe" style="background:#1f9a94"></span>
+              <div class="thread-top"><span class="thread-from">Bank</span><span class="thread-time">Mon</span></div>
+              <div class="thread-subject">Monthly statement is ready</div>
+              <div class="thread-snippet">View it any time in the documents tab…</div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
-    <section><a href="/shortcuts">Shortcuts</a> · <a href="/privacy">Privacy</a> · <a href="/faq">FAQ</a></section>
-  </main>
-  <footer>Made by ownpath · macOS only for now</footer>
+  </div>
+
+  <section class="metrics" aria-label="Benchmarks" id="numbers">
+    <div class="metrics-inner">
+      <div class="metric">
+        <div class="metric-top">
+          <span class="metric-num">0.31 <span class="unit">s</span></span>
+          <span class="metric-label">Cold start to usable inbox</span>
+          <span class="metric-method">measured · <a href="/benchmarks">methodology</a></span>
+        </div>
+        <div class="bars">
+          <div class="bar-row"><span class="bar-name"><strong>Sift</strong></span><span class="bar-track"><span class="bar-fill sift" style="--w:16%"></span></span><span class="bar-val">0.31 s</span></div>
+          <div class="bar-row"><span class="bar-name">Apple Mail</span><span class="bar-track"><span class="bar-fill rival" style="--w:100%"></span></span><span class="bar-val">1.9 s</span></div>
+        </div>
+        <p class="metric-foot">Six times quicker to a working inbox. The rest is measured the same way. <a href="/benchmarks">Read the methodology</a>.</p>
+      </div>
+      <div class="bench-pair">
+        <div class="bench-card">
+          <div class="metric-num">14 <span class="unit">ms</span></div>
+          <div class="metric-label">Open a thread</div>
+          <p class="metric-foot">Metadata first, body streams in. The list never waits on the network.</p>
+        </div>
+        <div class="bench-card">
+          <div class="metric-num">22 <span class="unit">ms</span></div>
+          <div class="metric-label">Archive with undo</div>
+          <p class="metric-foot">Optimistic local write, synced later. Undo window included.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-label="Footprint" id="footprint">
+    <h2>Tiny by design.</h2>
+    <p class="lede">Sift is a native Mac app, not a browser in a trench coat. It draws the interface with the WebView macOS already ships, and keeps your mail in a local SQLite file. No bundled Chromium, no second copy of V8, no cloud in the middle.</p>
+    <div class="fp-grid">
+      <div class="fp-card fp-hero">
+        <div class="fp-num">9.8 <span class="unit">MB</span></div>
+        <div class="fp-label">Download</div>
+        <div class="fp-bars">
+          <div class="fp-bar">
+            <span class="fp-name"><strong>Sift</strong></span>
+            <span class="fp-track"><span class="fp-fill sift" style="--w:6%"></span></span>
+            <span class="fp-val">9.8 MB</span>
+          </div>
+          <div class="fp-bar">
+            <span class="fp-name">Typical Electron mail app</span>
+            <span class="fp-track"><span class="fp-fill rival" style="--w:100%"></span></span>
+            <span class="fp-val">~180 MB</span>
+          </div>
+        </div>
+      </div>
+      <div class="fp-card">
+        <div class="fp-num">35 <span class="unit">MB</span></div>
+        <div class="fp-label">Idle memory</div>
+        <div class="fp-bars">
+          <div class="fp-bar">
+            <span class="fp-name"><strong>Sift</strong></span>
+            <span class="fp-track"><span class="fp-fill sift" style="--w:10%"></span></span>
+            <span class="fp-val">~35 MB</span>
+          </div>
+          <div class="fp-bar">
+            <span class="fp-name">Typical Electron mail app</span>
+            <span class="fp-track"><span class="fp-fill rival" style="--w:100%"></span></span>
+            <span class="fp-val">~350 MB</span>
+          </div>
+        </div>
+      </div>
+      <div class="fp-card fp-stack">
+        <div class="fp-label">Under the hood</div>
+        <ul class="fp-list">
+          <li><span class="fp-tech">Rust</span><span>Sync engine, MIME parsing, sanitizing, FTS indexing. Compiled once, then never in your way.</span></li>
+          <li><span class="fp-tech">Tauri 2</span><span>A 9.8 MB shell around the system WebView. Signing, updates, Keychain, notifications.</span></li>
+          <li><span class="fp-tech">SQLite</span><span>Every mailbox mirrored locally with WAL and FTS5. Search is a query, not a network round trip.</span></li>
+          <li><span class="fp-tech">WKWebView</span><span>The same engine Safari uses, sandboxed per message for HTML mail.</span></li>
+        </ul>
+      </div>
+    </div>
+    <p class="metric-foot">Idle and download figures are Sift's own measurements on Apple Silicon. Electron comparison is typical, not a single app. <a href="/benchmarks">See the full methodology</a>.</p>
+  </section>
+
+  <section class="section" aria-label="Feel it">
+    <h2>Your hands never leave the keys.</h2>
+    <p class="lede">Every action has a key. The palette does the rest. Hover a card, or just press the keys.</p>
+    <div class="feel">
+      <div class="feel-card"><div class="feel-keys"><kbd>j</kbd><kbd>k</kbd></div><p>Glide through the list. No scrolling to think about.</p></div>
+      <div class="feel-card"><div class="feel-keys"><kbd>e</kbd></div><p>Archive in 22 ms. Undo if you blinked.</p></div>
+      <div class="feel-card"><div class="feel-keys"><kbd>⌘</kbd><kbd>K</kbd></div><p>Jump anywhere: threads, labels, actions, accounts.</p></div>
+      <div class="feel-card"><div class="feel-keys"><kbd>r</kbd></div><p>Reply from the thread. Send-and-archive in one go.</p></div>
+    </div>
+  </section>
+
+  <section class="section" aria-label="Features">
+    <h2>Built for the way inboxes actually work.</h2>
+    <p class="lede">One window for everything. Fast enough that triage stops feeling like work.</p>
+    <div class="bento">
+      <div class="cell cell-3">
+        <h3>Keyboard-first</h3>
+        <p>Every action has a key. The palette covers the rest.</p>
+        <div class="mini"><span class="row"><span class="k">j / k</span> move</span><span class="row"><span class="k">e / #</span> archive / trash</span><span class="row"><span class="k">⌘K</span> everything else</span></div>
+      </div>
+      <div class="cell cell-3">
+        <h3>All your inboxes</h3>
+        <p>Personal, work, clients. Unified, color-coded, one shortcut apart.</p>
+        <div class="chips"><span class="chip">you@gmail · blue</span><span class="chip">you@work · rose</span><span class="chip">studio · teal</span></div>
+        <div class="mini"><span class="row"><span class="k">⌘1 / ⌘2</span> switch account</span><span class="row"><span class="k">⌘0</span> unified inbox</span></div>
+      </div>
+      <div class="cell cell-2">
+        <h3>Mistakes are cheap</h3>
+        <p>Snooze, undo, undo send.</p>
+        <div class="mini"><span class="row">Archived · Undo 8s</span></div>
+      </div>
+      <div class="cell cell-2">
+        <h3>Reads everything offline</h3>
+        <p>Your mail is on your Mac. Search is instant.</p>
+        <div class="mini"><span class="row">the whole archive · on this Mac</span></div>
+      </div>
+      <div class="cell cell-2">
+        <h3>Private by design</h3>
+        <p>Tokens in Keychain. Nothing phones home.</p>
+        <div class="mini"><span class="row">Keychain · no trackers · local-first</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-label="Make it yours">
+    <h2>Make it yours.</h2>
+    <p class="lede">Theme, accent, density. This page and the preview above follow along. Try it.</p>
+    <div class="island">
+      <div class="island-group" role="group" aria-label="Accent">
+        <button class="swatch" data-accent="blue" aria-pressed="true" aria-label="Blue accent"></button>
+        <button class="swatch" data-accent="indigo" aria-pressed="false" aria-label="Indigo accent"></button>
+        <button class="swatch" data-accent="violet" aria-pressed="false" aria-label="Violet accent"></button>
+        <button class="swatch" data-accent="rose" aria-pressed="false" aria-label="Rose accent"></button>
+        <button class="swatch" data-accent="orange" aria-pressed="false" aria-label="Orange accent"></button>
+        <button class="swatch" data-accent="green" aria-pressed="false" aria-label="Green accent"></button>
+        <button class="swatch" data-accent="teal" aria-pressed="false" aria-label="Teal accent"></button>
+        <button class="swatch" data-accent="graphite" aria-pressed="false" aria-label="Graphite accent"></button>
+      </div>
+      <div class="seg" role="group" aria-label="Density">
+        <button data-density="comfortable" aria-pressed="true">Roomy</button>
+        <button data-density="compact" aria-pressed="false">Compact</button>
+      </div>
+      <span class="island-label">The app's real accents. Live on this page.</span>
+    </div>
+  </section>
+
+  <section class="section" aria-label="Architecture">
+    <h2>Native to the metal. No Electron.</h2>
+    <p class="lede">A Rust core does the heavy lifting once, then every read hits a local SQLite file. No server in the middle, no spinner in front of your inbox.</p>
+    <div class="flow">
+      <div class="flow-node"><span class="flow-k">Gmail</span><span class="flow-d">IMAP or REST, over TLS</span></div>
+      <span class="flow-arrow" aria-hidden="true">→</span>
+      <div class="flow-node flow-core"><span class="flow-k">Rust core</span><span class="flow-d">sync · MIME · sanitize · FTS</span></div>
+      <span class="flow-arrow" aria-hidden="true">→</span>
+      <div class="flow-node"><span class="flow-k">SQLite mirror</span><span class="flow-d">WAL · FTS5 · on your Mac</span></div>
+      <span class="flow-arrow" aria-hidden="true">→</span>
+      <div class="flow-node"><span class="flow-k">Your screen</span><span class="flow-d">reads local, never waits</span></div>
+    </div>
+    <p class="rust-cta">Sift is open source. <a href="https://github.com/AadiXC0DE/Sift">Read the code</a> · <a href="/benchmarks">see the methodology</a></p>
+  </section>
+
+  <section class="section" aria-label="Connect">
+    <h2>Two minutes to connected.</h2>
+    <ol class="steps">
+      <li><span class="step-n">1</span><p>Turn on 2-Step Verification (<a href="https://myaccount.google.com/signinoptions/two-step-verification">open settings</a>).</p></li>
+      <li><span class="step-n">2</span><p>Create an app password named Sift (<a href="https://myaccount.google.com/apppasswords">open App passwords</a>).</p></li>
+      <li><span class="step-n">3</span><p>Paste the 16-letter password in Sift and press Connect.</p></li>
+    </ol>
+  </section>
+
+  <section class="cta" aria-label="Download">
+    <div class="cta-box">
+      <h2>Clear your inbox today.</h2>
+      <p class="sub">Free while in beta. {version} · {size} · macOS 13+.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" id="download-cta" href={dmg}>Download for macOS</a>
+        <a class="btn btn-secondary" href="/download">All versions</a>
+      </div>
+      <details class="sha">
+        <summary>Checksums and release notes</summary>
+        <p>Every release ships SHA-256 sums next to the DMG on <a href="https://github.com/AadiXC0DE/Sift/releases">GitHub</a>. The button always points at an immutable asset URL, so the hash you check is the file you get.</p>
+      </details>
+    </div>
+  </section>
+
+  <footer class="site">
+    <div class="footer-inner">
+      <nav aria-label="Footer">
+        <a href="/shortcuts">Shortcuts</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/faq">FAQ</a>
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="https://github.com/AadiXC0DE/Sift">GitHub</a>
+      </nav>
+      <span class="footer-right">Made by <a href="https://github.com/AadiXC0DE">Aaditya</a> · macOS only for now</span>
+    </div>
+  </footer>
+
   <script>
+    // Platform-aware download buttons. Never hides: points at /download off-Mac.
     const mac = /Mac/.test(navigator.platform || navigator.userAgent);
     for (const id of ['download-hero', 'download-nav']) {
       const el = document.getElementById(id);
-      if (el && !mac) { el.textContent = 'macOS only for now'; el.href = '/download'; }
+      if (el && !mac) { el.textContent = id === 'download-nav' ? 'Download' : 'macOS only for now'; el.href = '/download'; }
     }
+    // Sticky nav border after 8px scroll.
+    const nav = document.getElementById('nav');
+    const onScroll = () => nav && nav.classList.toggle('scrolled', window.scrollY > 8);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    // Benchmark bars fill when scrolled into view, once.
+    for (const id of ['numbers', 'footprint']) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      if ('IntersectionObserver' in window) {
+        const io = new IntersectionObserver(
+          (entries) => {
+            if (entries.some((e) => e.isIntersecting)) {
+              el.classList.add('in');
+              io.disconnect();
+            }
+          },
+          { threshold: 0.25 },
+        );
+        io.observe(el);
+      } else {
+        el.classList.add('in');
+      }
+    }
+    // Theme toggle: explicit light/dark, stored; unset follows the system.
+    const toggle = document.getElementById('theme-toggle');
+    const applyIcon = () => {
+      if (!toggle) return;
+      const t = document.documentElement.dataset.theme;
+      toggle.textContent = t === 'dark' ? '◑' : t === 'light' ? '◐' : '◐';
+      toggle.setAttribute('aria-label', t ? `Theme: ${t}. Switch to ${t === 'dark' ? 'light' : 'dark'}` : 'Theme: system. Switch to dark');
+    };
+    applyIcon();
+    toggle && toggle.addEventListener('click', () => {
+      const cur = document.documentElement.dataset.theme;
+      const next = cur === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('sift-theme', next); } catch { /* ignore */ }
+      applyIcon();
+    });
+    // Accent + density island: recolors this page and the hero preview live.
+    const root = document.documentElement;
+    const preview = document.getElementById('preview');
+    document.querySelectorAll('.swatch').forEach((b) => {
+      b.addEventListener('click', () => {
+        root.dataset.accent = b.dataset.accent || 'blue';
+        document.querySelectorAll('.swatch').forEach((o) => o.setAttribute('aria-pressed', o === b ? 'true' : 'false'));
+      });
+    });
+    document.querySelectorAll('.seg button').forEach((b) => {
+      b.addEventListener('click', () => {
+        if (preview) preview.dataset.density = b.dataset.density || 'comfortable';
+        document.querySelectorAll('.seg button').forEach((o) => o.setAttribute('aria-pressed', o === b ? 'true' : 'false'));
+      });
+    });
+    // Hero preview: j/k moves, click selects. Scoped to the preview element.
+    const rows = Array.from(document.querySelectorAll('#preview-list .thread'));
+    const select = (i) => {
+      rows.forEach((r, j) => r.classList.toggle('open', i === j));
+    };
+    let idx = 0;
+    rows.forEach((r, j) => r.addEventListener('click', () => { idx = j; select(idx); }));
+    preview && preview.addEventListener('keydown', (e) => {
+      if (e.key !== 'j' && e.key !== 'k') return;
+      e.preventDefault();
+      idx = (idx + (e.key === 'j' ? 1 : -1) + rows.length) % rows.length;
+      select(idx);
+    });
   </script>
 </body>
 </html>

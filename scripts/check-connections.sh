@@ -1,5 +1,5 @@
 #!/bin/bash
-# P11-T22: connection budget — ≤2 established IMAP connections per account.
+# P11-T22: connection budget: ≤2 established IMAP connections per account.
 # Usage: scripts/check-connections.sh <pid> [expected_accounts]
 # CI runs the imap_idle suite (which asserts pool shape) then checks lsof when available.
 set -euo pipefail

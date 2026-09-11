@@ -5,23 +5,73 @@ export function buildShim(nonce: string): string {
 (function(){
   function post(m){ parent.postMessage({ __sift: true, ...m }, '*'); }
   function report(){
+    var root = document.documentElement;
     var body = document.body;
-    var rect = body.getBoundingClientRect();
-    post({ type:'size', height: Math.max(1, Math.ceil(rect.height)) });
+    var h = Math.max(root.scrollHeight, body ? body.scrollHeight : 0,
+                     root.getBoundingClientRect().height, body ? body.getBoundingClientRect().height : 0);
+    post({ type:'size', height: Math.max(1, Math.ceil(h)) });
   }
-  new ResizeObserver(report).observe(document.documentElement);
-  window.addEventListener('load', function(){ report(); setTimeout(report, 300); });
+
+  // Collapse quoted history from HTML mail (Gmail, Apple Mail, Outlook, Yahoo).
+  function collapseQuotes(){
+    var sels = ['.gmail_quote', '.yahoo_quoted', '[id^="divRplyFwdMsg"]',
+                'blockquote[type="cite"]', 'blockquote.cite', '#divRplyFwdMsg'];
+    var seen = [];
+    sels.forEach(function(s){
+      try {
+        document.querySelectorAll(s).forEach(function(n){
+          if (seen.indexOf(n) < 0) seen.push(n);
+        });
+      } catch (e) {}
+    });
+    seen.forEach(function(n){
+      if (n.closest && n.closest('details.sift-quote')) return;
+      var wrap = document.createElement('details');
+      wrap.className = 'sift-quote';
+      var sum = document.createElement('summary');
+      sum.textContent = 'Show quoted text';
+      n.parentNode.insertBefore(wrap, n);
+      wrap.appendChild(sum);
+      wrap.appendChild(n);
+    });
+  }
+
+  try { collapseQuotes(); } catch (e) {}
+
+  var ro = new ResizeObserver(report);
+  ro.observe(document.documentElement);
+  if (document.body) ro.observe(document.body);
+
+  window.addEventListener('load', function(){ report(); setTimeout(report, 100); setTimeout(report, 400); });
+  // Web fonts and images change metrics after load.
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(report);
+  document.addEventListener('load', function(e){
+    if (e.target && e.target.tagName === 'IMG') report();
+  }, true);
+  document.addEventListener('error', function(e){
+    if (e.target && e.target.tagName === 'IMG') report();
+  }, true);
+
   document.addEventListener('click', function(e){
     var a = e.target.closest ? e.target.closest('a') : null;
     if (a) { e.preventDefault(); post({ type:'link', href: a.getAttribute('href'), text: a.textContent.slice(0,120) }); return; }
-    var img = e.target.closest ? e.target.closest('img.sift-blocked') : null;
-    if (img) { post({ type:'image', src: img.getAttribute('data-sift-src') }); return; }
   });
   var hoverT = null;
   document.addEventListener('mouseover', function(e){
     var a = e.target.closest ? e.target.closest('a') : null;
     if (a) { clearTimeout(hoverT); hoverT = setTimeout(function(){ post({ type:'hover', href: a.getAttribute('href') }); }, 300); }
   });
+  // Clear the link preview as soon as the pointer leaves the link (or the
+  // document), so it does not linger over the message.
+  document.addEventListener('mouseout', function(e){
+    var a = e.target.closest ? e.target.closest('a') : null;
+    if (!a) return;
+    var to = e.relatedTarget;
+    if (to && to.closest && to.closest('a') === a) return;
+    clearTimeout(hoverT);
+    post({ type:'hover', href: '' });
+  });
+  window.addEventListener('blur', function(){ clearTimeout(hoverT); post({ type:'hover', href: '' }); });
   document.addEventListener('keydown', function(e){
     var map = {ArrowDown:'j', ArrowUp:'k'};
     var key = map[e.key] || e.key;

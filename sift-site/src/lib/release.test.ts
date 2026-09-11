@@ -12,7 +12,7 @@ function parseRelease(payload: { assets: { name: string; browser_download_url: s
 describe('P10-T13 release parse', () => {
   it('extracts version, immutable URL, size, sha; fails without DMG', () => {
     const ok = parseRelease(
-      { tag_name: 'v1.0.0', assets: [{ name: 'Sift_1.0.0_universal.dmg', browser_download_url: 'https://github.com/ownpath/sift/releases/download/v1.0.0/Sift_1.0.0_universal.dmg', size: 1024 }] },
+      { tag_name: 'v1.0.0', assets: [{ name: 'Sift_1.0.0_universal.dmg', browser_download_url: 'https://github.com/AadiXC0DE/Sift/releases/download/v1.0.0/Sift_1.0.0_universal.dmg', size: 1024 }] },
       'abc123  Sift_1.0.0_universal.dmg',
     );
     expect(ok.version).toBe('v1.0.0');

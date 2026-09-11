@@ -31,6 +31,14 @@ static MIGRATIONS: &[(&str, &str)] = &[
         "0004_mail_rendering",
         include_str!("migrations/0004_mail_rendering.sql"),
     ),
+    (
+        "0005_remote_images_default",
+        include_str!("migrations/0005_remote_images_default.sql"),
+    ),
+    (
+        "0006_rerender_bodies",
+        include_str!("migrations/0006_rerender_bodies.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -57,6 +65,17 @@ fn apply_pragmas(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Startup repair for the outbox. An op left `inflight` means the app exited
+/// mid-send, so requeue it. Ops whose account no longer exists are orphaned by
+/// account removal and would otherwise count as "pending" forever.
+fn recover_outbox(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "UPDATE outbox_ops SET state='pending', attempts=0, not_before=0, last_error=NULL WHERE state='inflight';
+         DELETE FROM outbox_ops WHERE account_id NOT IN (SELECT id FROM accounts);",
+    )?;
+    Ok(())
+}
+
 fn run_migrations(conn: &Connection) -> Result<()> {
     // Ensure schema_version exists (fresh DB has no tables)
     let has_version: bool = conn
@@ -73,6 +92,11 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         let _ = conn.execute_batch(MIGRATIONS[1].1);
         conn.execute_batch(MIGRATIONS[2].1)?;
         conn.execute("UPDATE schema_version SET version=4", [])?;
+        conn.execute_batch(MIGRATIONS[3].1)?;
+        conn.execute("UPDATE schema_version SET version=5", [])?;
+        let _ = conn.execute_batch(MIGRATIONS[4].1);
+        conn.execute_batch(MIGRATIONS[5].1)?;
+        conn.execute("UPDATE schema_version SET version=6", [])?;
         return Ok(());
     }
     let v: i64 = conn
@@ -99,6 +123,14 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         conn.execute_batch(MIGRATIONS[3].1)?;
         conn.execute("UPDATE schema_version SET version=4", [])?;
     }
+    if v < 5 {
+        conn.execute_batch(MIGRATIONS[4].1)?;
+        conn.execute("UPDATE schema_version SET version=5", [])?;
+    }
+    if v < 6 {
+        conn.execute_batch(MIGRATIONS[5].1)?;
+        conn.execute("UPDATE schema_version SET version=6", [])?;
+    }
     Ok(())
 }
 
@@ -112,6 +144,7 @@ impl Db {
             let conn = pool.get()?;
             apply_pragmas(&conn)?;
             run_migrations(&conn)?;
+            recover_outbox(&conn)?;
             apply_pragmas(&conn)?;
         }
         Ok(Self {
@@ -149,7 +182,7 @@ impl Db {
         let pool = self.pool.clone();
         // Hold the async guard across spawn_blocking via an owned permit: instead hold a
         // synchronous mutex around the actual write. We keep the async lock held by
-        // blocking the thread briefly — acceptable and guarantees serialization.
+        // blocking the thread briefly - acceptable and guarantees serialization.
         let res = tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| anyhow::anyhow!(e.to_string()))?;
             f(&conn)
@@ -175,7 +208,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, 6);
         for t in [
             "accounts",
             "labels",
@@ -210,7 +243,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rendering_upgrade_preserves_cached_bodies() {
+    async fn outbox_recovery_requeues_inflight_and_purges_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let acc = db
+            .new_account("outbox@example.com", None, None)
+            .await
+            .unwrap();
+        let aid = acc.id.clone();
+        db.outbox_enqueue(
+            &aid,
+            "modify_labels",
+            "{\"add\":[],\"remove\":[\"UNREAD\"]}",
+            None,
+            0,
+        )
+        .await
+        .unwrap();
+        db.outbox_enqueue(
+            &aid,
+            "modify_labels",
+            "{\"add\":[\"STARRED\"],\"remove\":[]}",
+            None,
+            0,
+        )
+        .await
+        .unwrap();
+        // Simulate a send interrupted by app exit.
+        let op = db.outbox_next(&aid).await.unwrap().unwrap();
+        db.outbox_set(op.id, "inflight", 0, 0, None).await.unwrap();
+        // Orphaned op from an account that no longer exists.
+        db.outbox_enqueue("gone", "trash", "{}", None, 0)
+            .await
+            .unwrap();
+        drop(db);
+
+        let reopened = Db::open(dir.path()).unwrap();
+        assert_eq!(reopened.outbox_pending_count(&aid).await.unwrap(), 2);
+        assert_eq!(reopened.outbox_pending_count("gone").await.unwrap(), 0);
+        let summary = reopened.outbox_summary(&aid).await.unwrap();
+        assert!(
+            summary.iter().any(|(l, _)| l == "Marking as read"),
+            "{summary:?}"
+        );
+        assert!(summary.iter().any(|(l, _)| l == "Starring"), "{summary:?}");
+    }
+
+    #[tokio::test]
+    async fn rendering_upgrade_invalidates_cached_bodies() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let account = db
@@ -239,19 +319,24 @@ mod tests {
         .await
         .unwrap();
         db.write(|connection| {
-            connection.execute("UPDATE schema_version SET version=3", [])?;
+            connection.execute("UPDATE schema_version SET version=5", [])?;
             Ok(())
         })
         .await
         .unwrap();
         drop(db);
 
+        // 0006 drops bodies rendered by older builds and lets them refetch, so
+        // the leaked <title> and stale layout in cached mail are re-rendered.
         let reopened = Db::open(dir.path()).unwrap();
-        let body = reopened.bodies_get("m1").await.unwrap();
-        assert_eq!(
-            body.and_then(|value| value.0).as_deref(),
-            Some("<p>cached mail</p>")
-        );
+        assert!(reopened.bodies_get("m1").await.unwrap().is_none());
+        let conn = reopened.pool.get().unwrap();
+        let state: String = conn
+            .query_row("SELECT body_state FROM messages WHERE id='m1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(state, "none");
     }
     #[test]
     fn p1_t03_pragmas() {

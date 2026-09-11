@@ -2,7 +2,7 @@
 //!
 //! Every server string in the task-4 table maps to a `SiftError{code}` that
 //! drives the guided fix in the setup wizard (Step D) and the re-auth banner.
-//! `code` values are part of the IPC contract — do not rename without
+//! `code` values are part of the IPC contract - do not rename without
 //! updating the wizard copy table.
 use crate::errors::SiftError;
 

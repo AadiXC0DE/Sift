@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm e2e
@@ -37,5 +38,7 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
-      - run: pnpm tauri build --debug
+      # Debug smoke build: skip updater artifacts (signing needs the release
+      # private key, which PR builds don't have). Release signing is unchanged.
+      - run: pnpm tauri build --debug --config src-tauri/tauri.ci.json
       - run: bash scripts/check-bundle.sh || true

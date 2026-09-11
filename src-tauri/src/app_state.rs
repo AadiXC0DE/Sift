@@ -19,6 +19,10 @@ pub struct AppState {
     pub tokens: RwLock<HashMap<String, TokenInfo>>,
     pub providers: RwLock<HashMap<String, std::sync::Arc<dyn Provider>>>,
     pub refresh_lock: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    pub provider_lock: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// In-memory copy of app passwords. Avoids re-reading the Keychain (and
+    /// re-prompting) when a provider is rebuilt during a session.
+    pub app_passwords: RwLock<HashMap<String, String>>,
     pub online: AtomicBool,
     pub foreground_inflight: Arc<AtomicUsize>,
     pub gate: crate::sync::backfill::BackfillGate,
@@ -40,6 +44,8 @@ impl AppState {
             tokens: RwLock::new(Default::default()),
             providers: RwLock::new(Default::default()),
             refresh_lock: Mutex::new(Default::default()),
+            provider_lock: Mutex::new(Default::default()),
+            app_passwords: RwLock::new(Default::default()),
             online: AtomicBool::new(true),
             foreground_inflight: Arc::new(AtomicUsize::new(0)),
             gate: crate::sync::backfill::BackfillGate::new(),
@@ -52,25 +58,27 @@ impl AppState {
     /// Provider bound to an account, cached per account id. OAuth accounts
     /// refresh via the TokenStore; app-password accounts resolve once the
     /// IMAP provider lands (until then they report not-configured).
+    ///
+    /// Single-flight: concurrent callers (poll loop, IDLE, foreground fetch)
+    /// share one provider construction, so the Keychain is read exactly once
+    /// per account instead of prompting several times at startup.
     pub async fn provider_for(
         &self,
         account_id: &str,
     ) -> Result<std::sync::Arc<dyn Provider>, SiftError> {
-        if let Some(cached) = self.providers.read().await.get(account_id).cloned() {
-            if cached.kind() == crate::provider::ProviderKind::GmailImap {
-                return Ok(cached);
-            }
-            let now = crate::db::now_ms();
-            let token_is_fresh = self
-                .tokens
-                .read()
-                .await
-                .get(account_id)
-                .is_some_and(|token| token.expires_at - now > 5 * 60 * 1000);
-            if token_is_fresh {
-                return Ok(cached);
-            }
-            self.providers.write().await.remove(account_id);
+        if let Some(cached) = self.cached_provider(account_id).await {
+            return Ok(cached);
+        }
+        let guard: Arc<Mutex<()>> = {
+            let mut m = self.provider_lock.lock().await;
+            m.entry(account_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _g = guard.lock().await;
+        // Another task may have built it while we waited.
+        if let Some(cached) = self.cached_provider(account_id).await {
+            return Ok(cached);
         }
         let acc = self
             .db
@@ -79,7 +87,7 @@ impl AppState {
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
         let acc = acc.ok_or_else(|| SiftError::app("account", "missing", false))?;
         if acc.auth_kind == "app_password" {
-            let pw = match crate::secrets::load_app_password(&acc.email)? {
+            let pw = match self.load_app_password_cached(&acc.email).await? {
                 Some(password) => password,
                 None => {
                     let _ = self.db.accounts_set_state(account_id, "reauth").await;
@@ -113,6 +121,57 @@ impl AppState {
             .await
             .insert(account_id.into(), c.clone());
         Ok(c)
+    }
+
+    /// A cached provider that is still valid, or `None` when it must be built.
+    async fn cached_provider(&self, account_id: &str) -> Option<std::sync::Arc<dyn Provider>> {
+        if let Some(cached) = self.providers.read().await.get(account_id).cloned() {
+            if cached.kind() == crate::provider::ProviderKind::GmailImap {
+                return Some(cached);
+            }
+            let now = crate::db::now_ms();
+            let token_is_fresh = self
+                .tokens
+                .read()
+                .await
+                .get(account_id)
+                .is_some_and(|token| token.expires_at - now > 5 * 60 * 1000);
+            if token_is_fresh {
+                return Some(cached);
+            }
+            self.providers.write().await.remove(account_id);
+        }
+        None
+    }
+
+    /// Read the app password once per session; later reads come from memory so
+    /// macOS does not prompt again. The copy lives only in RAM and is dropped
+    /// when the account is removed or the app exits.
+    pub async fn load_app_password_cached(&self, email: &str) -> Result<Option<String>, SiftError> {
+        if let Some(pw) = self.app_passwords.read().await.get(email).cloned() {
+            return Ok(Some(pw));
+        }
+        match crate::secrets::load_app_password(email)? {
+            Some(pw) => {
+                self.app_passwords
+                    .write()
+                    .await
+                    .insert(email.to_string(), pw.clone());
+                Ok(Some(pw))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub async fn remember_app_password(&self, email: &str, pw: &str) {
+        self.app_passwords
+            .write()
+            .await
+            .insert(email.to_string(), pw.to_string());
+    }
+
+    pub async fn forget_app_password(&self, email: &str) {
+        self.app_passwords.write().await.remove(email);
     }
 
     pub async fn invalidate_oauth_provider(&self, account_id: &str) {
@@ -202,8 +261,15 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `SIFT_TOKEN_URL` is process-global: these tests must not run
+    /// concurrently or one's mock server answers another's refresh.
+    static TOKEN_ENV_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    fn token_env_lock() -> &'static tokio::sync::Mutex<()> {
+        TOKEN_ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
     #[tokio::test]
     async fn p2_t04_singleflight_refresh() {
+        let _env = token_env_lock().lock().await;
         // wiremock token endpoint counting refresh requests
         let server = wiremock::MockServer::start().await;
         std::env::set_var("SIFT_TOKEN_URL", format!("{}/token", server.uri()));
@@ -217,8 +283,11 @@ mod tests {
             .await;
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
-        let a = db.new_account("u@x.com", None, None).await.unwrap();
-        crate::secrets::store_refresh_token("u@x.com", "rt").unwrap();
+        let a = db
+            .new_account("singleflight@x.com", None, None)
+            .await
+            .unwrap();
+        crate::secrets::store_refresh_token("singleflight@x.com", "rt").unwrap();
         let st = std::sync::Arc::new(AppState::new(db, dir.path().to_path_buf()));
         // seed expired token
         st.tokens.write().await.insert(
@@ -247,6 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn p2_t05_invalid_grant_reauth() {
+        let _env = token_env_lock().lock().await;
         let server = wiremock::MockServer::start().await;
         std::env::set_var("SIFT_TOKEN_URL", format!("{}/token", server.uri()));
         wiremock::Mock::given(wiremock::matchers::method("POST"))

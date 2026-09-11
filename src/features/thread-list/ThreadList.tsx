@@ -10,6 +10,7 @@ import { viewTitle } from '../../app/routes';
 import { Spinner } from '../../ui/Spinner';
 import { EmptyState } from '../../ui/EmptyState';
 import { Skeleton } from '../../ui/Skeleton';
+import { SyncPanel, SyncInlineBar, useSyncProgress } from '../sync/SyncPanel';
 import { SearchInput } from '../search/SearchInput';
 import { dispatchAction, undoLast } from '../actions/dispatch';
 import { api } from '../../app/ipc/commands';
@@ -49,6 +50,12 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     [accounts],
   );
   const showStripe = scope === 'all' && accounts.length > 1;
+  const scopedIds = scope === 'all' ? accounts.map((a) => a.id) : [scope];
+  const progress = useSyncProgress(scopedIds);
+  const retrySync = useCallback(() => {
+    const ids = scope === 'all' ? accounts.filter((a) => a.sync_state === 'error').map((a) => a.id) : [scope];
+    for (const id of ids) void api.sync_now(id).catch(() => {});
+  }, [scope, accounts]);
 
   const virtual = useVirtualizer({
     count: rows.length,
@@ -203,6 +210,42 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedIndex]);
 
+  // Auto-open the focused conversation when the pane is visible but nothing is
+  // open yet (first load, view or account switch), like Apple Mail. Once a
+  // thread is selected this never fires, so it cannot fight the user.
+  useEffect(() => {
+    if (useView.getState().paneLayout === 'off') return;
+    if (useView.getState().threadId != null) return;
+    if (!rows.length) return;
+    const r = rows[Math.min(focusedIndex, rows.length - 1)];
+    if (r) {
+      (window as unknown as { __lastAccount?: string }).__lastAccount = r.accountId;
+      setThread(r.id);
+    }
+  }, [rows, focusedIndex, setThread]);
+
+  // If the open conversation leaves the current view (trashed, archived, moved
+  // away, or removed by sync), move the reading pane to the closest remaining
+  // one instead of leaving a stale message on screen.
+  useEffect(() => {
+    if (useView.getState().paneLayout === 'off') return;
+    const openId = useView.getState().threadId;
+    if (openId == null) return;
+    if (loading) return;
+    if (rows.some((r) => r.id === openId)) return;
+    if (!rows.length) {
+      setThread(null);
+      return;
+    }
+    const i = Math.min(focusedIndex, rows.length - 1);
+    const r = rows[i];
+    if (r) {
+      (window as unknown as { __lastAccount?: string }).__lastAccount = r.accountId;
+      setFocus(i);
+      setThread(r.id);
+    }
+  }, [rows, loading, focusedIndex, setFocus, setThread]);
+
   const title = useMemo(() => {
     if (view.kind === 'label') return labelName ?? (view as { labelId: string }).labelId;
     if (view.kind === 'search') return `Results for “${(view as { q: string }).q}”`;
@@ -256,16 +299,19 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
           <Paperclip size={14} />
         </button>
       </div>
+      {rows.length > 0 && <SyncInlineBar progress={progress} />}
       <div
         ref={parentRef}
         style={{ flex: 1, overflowY: 'auto', position: 'relative' }}
         role="listbox"
         aria-label={title}
       >
-        {loading && rows.length === 0 ? (
-          <DelayedSkeleton />
-        ) : rows.length === 0 ? (
-          view.kind === 'inbox' ? (
+        {rows.length === 0 ? (
+          progress.active || progress.failed ? (
+            <SyncPanel progress={progress} onRetry={retrySync} />
+          ) : loading ? (
+            <DelayedSkeleton />
+          ) : view.kind === 'inbox' ? (
             <div style={{ animation: 'sift-fade 400ms var(--ease-out)' }}>
               <style>{'@keyframes sift-fade { from { opacity: 0; } }'}</style>
               <EmptyState icon={<Sun size={24} />} line="You're all caught up." sub="Last synced just now" />

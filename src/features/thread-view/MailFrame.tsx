@@ -50,17 +50,21 @@ export function MailFrame({ messageId, html, allowed }: Props) {
           void api.app_open_url(href);
         }
       }
-      if (e.data.type === 'hover') setHoverHref(e.data.href);
+      if (e.data.type === 'hover') setHoverHref(e.data.href || null);
       if (e.data.type === 'key' && typeof e.data.key === 'string') {
         window.dispatchEvent(new KeyboardEvent('keydown', { key: e.data.key, bubbles: true }));
-      }
-      if (e.data.type === 'image') {
-        document.dispatchEvent(new CustomEvent('sift:load-remote', { detail: { messageId } }));
       }
     };
     window.addEventListener('message', h);
     return () => window.removeEventListener('message', h);
   }, [messageId, srcdoc]);
+
+  // Safety net: never leave the link preview stuck over the message.
+  useEffect(() => {
+    if (!hoverHref) return;
+    const t = setTimeout(() => setHoverHref(null), 4000);
+    return () => clearTimeout(t);
+  }, [hoverHref]);
 
   return (
     <div style={{ position: 'relative' }}>

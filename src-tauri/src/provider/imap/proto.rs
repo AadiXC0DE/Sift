@@ -3,7 +3,7 @@
 //! Why hand-rolled instead of `imap-proto`: real Gmail mailboxes carry raw
 //! UTF-8 inside quoted `X-GM-LABELS` values (e.g. `"Büro"`, `"🧾 Receipts"`),
 //! which `imap-proto`'s RFC-strict `quoted` parser rejects (`CHAR = %x01-7F`),
-//! killing the whole FETCH stream — silent message loss. This parser takes
+//! killing the whole FETCH stream - silent message loss. This parser takes
 //! label bytes as-is and lets UTF-8 through, and skips (rather than fails)
 //! any attribute it does not understand.
 //!
@@ -347,7 +347,7 @@ impl<'a> Cur<'a> {
             }
             Some(_) => {
                 self.atom()?;
-                // atom may be followed by [...] (e.g. BODY[1]<0>) — consume.
+                // atom may be followed by [...] (e.g. BODY[1]<0>) - consume.
                 if self.peek() == Some(b'[') {
                     self.skip_item()?;
                 }
@@ -895,7 +895,7 @@ fn parse_bodystructure(c: &mut Cur) -> Result<BodyStruct, ParseError> {
         let subtype = parse_nstring_token(c)?;
         c.eat_ws();
         let params = parse_params(c)?;
-        // body-ext-mpart: disposition, language, location — skip tolerantly.
+        // body-ext-mpart: disposition, language, location - skip tolerantly.
         skip_exts(c, 3)?;
         if !c.eat(b')') {
             return Err(ParseError::Malformed("multipart )".into()));
@@ -928,7 +928,7 @@ fn parse_bodystructure(c: &mut Cur) -> Result<BodyStruct, ParseError> {
             lines = Some(c.number()?);
             c.eat_ws();
         }
-        // body-ext-1part: md5, disposition, language, location — disposition
+        // body-ext-1part: md5, disposition, language, location - disposition
         // matters (attachment filename), the rest is skipped.
         let _md5 = parse_nstring_opt(c)?;
         c.eat_ws();

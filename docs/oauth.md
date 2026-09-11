@@ -1,6 +1,6 @@
 # Optional: enable Sign in with Google for your own builds
 
-Public Sift builds need nothing here — users connect with an app password
+Public Sift builds need nothing here. Users connect with an app password
 (see README). This page is only for developers who want the
 "Sign in with Google instead" button in builds they compile themselves.
 

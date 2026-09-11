@@ -1,0 +1,33 @@
+# Sift
+
+> Sift is a fast, keyboard-first desktop email client for Gmail and Google Workspace on macOS. A Rust core mirrors your entire mailbox into a local SQLite database, so every read comes off disk instead of the network.
+
+Sift is a native Mac app, not an Electron shell. It draws its interface with the macOS WebView and ships as a 9.8 MB download that idles around 35 MB of memory. Cold start to a usable inbox is about 0.31 seconds, and common actions such as opening a thread or archiving target under 50 ms.
+
+## Key facts
+
+- Platform: macOS 13 Ventura or newer, Apple Silicon and Intel (universal build)
+- Stack: Rust core (tokio), Tauri 2, React 19 in WKWebView, SQLite with FTS5
+- Local-first: the full mailbox is mirrored locally; reading, search, and triage work offline
+- Sign-in: a Google app password, with no Google Cloud project required
+- Multi-account: independent sync per account, unified inbox, color-coded
+- Privacy: no Sift server, no telemetry, credentials in the macOS Keychain
+- Price: free while in beta
+- Source: open source at https://github.com/AadiXC0DE/Sift
+
+## Pages
+
+- [Download](https://usesift.xyz/download): macOS build and install steps
+- [Benchmarks](https://usesift.xyz/benchmarks): measured numbers and methodology
+- [Shortcuts](https://usesift.xyz/shortcuts): the full keyboard map
+- [FAQ](https://usesift.xyz/faq): account, privacy, and offline questions
+- [Privacy](https://usesift.xyz/privacy): what leaves the Mac and what stays local
+- [Changelog](https://usesift.xyz/changelog): release notes
+- [GitHub](https://github.com/AadiXC0DE/Sift): source, issues, and releases
+
+## What Sift is good at
+
+- Speed as a feature: local-first reads keep every interaction under the 100 ms "feels instant" threshold
+- Keyboard-first triage: j/k, e, #, s, h, plus a Cmd-K command palette
+- Faithful mail rendering: HTML is sanitized once and rendered in a sandboxed frame with sender CSS, tables, and layout preserved
+- Small footprint: no bundled browser, no cloud sync engine

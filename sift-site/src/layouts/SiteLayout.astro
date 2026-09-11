@@ -1,0 +1,142 @@
+---
+import '../styles/global.css';
+interface Props {
+  title: string;
+  description?: string;
+  path?: string;
+}
+const {
+  title,
+  description = 'Fast, quiet email for Gmail on macOS. Native Rust core, local-first, keyboard-first.',
+  path = '',
+} = Astro.props;
+const nav = [
+  { href: '/benchmarks', label: 'Benchmarks' },
+  { href: '/changelog', label: 'Changelog' },
+  { href: '/shortcuts', label: 'Shortcuts' },
+  { href: '/faq', label: 'FAQ' },
+];
+const dmg =
+  'https://github.com/AadiXC0DE/Sift/releases/download/v1.0.0/Sift_1.0.0_universal.dmg';
+const origin = Astro.site ?? new URL('https://usesift.xyz');
+const canonical = new URL(Astro.url.pathname, origin).href;
+const ogImage = new URL('/og.png', origin).href;
+const siteName = 'Sift';
+const fullTitle = path === '/' || title === 'Sift' ? `${title} · Fast, quiet Gmail for macOS` : `${title} · Sift`;
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'WebSite',
+  name: siteName,
+  url: origin.href,
+  description,
+  inLanguage: 'en',
+  publisher: {
+    '@type': 'Organization',
+    name: siteName,
+    url: origin.href,
+    logo: new URL('/logo.png', origin).href,
+  },
+};
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:site_name" content={siteName} />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Sift, a fast keyboard-first Gmail client for macOS" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    <meta name="theme-color" content="#fafaf9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1b1b1a" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/png" href="/favicon-32.png" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <title>{fullTitle}</title>
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+    <script is:inline>
+      try {
+        const t = localStorage.getItem('sift-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <header class="nav" id="nav">
+      <div class="nav-inner">
+        <a class="brand" href="/"><img src="/logo.png" alt="Sift" width="23" height="23" />Sift</a>
+        <nav class="nav-links" aria-label="Site">
+          {
+            nav.map((n) => (
+              <a href={n.href} aria-current={path === n.href ? 'page' : undefined}>
+                {n.label}
+              </a>
+            ))
+          }
+          <a href="https://github.com/AadiXC0DE/Sift">GitHub</a>
+        </nav>
+        <span class="nav-spacer"></span>
+        <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
+        <a class="btn btn-primary btn-sm" href={dmg}>Download for Mac</a>
+      </div>
+    </header>
+
+    <main class="page">
+      <slot />
+    </main>
+
+    <footer class="site">
+      <div class="footer-inner">
+        <nav aria-label="Footer">
+          <a href="/shortcuts">Shortcuts</a>
+          <a href="/privacy">Privacy</a>
+          <a href="/faq">FAQ</a>
+          <a href="/benchmarks">Benchmarks</a>
+          <a href="https://github.com/AadiXC0DE/Sift">GitHub</a>
+        </nav>
+        <span class="footer-right">Made by <a href="https://github.com/AadiXC0DE">Aaditya</a> · macOS only for now</span>
+      </div>
+    </footer>
+
+    <script is:inline>
+      const navEl = document.getElementById('nav');
+      const onScroll = () => navEl && navEl.classList.toggle('scrolled', window.scrollY > 8);
+      window.addEventListener('scroll', onScroll, { passive: true });
+      onScroll();
+      const toggle = document.getElementById('theme-toggle');
+      const applyIcon = () => {
+        if (!toggle) return;
+        const t = document.documentElement.dataset.theme;
+        toggle.textContent = t === 'dark' ? '◑' : '◐';
+        toggle.setAttribute(
+          'aria-label',
+          t ? `Theme: ${t}. Switch to ${t === 'dark' ? 'light' : 'dark'}` : 'Theme: system. Switch to dark',
+        );
+      };
+      applyIcon();
+      toggle &&
+        toggle.addEventListener('click', () => {
+          const cur = document.documentElement.dataset.theme;
+          const next = cur === 'dark' ? 'light' : 'dark';
+          document.documentElement.dataset.theme = next;
+          try {
+            localStorage.setItem('sift-theme', next);
+          } catch {}
+          applyIcon();
+        });
+    </script>
+  </body>
+</html>

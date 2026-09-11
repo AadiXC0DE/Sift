@@ -5,9 +5,9 @@
 //! transport client directly. Providers are constructed **per account** (they
 //! carry their own credentials), so methods take no account id.
 //!
-//! * [`gmail::GmailApiProvider`] — Gmail REST API (OAuth). Delegates to the
+//! * [`gmail::GmailApiProvider`] - Gmail REST API (OAuth). Delegates to the
 //!   long-tested REST code; behavior for OAuth accounts is unchanged.
-//! * `imap::GmailImapProvider` — Gmail IMAP/SMTP (app password). Added in the
+//! * `imap::GmailImapProvider` - Gmail IMAP/SMTP (app password). Added in the
 //!   IMAP step; same rows, same UI, same speed.
 use crate::db::{
     attachments::AttPut, bodies::BodyPut, imap::FolderCursor, messages::MsgUpsert, Db,

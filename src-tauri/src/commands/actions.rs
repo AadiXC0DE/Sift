@@ -4,7 +4,7 @@ use crate::errors::SiftError;
 use tauri::{AppHandle, Emitter, State};
 
 fn label_sets(action: &ActionKind) -> (Vec<String>, Vec<String>, bool, bool) {
-    // (add, remove, trash_flag, spam_flag) — local message_labels edit
+    // (add, remove, trash_flag, spam_flag) - local message_labels edit
     match action {
         ActionKind::Archive => (vec![], vec!["INBOX".into()], false, false),
         ActionKind::Unarchive => (vec!["INBOX".into()], vec![], false, false),
@@ -81,7 +81,7 @@ pub async fn threads_action(
     }
     let undo_group = uuid::Uuid::now_v7().to_string();
     let (add, remove, _trash, _spam) = label_sets(&req.action);
-    // group by account (req is single-account in v1 IPC; mixed selection splits client-side into 2 calls sharing undo_group — see P6-T17)
+    // group by account (req is single-account in v1 IPC; mixed selection splits client-side into 2 calls sharing undo_group - see P6-T17)
     // Local mutation in one write transaction per thread
     let mut all_ids: Vec<String> = vec![];
     // star semantics: latest message only

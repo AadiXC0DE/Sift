@@ -26,7 +26,7 @@ async fn p3_t14_resume_no_dupes() {
         .next_bodies_to_fetch(&acc.id, 100, 0)
         .await
         .unwrap_or_default();
-    // next_bodies_to_fetch filters body_state none; metadata stubs have internal_date 0 but body_state none — our upserts don't set body_state, so remaining includes stubs not yet metadata? Simplified assert:
+    // next_bodies_to_fetch filters body_state none; metadata stubs have internal_date 0 but body_state none - our upserts don't set body_state, so remaining includes stubs not yet metadata? Simplified assert:
     let stubs: i64 = db
         .read({
             let aid = acc.id.clone();

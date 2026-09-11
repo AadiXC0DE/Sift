@@ -1,7 +1,7 @@
 use crate::errors::SiftError;
 
 #[cfg(not(test))]
-const SERVICE: &str = "xyz.ownpath.sift";
+const SERVICE: &str = "com.aadixc0de.sift";
 
 #[cfg(not(test))]
 pub fn store_refresh_token(email: &str, token: &str) -> Result<(), SiftError> {
@@ -107,8 +107,8 @@ fn mock_store() -> &'static std::sync::Mutex<std::collections::HashMap<String, S
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn p11_t13_app_password_keying_no_db_leak() {
+    #[tokio::test]
+    async fn p11_t13_app_password_keying_no_db_leak() {
         use super::*;
         store_app_password("apppw_test@x.com", "abcdefghijklmnop").unwrap();
         assert_eq!(
@@ -122,7 +122,9 @@ mod tests {
         // The secret never reaches sqlite files (Keychain/mock only).
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::Db::open(dir.path()).unwrap();
-        let _ = db.new_account("apppw_test@x.com", None, None);
+        db.new_account("apppw_test@x.com", None, None)
+            .await
+            .unwrap();
         for entry in std::fs::read_dir(dir.path()).unwrap() {
             let bytes = std::fs::read(entry.unwrap().path()).unwrap_or_default();
             assert!(

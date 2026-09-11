@@ -4,7 +4,7 @@
  */
 
 export function normalizeAppPassword(raw: string): string {
-  return raw.replace(/[\s\-‐‑‒–—― 　]+/g, '').toLowerCase();
+  return raw.replace(/[\s\u2010\u2011\u2012\u2013\u2014\u2015\u3000-]+/g, '').toLowerCase();
 }
 
 export function isValidAppPassword(raw: string): boolean {
@@ -18,7 +18,7 @@ export function appPasswordError(raw: string): string | null {
   if (clean.length < 16) return 'That password should be 16 letters. Check for a missing character.';
   if (clean.length > 16) return 'That password should be 16 letters. You may have pasted extra characters.';
   if (!/^[a-z]{16}$/.test(clean))
-    return 'App passwords use letters only — no numbers. Create a fresh one and paste it again.';
+    return 'App passwords use letters only, no numbers. Create a fresh one and paste it again.';
   return null;
 }
 

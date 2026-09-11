@@ -76,3 +76,40 @@ async fn newsletter_survives_fetch_store_and_read() {
     assert!(html.contains("data:image/png;base64,"));
     assert!(remote_images >= 2);
 }
+
+const DOCUMENT: &str = r##"<!doctype html><html><head><title>Weekly Digest</title><style>.hero{color:#123}</style></head><body bgcolor="#f4f4f4" style="padding:24px"><h1>This week</h1><p>Hello.</p></body></html>"##;
+
+#[tokio::test]
+async fn document_head_and_body_survive_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let account = db
+        .new_account("reader@example.com", None, None)
+        .await
+        .unwrap();
+    let account_id = account.id;
+    db.write(move |connection| {
+        connection.execute(
+            "INSERT INTO messages (id,account_id,thread_id,internal_date,body_state) VALUES ('m2',?, 't2', 1, 'none')",
+            rusqlite::params![account_id],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let parsed = ParsedMessage {
+        html: Some(DOCUMENT.into()),
+        ..Default::default()
+    };
+    store_parsed(&DbSink::new(db.clone()), "m2", &parsed)
+        .await
+        .unwrap();
+
+    let html = db.bodies_get("m2").await.unwrap().expect("body").0.unwrap();
+    assert!(!html.contains("Weekly Digest"), "title leaked: {html}");
+    assert!(html.contains("background-color:#f4f4f4"), "{html}");
+    assert!(html.contains("padding:24px"), "{html}");
+    assert!(html.contains(".hero{color:#123}"), "{html}");
+    assert!(html.contains("<h1>This week</h1>"), "{html}");
+}

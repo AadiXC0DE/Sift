@@ -136,7 +136,7 @@ export function Palette({
             ))}
             {results.length === 0 && (
               <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-3)' }}>
-                No match — press ↩ to search for “{q}”
+                No match. Press ↩ to search for “{q}”
               </div>
             )}
           </Cmdk.List>

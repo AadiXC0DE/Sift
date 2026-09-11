@@ -129,9 +129,11 @@ pub async fn accounts_remove(state: State<'_, AppState>, id: String) -> Result<(
         .map_err(|e| SiftError::app("db", e.to_string(), false))?
     {
         let _ = crate::secrets::delete(&a.email);
+        state.forget_app_password(&a.email).await;
     }
     state.providers.write().await.remove(&id);
     state.tokens.write().await.remove(&id);
+    let _ = state.db.outbox_delete_account(&id).await;
     state
         .db
         .accounts_remove(&id)
@@ -162,7 +164,7 @@ pub async fn accounts_update(
 }
 
 /// MX probe for Step B (P11-T15). Returns google_hosted true/false, or None
-/// (null) when DNS fails/offline — the wizard proceeds silently then.
+/// (null) when DNS fails/offline - the wizard proceeds silently then.
 #[tauri::command]
 pub async fn accounts_probe_email(email: String) -> Result<Option<bool>, SiftError> {
     Ok(probe_google_hosted(&email).await)
@@ -296,6 +298,7 @@ pub async fn accounts_add_app_password(
     })?;
     // Commit: Keychain first, then the account row with auth_kind app_password.
     crate::secrets::store_app_password(&email, &pw)?;
+    state.remember_app_password(&email, &pw).await;
     let acc = state
         .db
         .new_account(&email, None, None)
@@ -326,10 +329,10 @@ pub async fn accounts_add_app_password(
         .insert(acc.id.clone(), provider.clone());
     log::info!(target: "sift::setup", "app-password sign-in: account created, starting sync");
     let _ = progress.send(SetupProgress::Syncing);
-    let (db, sink_acc, app2) = (state.db.clone(), acc.id.clone(), app.clone());
+    let (db, sink_acc, app2, app3) = (state.db.clone(), acc.id.clone(), app.clone(), app.clone());
     tokio::spawn(async move {
         let sink = crate::provider::DbSink::with_progress(db.clone(), move |s| {
-            let _ = app2.emit("sync:status", &s);
+            let _ = app2.emit("sync:state", &s);
         });
         let cancel = tokio_util::sync::CancellationToken::new();
         match provider.full_sync(&sink, cancel).await {
@@ -338,9 +341,27 @@ pub async fn accounts_add_app_password(
                     .accounts_set_history(&sink_acc, &cursor.render(), crate::db::now_ms())
                     .await;
                 let _ = db.accounts_set_state(&sink_acc, "partial").await;
+                // Tell the UI the first sync finished so it can stop showing
+                // progress and refresh counts.
+                let _ = app3.emit(
+                    "sync:state",
+                    serde_json::json!({"account_id": sink_acc, "phase": "done", "done": 0, "total": 0, "last_error": null}),
+                );
+                let _ = app3.emit(
+                    "store:labels",
+                    serde_json::json!({ "account_id": sink_acc }),
+                );
+                let _ = app3.emit(
+                    "store:threads",
+                    serde_json::json!({ "account_id": sink_acc, "thread_ids": [] }),
+                );
             }
             Err(e) => {
                 let _ = db.accounts_set_state(&sink_acc, "error").await;
+                let _ = app3.emit(
+                    "sync:state",
+                    serde_json::json!({"account_id": sink_acc, "phase": "error", "done": 0, "total": 0, "last_error": e.to_string()}),
+                );
                 eprintln!("app-password full sync failed: {e}");
             }
         }
@@ -376,6 +397,7 @@ pub async fn accounts_update_app_password(
         crate::provider::imap::provider::GmailImapProvider::new(id.clone(), pool, state.db.clone());
     verifier.verify().await?;
     crate::secrets::store_app_password(&acc.email, &pw)?;
+    state.remember_app_password(&acc.email, &pw).await;
     state.providers.write().await.remove(&id);
     state
         .db

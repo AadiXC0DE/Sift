@@ -110,7 +110,7 @@ pub async fn run_partial_sync(
                 .flatten()
                 .chain(rec.labels_removed.into_iter().flatten())
             {
-                // determine add vs remove by which list it came from — simplified: apply both directions via message_labels diff
+                // determine add vs remove by which list it came from - simplified: apply both directions via message_labels diff
                 // Here we just re-fetch minimal labels
                 if let Ok(m) = client.get_message_meta(&chg.message.id).await {
                     let labels = m.label_ids.clone().unwrap_or_default();

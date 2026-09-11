@@ -518,7 +518,7 @@ impl Provider for GmailImapProvider {
         )
         .await;
         // SMTP yields no id; callers use the synced Sent copy. Return the
-        // Message-ID based placeholder (hex of nothing → empty) — outbox
+        // Message-ID based placeholder (hex of nothing → empty) - outbox
         // treats send as Done regardless.
         Ok(SentInfo {
             id: String::new(),

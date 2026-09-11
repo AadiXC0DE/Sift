@@ -76,6 +76,9 @@
   --list-w: 380px;
   --row-h: 40px;
   --toolbar-h: 44px;
+  /* macOS traffic lights sit in this band. Columns paint it so it reads as a
+     unified titlebar rather than an empty strip. */
+  --titlebar-h: 30px;
   --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
   color-scheme: light;
 }

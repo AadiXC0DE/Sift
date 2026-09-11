@@ -42,7 +42,12 @@ pub async fn sync_now(
                 .flatten()
                 .and_then(|a| a.history_id);
             let cursor = Cursor::parse(raw.as_deref().unwrap_or(""));
-            let sink = crate::provider::DbSink::new(db.clone());
+            let sink = crate::provider::DbSink::with_progress(db.clone(), {
+                let app = app2.clone();
+                move |s| {
+                    let _ = app.emit("sync:state", &s);
+                }
+            });
             let outcome = provider.partial_sync(&cursor, &sink).await;
             // Manual sync recovers like the poll loop (reconcile REST,
             // rebuild IMAP) instead of surfacing cursor internals.
@@ -77,22 +82,35 @@ pub async fn sync_now(
                 }
                 other => other,
             };
-            if let Ok(PartialOutcome::Synced {
-                changed_threads, ..
-            }) = outcome
-            {
-                let tids: Vec<String> = changed_threads
-                    .iter()
-                    .filter(|(a, _)| a == &aid2)
-                    .map(|(_, t)| t.clone())
-                    .collect();
-                if !tids.is_empty() {
+            match outcome {
+                Ok(PartialOutcome::Synced {
+                    changed_threads, ..
+                }) => {
+                    let _ = db.accounts_set_state(&aid2, "partial").await;
+                    let tids: Vec<String> = changed_threads
+                        .iter()
+                        .filter(|(a, _)| a == &aid2)
+                        .map(|(_, t)| t.clone())
+                        .collect();
+                    if !tids.is_empty() {
+                        let _ = app2.emit(
+                            "store:threads",
+                            serde_json::json!({ "account_id": aid2, "thread_ids": tids }),
+                        );
+                    }
+                    let _ = app2.emit("store:labels", serde_json::json!({ "account_id": aid2 }));
                     let _ = app2.emit(
-                        "store:threads",
-                        serde_json::json!({ "account_id": aid2, "thread_ids": tids }),
+                        "sync:state",
+                        serde_json::json!({ "account_id": aid2, "phase": "done", "done": 0, "total": 0, "last_error": null }),
                     );
                 }
-                let _ = app2.emit("store:labels", serde_json::json!({ "account_id": aid2 }));
+                Ok(_) => {}
+                Err(e) => {
+                    let _ = app2.emit(
+                        "sync:state",
+                        serde_json::json!({ "account_id": aid2, "phase": "error", "done": 0, "total": 0, "last_error": e.to_string() }),
+                    );
+                }
             }
         });
     }
@@ -263,7 +281,7 @@ fn assert_no_pii(s: &str) -> Result<(), SiftError> {
 
 /// Build info for the setup wizard (Step A button + CI P11-T21).
 /// `oauth_available` is true only when a Google client ID was present at
-/// build time (`SIFT_GOOGLE_CLIENT_ID` runtime or compile-time) — public
+/// build time (`SIFT_GOOGLE_CLIENT_ID` runtime or compile-time) - public
 /// builds without it show the app-password path only.
 #[tauri::command]
 pub fn system_info() -> Result<serde_json::Value, SiftError> {

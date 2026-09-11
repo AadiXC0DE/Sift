@@ -11,7 +11,7 @@ pub const SCOPES: &[&str] = &[
 
 /// Google OAuth client credentials, resolved in order:
 /// 1. Runtime env (tests, power-user override).
-/// 2. Values baked in at build time from CI secrets (`option_env!`) — this is
+/// 2. Values baked in at build time from CI secrets (`option_env!`) - this is
 ///    how downloaded DMG builds sign users in with zero setup (spec 2.3:
 ///    Desktop-app IDs are public by Google's definition; PKCE + loopback
 ///    protect the flow).
@@ -123,7 +123,7 @@ async fn run_loopback(
             let code = query.get("code").cloned();
             let state = query.get("state").cloned();
             let ok = code.is_some() && state.as_deref() == Some(expected_state.as_str());
-            let body = if ok { success_html } else { "<h1>Invalid state — try again</h1>" };
+            let body = if ok { success_html } else { "<h1>Invalid state. Try again</h1>" };
             let status = if ok { "200 OK" } else { "400 Bad Request" };
             let resp = format!("HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
             let _ = stream.write_all(resp.as_bytes()).await;

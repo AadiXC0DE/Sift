@@ -1,4 +1,4 @@
-//! P11-T06: incremental sync — new mail, flag/label deltas (CONDSTORE +
+//! P11-T06: incremental sync - new mail, flag/label deltas (CONDSTORE +
 //! fallback), trash/untrash/delete-forever via UID diff, NeedsFull on
 //! UIDVALIDITY change.
 #[path = "support/mod.rs"]

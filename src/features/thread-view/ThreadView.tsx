@@ -10,7 +10,7 @@ import { Chip } from '../../ui/Chip';
 import { Spinner } from '../../ui/Spinner';
 import { EmptyState } from '../../ui/EmptyState';
 import { dispatchAction } from '../actions/dispatch';
-import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Paperclip, Tag } from 'lucide-react';
+import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Paperclip, Tag, Download } from 'lucide-react';
 import { IconButton } from '../../ui/IconButton';
 import { Popover } from '../../ui/Popover';
 import { Menu } from '../../ui/Menu';
@@ -43,16 +43,6 @@ async function pollBody(id: string, onUpdate: (b: MessageBody) => void) {
       cacheSet(id, b);
       onUpdate(b);
       if (b.state === 'ready' || b.state === 'error') {
-        if (
-          b.state === 'ready' &&
-          b.remoteImageCount > 0 &&
-          !b.remoteImagesAllowed &&
-          useSettings.getState().settings.remoteImages === 'always'
-        ) {
-          const loaded = await api.remote_images_load(id, false);
-          cacheSet(id, loaded);
-          onUpdate(loaded);
-        }
         return;
       }
     } catch {
@@ -105,7 +95,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
     const run = async () => {
       // When unified, we need accountId: look up via threads_query? Simplify: use detail?.accountId or first account.
       // For now, if scope is 'all', fetch via all accounts by trying thread_get on each is expensive;
-      // the list row knows accountId — ThreadList should set it. Fallback: use stored last account.
+      // the list row knows accountId - ThreadList should set it. Fallback: use stored last account.
       const account =
         aid ?? detail?.accountId ?? (window as unknown as { __lastAccount?: string }).__lastAccount ?? '';
       if (!account) return;
@@ -165,19 +155,6 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
       cancelled = true;
     };
   }, [detail, expanded]);
-
-  useEffect(() => {
-    const h = (e: Event) => {
-      const id = (e as CustomEvent).detail?.messageId as string | undefined;
-      if (!id) return;
-      void api.remote_images_load(id, false).then((b) => {
-        cacheSet(id, b);
-        setBodies((p) => ({ ...p, [id]: b }));
-      });
-    };
-    document.addEventListener('sift:load-remote', h as EventListener);
-    return () => document.removeEventListener('sift:load-remote', h as EventListener);
-  }, []);
 
   // Re-fetch the open thread when its rows change (actions, undo, sync).
   useEffect(() => {
@@ -451,32 +428,12 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                       </Button>
                     </div>
                   ) : body.html ? (
-                    <>
-                      {body.remoteImageCount > 0 &&
-                        !body.remoteImagesAllowed &&
-                        settings.remoteImages === 'ask' && (
-                          <div style={{ marginBottom: 8 }}>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() =>
-                                void api.remote_images_load(m.id, false).then((loaded) => {
-                                  cacheSet(m.id, loaded);
-                                  setBodies((previous) => ({ ...previous, [m.id]: loaded }));
-                                })
-                              }
-                            >
-                              Load remote images
-                            </Button>
-                          </div>
-                        )}
-                      <MailFrame
-                        messageId={m.id}
-                        html={body.html}
-                        allowed={body.remoteImagesAllowed}
-                        dark={false}
-                      />
-                    </>
+                    <MailFrame
+                      messageId={m.id}
+                      html={body.html}
+                      allowed={body.remoteImagesAllowed}
+                      dark={false}
+                    />
                   ) : (
                     <pre
                       style={{
@@ -745,32 +702,37 @@ function AttachmentStrip({
   messageId: string;
   attachments: { id: string; filename?: string | null; mime: string; size: number }[];
 }) {
-  void messageId;
-  if (!attachments.length) return null;
+  const files = attachments.filter((a) => a.filename);
+  if (!files.length) return null;
   return (
     <div style={{ display: 'flex', gap: 8, margin: '8px 0', flexWrap: 'wrap' }}>
-      {attachments
-        .filter((a) => a.filename)
-        .map((a) => (
+      {files.map((a) => (
+        <div
+          key={a.id}
+          style={{
+            display: 'flex',
+            alignItems: 'stretch',
+            height: 56,
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            background: 'var(--n1)',
+            overflow: 'hidden',
+          }}
+        >
           <button
-            key={a.id}
             onClick={() => void api.attachments_open(a.id)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              void api.attachments_save_as(a.id);
-            }}
+            title={`Open ${a.filename}`}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              height: 56,
               padding: '0 12px',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              background: 'var(--n1)',
+              border: 'none',
+              background: 'none',
               color: 'var(--fg)',
               cursor: 'pointer',
               fontSize: 12,
+              maxWidth: 280,
             }}
           >
             {a.mime.startsWith('image/') ? (
@@ -782,11 +744,30 @@ function AttachmentStrip({
             ) : (
               <Paperclip size={16} />
             )}
-            <span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {a.filename} <span style={{ color: 'var(--fg-3)' }}>{(a.size / 1024).toFixed(0)}KB</span>
             </span>
           </button>
-        ))}
+          <button
+            onClick={() => void api.attachments_save_as(a.id)}
+            title="Save to disk"
+            aria-label={`Save ${a.filename}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 40,
+              border: 'none',
+              borderLeft: '1px solid var(--border)',
+              background: 'none',
+              color: 'var(--fg-2)',
+              cursor: 'pointer',
+            }}
+          >
+            <Download size={15} />
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

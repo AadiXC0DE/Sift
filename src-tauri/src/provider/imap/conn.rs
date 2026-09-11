@@ -362,7 +362,7 @@ impl Conn {
             buf.extend_from_slice(&line);
             // Splice `{n}` / `{n+}` literals inline so the parser sees whole responses.
             if let Some(n) = trailing_literal_len(&line) {
-                // NOTE: no CRLF follows literal bytes on the wire — the
+                // NOTE: no CRLF follows literal bytes on the wire - the
                 // enclosing `)` (or the next response) comes immediately.
                 let mut data = vec![0u8; n];
                 tokio::time::timeout(CONNECT_TIMEOUT, self.io.read_exact(&mut data))
@@ -397,7 +397,7 @@ impl Conn {
             Err(e) if is_conn_error(&e) => {
                 log::debug!(target: "sift::imap", "connection lost mid-command; reconnecting once");
                 // Boxed: reconnect() can reach connect_loop(), which reaches
-                // back here — boxing breaks the async type recursion.
+                // back here - boxing breaks the async type recursion.
                 Box::pin(self.reconnect()).await?;
                 self.cmd_once(body).await
             }

@@ -9,7 +9,7 @@ fn macos_keychain_persists_across_entries() {
             .unwrap()
             .as_nanos()
     );
-    let service = "xyz.ownpath.sift.tests";
+    let service = "com.aadixc0de.sift.tests";
     let first = keyring::Entry::new(service, &account).unwrap();
     first.set_password("non-secret-test-value").unwrap();
 

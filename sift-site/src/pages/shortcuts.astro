@@ -1,5 +1,97 @@
-<html lang="en"><head><meta charset="utf-8" /><title>Sift — shortcuts</title></head>
-<body><main style="max-width:860px;margin:0 auto;padding:40px 20px"><h1>shortcuts</h1>
-<p>Run it yourself: <code>brew install ownpath/tap/sift-bench</code> then <code>sift-bench quick</code>.</p>
-<p><a href="/benchmarks">Methodology</a> · <a href="/">Home</a></p>
-</main></body></html>
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+const groups = [
+  {
+    title: 'Navigate',
+    rows: [
+      { keys: ['j', '↓'], desc: 'Next conversation' },
+      { keys: ['k', '↑'], desc: 'Previous conversation' },
+      { keys: ['↩', 'o'], desc: 'Open conversation' },
+      { keys: ['u'], desc: 'Back to the list' },
+      { keys: ['x'], desc: 'Select conversation' },
+      { keys: ['⇧j', '⇧k'], desc: 'Extend selection' },
+      { keys: ['⌘a'], desc: 'Select all' },
+      { keys: ['⌘\\'], desc: 'Toggle the sidebar' },
+      { keys: ['`'], desc: 'Cycle the reading pane' },
+    ],
+  },
+  {
+    title: 'Triage',
+    rows: [
+      { keys: ['e'], desc: 'Archive' },
+      { keys: ['#', '⌫'], desc: 'Trash' },
+      { keys: ['!'], desc: 'Mark as spam' },
+      { keys: ['s'], desc: 'Star' },
+      { keys: ['⇧u'], desc: 'Mark as unread' },
+      { keys: ['⇧i'], desc: 'Mark as read' },
+      { keys: ['h'], desc: 'Snooze' },
+      { keys: ['l'], desc: 'Label' },
+      { keys: ['v'], desc: 'Move' },
+      { keys: ['z', '⌘z'], desc: 'Undo' },
+    ],
+  },
+  {
+    title: 'Write',
+    rows: [
+      { keys: ['r'], desc: 'Reply' },
+      { keys: ['a'], desc: 'Reply all' },
+      { keys: ['f'], desc: 'Forward' },
+      { keys: ['c', '⌘n'], desc: 'Compose' },
+      { keys: ['n', 'p'], desc: 'Next / previous message in a thread' },
+      { keys: ['o'], desc: 'Collapse or expand a message' },
+      { keys: [']', '['], desc: 'Archive and go next / previous' },
+    ],
+  },
+  {
+    title: 'Go to',
+    rows: [
+      { keys: ['g i'], desc: 'Inbox' },
+      { keys: ['g s'], desc: 'Starred' },
+      { keys: ['g h'], desc: 'Snoozed' },
+      { keys: ['g t'], desc: 'Sent' },
+      { keys: ['g d'], desc: 'Drafts' },
+      { keys: ['g a'], desc: 'Archive' },
+    ],
+  },
+  {
+    title: 'Accounts and everywhere',
+    rows: [
+      { keys: ['⌘1', '⌘2'], desc: 'Switch account' },
+      { keys: ['⌘0'], desc: 'Unified inbox' },
+      { keys: ['/'], desc: 'Search' },
+      { keys: ['⌘k'], desc: 'Command palette' },
+      { keys: ['⌘,'], desc: 'Settings' },
+      { keys: ['⌘r'], desc: 'Sync now' },
+      { keys: ['?'], desc: 'Shortcut help' },
+    ],
+  },
+];
+---
+<SiteLayout title="Shortcuts" description="Every Sift keyboard shortcut, and how to remap them." path="/shortcuts">
+  <div class="page-head">
+    <h1>Shortcuts</h1>
+    <p>Every action has a key. The palette covers the rest. Bindings are remappable in Settings.</p>
+  </div>
+
+  <div class="prose">
+    {
+      groups.map((g) => (
+        <>
+          <h2>{g.title}</h2>
+          <div>
+            {g.rows.map((r) => (
+              <div class="shortcut-row">
+                <span class="keys">
+                  {r.keys.map((k) => (
+                    <kbd>{k}</kbd>
+                  ))}
+                </span>
+                <span class="desc">{r.desc}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      ))
+    }
+  </div>
+</SiteLayout>

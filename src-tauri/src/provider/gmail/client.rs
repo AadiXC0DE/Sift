@@ -448,8 +448,15 @@ fn parse_batch_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `SIFT_BATCH_URL` is process-global: these tests must not run
+    /// concurrently or one's mock server answers another's batch call.
+    static BATCH_ENV_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    fn batch_env_lock() -> &'static tokio::sync::Mutex<()> {
+        BATCH_ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
     #[tokio::test]
     async fn p3_t01_batch_shape() {
+        let _env = batch_env_lock().lock().await;
         let server = wiremock::MockServer::start().await;
         std::env::set_var("SIFT_BATCH_URL", format!("{}/batch/gmail/v1", server.uri()));
         let expected_ids: Vec<String> = (0..3).map(|i| format!("m{i}")).collect();
@@ -483,6 +490,7 @@ mod tests {
 
     #[tokio::test]
     async fn p3_t02_batch_404_part() {
+        let _env = batch_env_lock().lock().await;
         let server = wiremock::MockServer::start().await;
         std::env::set_var("SIFT_BATCH_URL", format!("{}/batch/gmail/v1", server.uri()));
         wiremock::Mock::given(wiremock::matchers::method("POST"))
