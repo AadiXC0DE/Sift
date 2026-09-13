@@ -24,6 +24,7 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
   const accounts = useAccounts((s) => s.accounts);
   const scope = useView((s) => s.accountScope);
   const [labels, setLabels] = useState<Label[]>([]);
+  const [counts, setCounts] = useState<Record<string, { unread: number; total: number }>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     try {
       return JSON.parse(localStorage.getItem('sift-label-collapse') ?? '{}');
@@ -33,15 +34,23 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
   });
 
   useEffect(() => {
-    const aid = scope === 'all' ? accounts[0]?.id : scope;
-    if (!aid) {
+    const ids = scope === 'all' ? accounts.map((a) => a.id) : [scope];
+    if (!ids.length) {
       setLabels([]);
+      setCounts({});
       return;
     }
-    api
-      .labels_list(aid)
-      .then(setLabels)
-      .catch(() => {});
+    Promise.all(ids.map((id) => api.labels_list(id).catch(() => [] as Label[]))).then((all) => {
+      const merged = all.flat();
+      setLabels(merged);
+      const c: Record<string, { unread: number; total: number }> = {};
+      for (const l of merged) {
+        const e = (c[l.id] ??= { unread: 0, total: 0 });
+        e.unread += l.unread_count;
+        e.total += l.total_count;
+      }
+      setCounts(c);
+    });
   }, [scope, accounts]);
 
   const toggleCollapse = (name: string) => {
@@ -52,13 +61,35 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
     });
   };
 
-  const userLabels = labels.filter((l) => l.kind === 'user' && l.visible);
-  const unreadFor = (kind: string): number => {
-    if (scope !== 'all') {
-      const l = labels.find((x) => x.id.toLowerCase() === kind || x.name.toLowerCase() === kind);
-      return l?.unread_count ?? 0;
-    }
-    return 0; // unified sums computed via labels_list per account in real impl; keep 0 for stub
+  // One entry per user label name; unified mode merges accounts.
+  const userLabels = Object.values(
+    labels
+      .filter((l) => l.kind === 'user' && l.visible)
+      .reduce<Record<string, Label>>((acc, l) => {
+        acc[l.name] ??= l;
+        return acc;
+      }, {}),
+  );
+
+  // Subtle per-view counts: Inbox and Spam show unread, the rest show totals.
+  const countFor = (kind: string): number => {
+    const id =
+      kind === 'inbox'
+        ? 'INBOX'
+        : kind === 'starred'
+          ? 'STARRED'
+          : kind === 'sent'
+            ? 'SENT'
+            : kind === 'drafts'
+              ? 'DRAFT'
+              : kind === 'spam'
+                ? 'SPAM'
+                : kind === 'trash'
+                  ? 'TRASH'
+                  : '';
+    const c = id ? counts[id] : undefined;
+    if (!c) return 0;
+    return kind === 'inbox' || kind === 'spam' ? c.unread : c.total;
   };
 
   return (
@@ -105,9 +136,9 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
             >
               <Icon size={16} strokeWidth={1.5} color={active ? 'var(--fg)' : 'var(--fg-3)'} />
               <span style={{ flex: 1, textAlign: 'left' }}>{v.label}</span>
-              {unreadFor(v.kind) > 0 && (
+              {countFor(v.kind) > 0 && (
                 <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)' }}>
-                  {unreadFor(v.kind)}
+                  {countFor(v.kind)}
                 </span>
               )}
             </button>

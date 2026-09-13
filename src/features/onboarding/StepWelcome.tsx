@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../../app/ipc/commands';
 import { useSetup } from '../../stores/setupStore';
 import { Button } from '../../ui/Button';
@@ -15,6 +15,7 @@ export function StepWelcome() {
   const set = useSetup((s) => s.set);
   const oauthAvailable = useSetup((s) => s.oauthAvailable);
   const firstBtn = useRef<HTMLButtonElement>(null);
+  const [googleError, setGoogleError] = useState<string | null>(null);
   useEffect(() => {
     firstBtn.current?.focus();
   }, []);
@@ -37,15 +38,21 @@ export function StepWelcome() {
         <Button
           variant="ghost"
           onClick={() => {
+            setGoogleError(null);
             api
               .accounts_add_google()
               .then(() => set({ step: 'connecting', progress: 'syncing' }))
-              .catch(() => undefined);
+              .catch(() =>
+                setGoogleError(
+                  "Google sign-in isn't available right now. Use an app password instead; it takes about two minutes.",
+                ),
+              );
           }}
         >
           Sign in with Google instead
         </Button>
       )}
+      {googleError && <div style={{ fontSize: 12.5, color: 'var(--danger)' }}>{googleError}</div>}
       <div style={{ fontSize: 12, color: 'var(--fg-3)' }}>
         Works with Gmail and Google Workspace. Your mail stays on this Mac.
       </div>

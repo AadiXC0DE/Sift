@@ -8,7 +8,7 @@ pub async fn attachments_open(
     app: tauri::AppHandle,
     attachment_id: String,
 ) -> Result<(), SiftError> {
-    let (path, mime) = ensure_downloaded(&state, &attachment_id).await?;
+    let (path, mime) = ensure_downloaded_guarded(&state, &attachment_id).await?;
     // executables need confirm - frontend shows dialog; backend double-checks extension
     let _ = mime;
     crate::opener::open_path(&app, &path).map_err(|e| SiftError::app("open", e.to_string(), false))
@@ -21,26 +21,58 @@ pub async fn attachments_save_as(
     attachment_id: String,
 ) -> Result<serde_json::Value, SiftError> {
     use tauri_plugin_dialog::DialogExt;
-    let (src, _mime) = ensure_downloaded(&state, &attachment_id).await?;
+    let (src, _mime) = ensure_downloaded_guarded(&state, &attachment_id).await?;
     let name = std::path::Path::new(&src)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("attachment")
         .to_string();
-    let dest = app
-        .dialog()
+
+    // Use the callback dialog, not `blocking_save_file`: the blocking variant
+    // parks a runtime thread on a synchronous channel, which can deadlock the
+    // command and leave the UI spinning forever.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
         .file()
         .add_filter("All", &["*"])
         .set_file_name(&name)
-        .blocking_save_file();
-    if let Some(p) = dest {
-        let p = p.to_string();
-        // p is file:// url or path
-        let dest_path = p.trim_start_matches("file://").to_string();
-        std::fs::copy(&src, &dest_path).map_err(SiftError::from)?;
-        return Ok(serde_json::json!({"path": dest_path}));
+        .save_file(move |dest| {
+            let _ = tx.send(dest);
+        });
+    let dest = rx
+        .await
+        .map_err(|_| SiftError::app("cancelled", "Save dialog closed", false))?;
+    let Some(dest) = dest else {
+        return Err(SiftError::app("cancelled", "Save cancelled", false));
+    };
+    let dest_path = dest
+        .into_path()
+        .map_err(|e| SiftError::app("save", e.to_string(), false))?;
+    tokio::fs::copy(&src, &dest_path)
+        .await
+        .map_err(SiftError::from)?;
+    Ok(serde_json::json!({ "path": dest_path.to_string_lossy() }))
+}
+
+/// Bound the fetch so a dead IMAP/SMTP connection can never leave the UI
+/// spinner running forever; surface a clear, retryable error instead.
+async fn ensure_downloaded_guarded(
+    state: &AppState,
+    attachment_id: &str,
+) -> Result<(String, String), SiftError> {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        ensure_downloaded(state, attachment_id),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(SiftError::app(
+            "timeout",
+            "This attachment is taking too long to download. Check your connection and try again.",
+            true,
+        )),
     }
-    Err(SiftError::app("cancelled", "save cancelled", false))
 }
 
 async fn ensure_downloaded(

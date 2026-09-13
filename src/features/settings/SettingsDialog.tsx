@@ -137,7 +137,15 @@ function AccountSettingsRow({ account }: { account: Account }) {
   );
 }
 
-export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function SettingsDialog({
+  open,
+  onClose,
+  onAddAccount,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onAddAccount?: () => void;
+}) {
   const settings = useSettings((s) => s.settings);
   const set = useSettings((s) => s.set);
   const accounts = useAccounts((s) => s.accounts);
@@ -322,7 +330,10 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               {accounts.map((account) => (
                 <AccountSettingsRow key={account.id} account={account} />
               ))}
-              <Button onClick={() => void api.accounts_add_google()} style={{ alignSelf: 'flex-start' }}>
+              <Button
+                onClick={() => (onAddAccount ? onAddAccount() : undefined)}
+                style={{ alignSelf: 'flex-start' }}
+              >
                 Add account
               </Button>
             </div>

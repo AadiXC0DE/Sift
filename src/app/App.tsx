@@ -22,10 +22,10 @@ export function App() {
   const paneLayout = useView((s) => s.paneLayout);
   const cyclePane = useView((s) => s.cyclePane);
   const threadId = useView((s) => s.threadId);
-  const accounts = useAccounts((s) => s.accounts);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [addAccountOpen, setAddAccountOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState<null | { mode: string; threadId?: string }>(null);
   const [sidebarHidden, setSidebarHidden] = useState(false);
   const online = useSync((s) => s.online);
@@ -220,7 +220,6 @@ export function App() {
     };
   }, []);
 
-  const showOnboarding = accounts.length === 0;
   const paneOffOpen = paneLayout === 'off' && threadId != null;
   const bottom = paneLayout === 'bottom';
   const showList = !paneOffOpen;
@@ -321,7 +320,7 @@ export function App() {
           <LearnKeys />
         </div>
       </div>
-      {showOnboarding && <Onboarding />}
+      <Onboarding force={addAccountOpen} onClose={() => setAddAccountOpen(false)} />
       {paletteOpen && (
         <Palette
           onClose={() => setPaletteOpen(false)}
@@ -336,7 +335,14 @@ export function App() {
           onClose={() => setComposeOpen(null)}
         />
       )}
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onAddAccount={() => {
+          setSettingsOpen(false);
+          setAddAccountOpen(true);
+        }}
+      />
       <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <SeqHint />
     </div>

@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::dto::{Label, SyncStatus};
 use crate::errors::SiftError;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
 pub async fn sync_now(
@@ -180,13 +180,13 @@ pub async fn app_set_badge(
     app: tauri::AppHandle,
     count: i64,
 ) -> Result<(), SiftError> {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = app;
-        let _ = count;
-        // badge via dock plugin would go here; use private API through tauri? keep as no-op with log
-    }
     let _ = state;
+    // Unread Inbox only, hidden at zero. This is the native macOS dock badge;
+    // the OS styles it, so keep the number meaningful rather than loud.
+    if let Some(w) = app.get_webview_window("main") {
+        let value = if count > 0 { Some(count) } else { None };
+        let _ = w.set_badge_count(value);
+    }
     Ok(())
 }
 
@@ -285,12 +285,25 @@ fn assert_no_pii(s: &str) -> Result<(), SiftError> {
 /// builds without it show the app-password path only.
 #[tauri::command]
 pub fn system_info() -> Result<serde_json::Value, SiftError> {
+    // A real Google desktop client id looks like
+    // "<project-number>-<random>.apps.googleusercontent.com". Placeholders
+    // (empty, "replace-me", a bare string) must not enable the OAuth button,
+    // otherwise the browser opens Google's "invalid_client" error page.
+    fn looks_real(id: &str) -> bool {
+        let id = id.trim();
+        id.ends_with(".apps.googleusercontent.com")
+            && id
+                .split('-')
+                .next()
+                .map(|prefix| !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()))
+                .unwrap_or(false)
+    }
     let oauth_available = std::env::var("SIFT_GOOGLE_CLIENT_ID")
         .ok()
-        .filter(|s| !s.is_empty())
+        .filter(|s| looks_real(s))
         .is_some()
         || option_env!("SIFT_GOOGLE_CLIENT_ID")
-            .map(|s| !s.is_empty())
+            .map(looks_real)
             .unwrap_or(false);
     Ok(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),

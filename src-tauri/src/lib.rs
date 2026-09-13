@@ -125,7 +125,13 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             if let Some(w) = app.get_webview_window("main") {
                 let settings =
                     tauri::async_runtime::block_on(db.settings_get()).unwrap_or_default();
-                let dark = settings.theme == "dark";
+                // Respect the OS appearance when the setting is "system",
+                // otherwise a dark-mode Mac still gets a light flash.
+                let dark = match settings.theme.as_str() {
+                    "dark" => true,
+                    "light" => false,
+                    _ => matches!(w.theme(), Ok(tauri::Theme::Dark)),
+                };
                 let _ = w.set_background_color(if dark {
                     Some(tauri::window::Color(27, 27, 26, 255))
                 } else {

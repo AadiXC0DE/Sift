@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../app/ipc/commands';
-import type { MessageBody, ThreadDetail } from '../../app/ipc/types';
+import type { MessageBody, ThreadDetail, Address } from '../../app/ipc/types';
 import { useView } from '../../stores/viewStore';
 import { useSelection } from '../../stores/selectionStore';
 import { useSettings } from '../../stores/settingsStore';
+import { useAccounts } from '../../stores/accountsStore';
 import { MailFrame } from './MailFrame';
 import { Avatar } from '../../ui/Avatar';
 import { Chip } from '../../ui/Chip';
@@ -391,17 +392,8 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
               </button>
               {open && (
                 <div style={{ padding: '4px 16px 16px', borderTop: '1px solid var(--border)' }}>
-                  <div style={{ fontSize: 12, color: 'var(--fg-3)', margin: '8px 0' }}>
-                    to {m.to.map((a) => a.e).join(', ') || 'me'}
-                    {m.cc.length > 0 && (
-                      <details style={{ display: 'inline', marginLeft: 8 }}>
-                        <summary style={{ display: 'inline', cursor: 'pointer' }}>cc ▾</summary>{' '}
-                        {m.cc.map((a) => a.e).join(', ')}
-                      </details>
-                    )}
-                    {m.listUnsubscribe && <UnsubPill messageId={m.id} />}
-                  </div>
-                  {<AttachmentStrip messageId={m.id} attachments={m.attachments} />}
+                  <MessageMetaBar m={m} accountId={detail.accountId} />
+                  {m.hasAttachments && <AttachmentStrip messageId={m.id} attachments={m.attachments} />}
                   {!body || body.state === 'loading' ? (
                     body?.text ? (
                       <pre
@@ -692,6 +684,69 @@ function BulkBar() {
       >
         Clear
       </button>
+    </div>
+  );
+}
+
+function MessageMetaBar({ m, accountId }: { m: ThreadDetail['messages'][number]; accountId: string }) {
+  const [open, setOpen] = useState(false);
+  const accounts = useAccounts((s) => s.accounts);
+  const myEmail = accounts.find((a) => a.id === accountId)?.email?.toLowerCase();
+  const short = (a: Address) => (a.e && a.e.toLowerCase() === myEmail ? 'me' : a.n?.trim() || a.e);
+  const full = (a: Address) => (a.n?.trim() ? `${a.n.trim()} <${a.e}>` : a.e);
+  const summarize = (list: string[]) =>
+    list.length <= 2 ? list.join(', ') : `${list.slice(0, 2).join(', ')} +${list.length - 2}`;
+
+  const to = m.to.length ? m.to.map(short) : ['me'];
+  const cc = m.cc.map(short);
+  const rows: [string, string][] = [['From', full(m.from) || m.from.e]];
+  rows.push(['To', m.to.map(full).join(', ') || 'me']);
+  if (m.cc.length) rows.push(['Cc', m.cc.map(full).join(', ')]);
+  if (m.bcc.length) rows.push(['Bcc', m.bcc.map(full).join(', ')]);
+  if (m.replyTo) rows.push(['Reply-to', m.replyTo]);
+  rows.push(['Date', new Date(m.internalDate).toLocaleString()]);
+
+  return (
+    <div style={{ margin: '8px 0', fontSize: 12, color: 'var(--fg-3)' }}>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span>to {summarize(to)}</span>
+        {cc.length > 0 && <span>· cc {summarize(cc)}</span>}
+        {m.listUnsubscribe && <UnsubPill messageId={m.id} />}
+        <button
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          style={{
+            marginLeft: 'auto',
+            background: 'none',
+            border: 'none',
+            color: 'var(--fg-3)',
+            cursor: 'pointer',
+            fontSize: 11.5,
+            padding: 0,
+          }}
+        >
+          {open ? 'Hide details' : 'Details'}
+        </button>
+      </div>
+      {open && (
+        <div
+          style={{
+            marginTop: 8,
+            display: 'grid',
+            gridTemplateColumns: 'auto minmax(0, 1fr)',
+            gap: '3px 12px',
+            maxWidth: 640,
+            lineHeight: 1.5,
+          }}
+        >
+          {rows.map(([k, v]) => (
+            <Fragment key={k}>
+              <span style={{ color: 'var(--fg-3)' }}>{k}</span>
+              <span style={{ color: 'var(--fg-2)', overflowWrap: 'anywhere' }}>{v}</span>
+            </Fragment>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

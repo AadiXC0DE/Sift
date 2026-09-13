@@ -83,7 +83,3 @@ Sift talks directly to Google over TLS. No analytics, no crash reporting, no thi
 ## Contributing
 
 Issues and pull requests are welcome. Before opening a PR, run `pnpm lint`, `pnpm test`, and the Rust test suite, and keep the DTOs in `src-tauri/src/dto.rs` and `src/app/ipc/types.ts` in sync (a CI check enforces this).
-
-## Credits
-
-Built by [Aaditya](https://github.com/AadiXC0DE). The design language and performance budgets are documented in the architecture notes. Fonts, icons, and open source dependencies are listed in the app's settings.
