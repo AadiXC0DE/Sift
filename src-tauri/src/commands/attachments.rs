@@ -3,11 +3,14 @@
 //! Thin wrappers: the attachment service owns identity, cache, streaming,
 //! progress, saving and open policy. These commands only translate UI shapes
 //! into service calls and run the native dialogs.
+//!
+//! Every command takes the account-qualified key from appendix A: an
+//! attachment id or message id alone is not unique across accounts (P4.2).
 
 use crate::attachments::service;
 use crate::attachments::AttachmentRuntime;
 use crate::app_state::AppState;
-use crate::dto::{SaveAllResult, SaveAsResult};
+use crate::dto::{AttachmentRefKey, MessageRef, SaveAllResult, SaveAsResult};
 use crate::errors::SiftError;
 use std::path::PathBuf;
 use tauri::State;
@@ -55,15 +58,16 @@ async fn prompt_folder(app: &tauri::AppHandle) -> Option<PathBuf> {
 pub async fn attachments_open(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
+    account_id: String,
     attachment_id: String,
-    // Account-qualified key (appendix A). Optional so callers that still pass
-    // only an attachment id work until the P4 scoping migration: ownership is
-    // then derived from the message join, never guessed.
-    account_id: Option<String>,
     confirmed_executable: Option<bool>,
 ) -> Result<(), SiftError> {
     let rt = runtime(&state, &app);
-    let rec = service::owned_record(&rt.db, account_id.as_deref(), &attachment_id).await?;
+    let key = AttachmentRefKey {
+        account_id,
+        attachment_id,
+    };
+    let rec = service::owned_record(&rt.db, &key).await?;
     service::open(&rt, &*state, &rec, confirmed_executable.unwrap_or(false), |path| {
         crate::opener::open_path(&app, &path.to_string_lossy())
     })
@@ -77,11 +81,15 @@ pub async fn attachments_open(
 pub async fn attachments_save_as(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
+    account_id: String,
     attachment_id: String,
-    account_id: Option<String>,
 ) -> Result<SaveAsResult, SiftError> {
     let rt = runtime(&state, &app);
-    let rec = service::owned_record(&rt.db, account_id.as_deref(), &attachment_id).await?;
+    let key = AttachmentRefKey {
+        account_id,
+        attachment_id,
+    };
+    let rec = service::owned_record(&rt.db, &key).await?;
     let name = crate::attachments::naming::basename(
         rec.filename.as_deref(),
         &rec.mime,
@@ -105,8 +113,8 @@ pub async fn attachments_save_as(
 pub async fn attachments_save_all(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
+    account_id: String,
     message_id: String,
-    account_id: Option<String>,
 ) -> Result<SaveAllResult, SiftError> {
     let rt = runtime(&state, &app);
     let Some(dir) = prompt_folder(&app).await else {
@@ -115,7 +123,7 @@ pub async fn attachments_save_all(
             failed: vec![],
         });
     };
-    service::save_all_into(&rt, &*state, account_id.as_deref(), &message_id, &dir).await
+    service::save_all_into(&rt, &*state, &MessageRef::new(account_id, message_id), &dir).await
 }
 
 /// Cancel an in-flight transfer by the `requestId` the progress event carries

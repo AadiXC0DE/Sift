@@ -107,7 +107,10 @@ async fn p11_t08_fetch_body_shapes() {
 async fn p11_t08_attachment_byte_exact() {
     let (fake, provider, db, acc) = synced_ctx().await;
     let mid = att_message(&db, &acc.id).await;
-    let atts = db.attachments_for_message(&mid).await.unwrap();
+    let atts = db
+        .attachments_for_message(&sift::dto::MessageRef::new(acc.id.clone(), mid.clone()))
+        .await
+        .unwrap();
     assert!(!atts.is_empty());
     // The PDF part decodes byte-exact: every byte and the length, not a
     // prefix (P1.1/P1.2).

@@ -1080,7 +1080,10 @@ async fn p27_single_part_attachment_row_is_ingested() {
         .unwrap();
 
     let mid = format!("{msgid:x}");
-    let atts = db.attachments_for_message(&mid).await.unwrap();
+    let atts = db
+        .attachments_for_message(&sift::dto::MessageRef::new(acc.id.clone(), mid.clone()))
+        .await
+        .unwrap();
     assert_eq!(
         atts.len(),
         1,

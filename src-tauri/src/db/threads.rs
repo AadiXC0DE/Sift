@@ -164,7 +164,7 @@ mod tests {
       move |c| {
         c.execute("INSERT INTO messages (id,account_id,thread_id,internal_date,subject,snippet,is_unread,is_starred,label_ids) VALUES ('m1',?,'t1',1,'Hello','s',1,0,'[]')", params![aid])?;
         c.execute("INSERT INTO messages (id,account_id,thread_id,internal_date,subject,snippet,is_unread,is_starred,label_ids) VALUES ('m2',?,'t1',2,'Re: Hello','s',0,0,'[]')", params![aid])?;
-        c.execute("INSERT INTO message_labels (message_id,label_id) VALUES ('m1','INBOX'),('m1','UNREAD'),('m2','SENT')", [])?;
+        c.execute("INSERT INTO message_labels (account_id,message_id,label_id) VALUES (?1,'m1','INBOX'),(?1,'m1','UNREAD'),(?1,'m2','SENT')", params![aid])?;
         Ok(())
       }
     }).await.unwrap();

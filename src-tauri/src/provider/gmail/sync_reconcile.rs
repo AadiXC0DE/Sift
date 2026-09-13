@@ -36,7 +36,8 @@ pub async fn run_reconcile(
     // delete L - S
     for (id, tid) in &local {
         if !server.contains(id) {
-            sink.delete_message(id, account_id, tid).await?;
+            sink.delete_message(&crate::dto::MessageRef::new(account_id, id), tid)
+                .await?;
         }
     }
     // insert S - L
@@ -85,7 +86,8 @@ pub async fn run_reconcile(
         for (id, r) in chunk.iter().zip(res) {
             if let Ok(m) = r {
                 let labels = m.label_ids.clone().unwrap_or_default();
-                let cur: Vec<String> = sink.message_labels(id).await.unwrap_or_default();
+                let r = crate::dto::MessageRef::new(account_id, id);
+                let cur: Vec<String> = sink.message_labels(&r).await.unwrap_or_default();
                 let add: Vec<String> = labels
                     .iter()
                     .filter(|l| !cur.contains(l))
@@ -97,7 +99,7 @@ pub async fn run_reconcile(
                     .cloned()
                     .collect();
                 if !add.is_empty() || !remove.is_empty() {
-                    let _ = sink.apply_label_change(id, &add, &remove).await;
+                    let _ = sink.apply_label_change(&r, &add, &remove).await;
                 }
             }
         }

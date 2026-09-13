@@ -539,9 +539,58 @@ impl Default for Settings {
             remote_images: "always".into(),
             strip_trackers: true,
             offline_body_cache: "2y".into(),
-            attachment_cache_size: "2GB".into(),
+            attachment_cache_size: "512MB".into(),
             poll_focused: 15,
             poll_background: 60,
         }
     }
+}
+
+/// Account-qualified message identity (appendix A). Provider message ids are
+/// only unique within an account; every DB lookup and IPC boundary that names
+/// a message carries both halves. Provider calls still receive
+/// `message_id` — the original Gmail hex id, never a concatenated local key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MessageRef {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+}
+
+impl MessageRef {
+    pub fn new(account_id: impl Into<String>, message_id: impl Into<String>) -> Self {
+        Self {
+            account_id: account_id.into(),
+            message_id: message_id.into(),
+        }
+    }
+}
+
+/// One class of app-owned cache; `items` counts rows or files, whichever
+/// applies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageCategory {
+    pub bytes: i64,
+    pub items: i64,
+}
+
+/// Settings -> Storage payload (P10.4). Sizes are exact app-owned bytes, not
+/// filesystem allocation, so a clear action can be verified against them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageUsage {
+    pub metadata: StorageCategory,
+    pub bodies: StorageCategory,
+    pub attachments: StorageCategory,
+    #[serde(rename = "draftCache")]
+    pub draft_cache: StorageCategory,
+    /// Configured cap for `attachments`, in bytes (eviction target, not usage).
+    #[serde(rename = "attachmentCacheLimitBytes")]
+    pub attachment_cache_limit_bytes: i64,
+    /// Backend-reported sum of the four categories.
+    #[serde(rename = "totalBytes")]
+    pub total_bytes: i64,
+    /// Unix ms when the backend measured.
+    #[serde(rename = "computedAt")]
+    pub computed_at: i64,
 }

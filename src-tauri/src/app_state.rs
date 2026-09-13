@@ -6,11 +6,47 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+/// How long removal/reauth waits for a cancelled generation's tasks to finish
+/// before giving up on them (they re-check the generation before any write, so
+/// a straggler can no longer touch the account either way).
+const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct TokenInfo {
     pub access: String,
     pub expires_at: i64,
+}
+
+/// Background work owned by one account at one point in time. A new generation
+/// (reauth, re-add) cancels and replaces the previous one, so a removed or
+/// reconnected account can never keep writing under an old credential.
+pub struct AccountRuntime {
+    pub cancel: CancellationToken,
+    pub joins: Vec<JoinHandle<()>>,
+    pub generation: u64,
+}
+
+/// The setup wizard's in-flight sign-in. A new setup supersedes the previous
+/// one; a cancelled setup can never insert an account.
+pub struct SetupRuntime {
+    pub generation: u64,
+    pub cancel: CancellationToken,
+}
+
+/// Cancel a generation and await its tasks, bounded so a stuck task cannot
+/// hold up removal or reauthentication.
+async fn stop_generation(runtime: AccountRuntime) {
+    runtime.cancel.cancel();
+    let _ = tokio::time::timeout(JOIN_TIMEOUT, async {
+        for join in runtime.joins {
+            let _ = join.await;
+        }
+    })
+    .await;
 }
 
 pub struct AppState {
@@ -29,6 +65,10 @@ pub struct AppState {
     pub first_paint_at: AtomicI64,
     pub data_dir: PathBuf,
     pub emit: Mutex<Option<tauri::AppHandle>>,
+    /// Per-account background generations (P4.4).
+    pub account_runtimes: Mutex<HashMap<String, AccountRuntime>>,
+    /// The wizard's current sign-in, if any.
+    pub setup_runtime: Mutex<Option<SetupRuntime>>,
 }
 
 impl AppState {
@@ -52,7 +92,191 @@ impl AppState {
             first_paint_at: AtomicI64::new(0),
             data_dir,
             emit: Mutex::new(None),
+            account_runtimes: Mutex::new(Default::default()),
+            setup_runtime: Mutex::new(None),
         }
+    }
+
+    // -- per-account background generations (P4.4) --------------------------
+
+    /// Start a new generation for an account. The previous generation is
+    /// cancelled and its tasks awaited (bounded) before this returns, so the
+    /// caller can safely swap credentials afterwards.
+    pub async fn begin_generation(&self, account_id: &str) -> (u64, CancellationToken) {
+        let cancel = CancellationToken::new();
+        let (generation, previous) = {
+            let mut runtimes = self.account_runtimes.lock().await;
+            let generation = runtimes.get(account_id).map_or(1, |rt| rt.generation + 1);
+            let previous = runtimes.insert(
+                account_id.to_string(),
+                AccountRuntime {
+                    cancel: cancel.clone(),
+                    joins: Vec::new(),
+                    generation,
+                },
+            );
+            (generation, previous)
+        };
+        if let Some(previous) = previous {
+            stop_generation(previous).await;
+        }
+        (generation, cancel)
+    }
+
+    /// Current generation for an account, if one was ever started.
+    pub async fn generation(&self, account_id: &str) -> Option<u64> {
+        self.account_runtimes
+            .lock()
+            .await
+            .get(account_id)
+            .map(|rt| rt.generation)
+    }
+
+    /// Current `(generation, token)` in one atomic read, so a caller cannot
+    /// pair a token with a generation that was replaced in between.
+    pub async fn runtime_state(&self, account_id: &str) -> Option<(u64, CancellationToken)> {
+        self.account_runtimes
+            .lock()
+            .await
+            .get(account_id)
+            .map(|rt| (rt.generation, rt.cancel.clone()))
+    }
+
+    /// True while `generation` is the account's live generation: the account
+    /// was not removed and no reauth/re-add replaced it in the meantime.
+    /// Every write that follows network work is gated on this.
+    pub async fn is_current(&self, account_id: &str, generation: u64) -> bool {
+        self.account_runtimes
+            .lock()
+            .await
+            .get(account_id)
+            .is_some_and(|rt| rt.generation == generation && !rt.cancel.is_cancelled())
+    }
+
+    /// True once [`Self::cancel_account`] ran and nothing restarted the
+    /// account's work.
+    pub async fn is_cancelled(&self, account_id: &str) -> bool {
+        self.account_runtimes
+            .lock()
+            .await
+            .get(account_id)
+            .is_some_and(|rt| rt.cancel.is_cancelled())
+    }
+
+    /// Attach a task to the account's current generation. A handle whose
+    /// generation was already replaced (or cancelled) is aborted instead: its
+    /// work belongs to a generation nobody is waiting for any more.
+    pub async fn register_task(&self, account_id: &str, generation: u64, handle: JoinHandle<()>) {
+        let mut runtimes = self.account_runtimes.lock().await;
+        match runtimes.get_mut(account_id) {
+            Some(rt) if rt.generation == generation && !rt.cancel.is_cancelled() => {
+                rt.joins.push(handle);
+            }
+            _ => handle.abort(),
+        }
+    }
+
+    /// Stop an account's work and make the account safe to delete: no new
+    /// provider or token is handed out, the token is cancelled and its tasks
+    /// awaited (bounded), then every cached provider, credential and lock for
+    /// the account is dropped. Secrets and rows are the caller's next step.
+    pub async fn cancel_account(&self, account_id: &str) {
+        let email = self
+            .db
+            .accounts_get(account_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|account| account.email);
+        let previous = {
+            let mut runtimes = self.account_runtimes.lock().await;
+            runtimes.remove(account_id).unwrap_or(AccountRuntime {
+                cancel: CancellationToken::new(),
+                joins: Vec::new(),
+                generation: 0,
+            })
+        };
+        let cancel = previous.cancel.clone();
+        cancel.cancel();
+        // Tombstone before unwinding: while the joins below finish, the
+        // account must already refuse new providers and tokens.
+        self.account_runtimes.lock().await.insert(
+            account_id.to_string(),
+            AccountRuntime {
+                cancel,
+                joins: Vec::new(),
+                generation: previous.generation.max(1),
+            },
+        );
+        stop_generation(previous).await;
+        self.providers.write().await.remove(account_id);
+        self.tokens.write().await.remove(account_id);
+        self.refresh_lock.lock().await.remove(account_id);
+        self.provider_lock.lock().await.remove(account_id);
+        if let Some(email) = email {
+            self.forget_app_password(&email).await;
+        }
+    }
+
+    /// Refuse work for an account whose generation was cancelled (removed, or
+    /// mid-reauthentication) instead of rebuilding a provider for it.
+    async fn refuse_if_cancelled(&self, account_id: &str) -> Result<(), SiftError> {
+        if self.is_cancelled(account_id).await {
+            return Err(SiftError::app(
+                "account_cancelled",
+                "This account's session was cancelled.",
+                false,
+            ));
+        }
+        Ok(())
+    }
+
+    // -- setup wizard (P4.4) -------------------------------------------------
+
+    /// Start a setup sign-in. A setup still running is cancelled: only the
+    /// newest wizard attempt may create an account.
+    pub async fn begin_setup(&self) -> (u64, CancellationToken) {
+        let cancel = CancellationToken::new();
+        let (generation, previous) = {
+            let mut setup = self.setup_runtime.lock().await;
+            let generation = setup.as_ref().map_or(1, |s| s.generation + 1);
+            let previous = setup.replace(SetupRuntime {
+                generation,
+                cancel: cancel.clone(),
+            });
+            (generation, previous)
+        };
+        if let Some(previous) = previous {
+            previous.cancel.cancel();
+        }
+        (generation, cancel)
+    }
+
+    /// Cancel the wizard's in-flight sign-in. Harmless when none is running.
+    pub async fn cancel_setup(&self) {
+        if let Some(setup) = self.setup_runtime.lock().await.as_ref() {
+            setup.cancel.cancel();
+        }
+    }
+
+    /// Token of the current setup attempt, if one was started.
+    pub async fn setup_token(&self) -> Option<CancellationToken> {
+        self.setup_runtime
+            .lock()
+            .await
+            .as_ref()
+            .map(|setup| setup.cancel.clone())
+    }
+
+    /// True while `generation` is the live, uncancelled setup. Checked right
+    /// before an account row is committed, so a late sign-in success cannot
+    /// insert an account after the user cancelled the wizard.
+    pub async fn setup_is_current(&self, generation: u64) -> bool {
+        self.setup_runtime
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|setup| setup.generation == generation && !setup.cancel.is_cancelled())
     }
 
     /// Provider bound to an account, cached per account id. OAuth accounts
@@ -66,6 +290,7 @@ impl AppState {
         &self,
         account_id: &str,
     ) -> Result<std::sync::Arc<dyn Provider>, SiftError> {
+        self.refuse_if_cancelled(account_id).await?;
         if let Some(cached) = self.cached_provider(account_id).await {
             return Ok(cached);
         }
@@ -99,6 +324,9 @@ impl AppState {
                 }
             };
             let pool = crate::provider::imap::conn::ImapPool::gmail(acc.email.clone(), pw);
+            // Reading the password may have blocked on the Keychain; the
+            // account could be gone by now.
+            self.refuse_if_cancelled(account_id).await?;
             let c: std::sync::Arc<dyn Provider> =
                 std::sync::Arc::new(crate::provider::imap::provider::GmailImapProvider::new(
                     account_id.into(),
@@ -112,6 +340,9 @@ impl AppState {
             return Ok(c);
         }
         let access = self.get_access_token(account_id).await?;
+        // Refreshing the token is network work: never hand out a provider for
+        // an account that was removed or reconnected in the meantime.
+        self.refuse_if_cancelled(account_id).await?;
         let c: std::sync::Arc<dyn Provider> = std::sync::Arc::new(GmailApiProvider::new(
             account_id.into(),
             GmailClient::new(access),
@@ -186,6 +417,7 @@ impl AppState {
     }
 
     pub async fn get_access_token(&self, account_id: &str) -> Result<String, SiftError> {
+        self.refuse_if_cancelled(account_id).await?;
         // single-flight per account
         let guard: Arc<Mutex<()>> = {
             let mut m = self.refresh_lock.lock().await;
@@ -220,6 +452,10 @@ impl AppState {
         };
         match crate::provider::gmail::oauth::refresh(&rt, &self.http).await {
             Ok(t) => {
+                // The refresh is network work: if the account was removed (or
+                // reconnected) while it was in flight, drop the result instead
+                // of caching a token for a dead generation.
+                self.refuse_if_cancelled(account_id).await?;
                 let info = TokenInfo {
                     access: t.access_token.clone(),
                     expires_at: now + t.expires_in * 1000,
@@ -334,5 +570,158 @@ mod tests {
         let e = st.get_access_token(&a.id).await.unwrap_err();
         assert_eq!(serde_json::to_value(&e).unwrap()["code"], "reauth");
         std::env::remove_var("SIFT_TOKEN_URL");
+    }
+
+    fn spawn_flag_after(flag: Arc<AtomicBool>, delay: Duration) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    }
+
+    fn flag() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
+    fn is_set(flag: &AtomicBool) -> bool {
+        flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn account_state(dir: &tempfile::TempDir, email: &str) -> (AppState, String) {
+        let db = Db::open(dir.path()).unwrap();
+        let account = db.new_account(email, None, None).await.unwrap();
+        (
+            AppState::new(db, dir.path().to_path_buf()),
+            account.id,
+        )
+    }
+
+    /// A new generation cancels the previous one and does not return until its
+    /// tasks have stopped, so credentials can be swapped safely afterwards.
+    #[tokio::test]
+    async fn p44_t01_begin_generation_cancels_and_awaits_previous() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, id) = account_state(&dir, "gen@x.com").await;
+        let (gen1, token1) = state.begin_generation(&id).await;
+        assert_eq!(state.generation(&id).await, Some(gen1));
+
+        let exited = flag();
+        let handle = {
+            let exited = exited.clone();
+            let token = token1.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = token.cancelled() => {}
+                    _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+                }
+                exited.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        state.register_task(&id, gen1, handle).await;
+
+        let (gen2, token2) = state.begin_generation(&id).await;
+        assert_eq!(gen2, gen1 + 1);
+        assert!(token1.is_cancelled());
+        assert!(!token2.is_cancelled());
+        // The old task exited before begin_generation returned.
+        assert!(is_set(&exited));
+        assert!(state.is_current(&id, gen2).await);
+        assert!(!state.is_current(&id, gen1).await);
+    }
+
+    /// A task that registers under a superseded generation is not tracked (and
+    /// not waited on); one that registers for the live generation is.
+    #[tokio::test]
+    async fn p44_t02_register_task_ignores_stale_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, id) = account_state(&dir, "stale@x.com").await;
+        let (gen1, _t1) = state.begin_generation(&id).await;
+        let (gen2, _t2) = state.begin_generation(&id).await;
+        assert_ne!(gen1, gen2);
+
+        let stale = flag();
+        let live = flag();
+        state
+            .register_task(
+                &id,
+                gen1,
+                spawn_flag_after(stale.clone(), Duration::from_millis(20)),
+            )
+            .await;
+        state
+            .register_task(
+                &id,
+                gen2,
+                spawn_flag_after(live.clone(), Duration::from_millis(20)),
+            )
+            .await;
+
+        state.cancel_account(&id).await;
+        assert!(is_set(&live), "live generation task must be awaited");
+        assert!(!is_set(&stale), "superseded task must be dropped");
+    }
+
+    /// Once cancelled, the account hands out neither a provider nor an access
+    /// token, and its cached credentials are gone.
+    #[tokio::test]
+    async fn p44_t03_cancelled_account_refuses_provider_and_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, id) = account_state(&dir, "gone@x.com").await;
+        state
+            .db
+            .accounts_set_auth_kind(&id, "app_password")
+            .await
+            .unwrap();
+        state
+            .remember_app_password("gone@x.com", "abcdefghijklmnop")
+            .await;
+        // Usable before removal: the password comes from the in-memory copy.
+        assert!(state.provider_for(&id).await.is_ok());
+
+        state.cancel_account(&id).await;
+
+        let error = state.provider_for(&id).await.err().unwrap();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["code"],
+            "account_cancelled"
+        );
+        let error = state.get_access_token(&id).await.unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["code"],
+            "account_cancelled"
+        );
+        assert!(state.is_cancelled(&id).await);
+        assert_eq!(
+            state.load_app_password_cached("gone@x.com").await.unwrap(),
+            None
+        );
+    }
+
+    /// The wizard's setup token: cancelling is idempotent and harmless before
+    /// any setup, and a new setup supersedes the old one.
+    #[tokio::test]
+    async fn p44_t04_setup_cancel_and_supersede() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, _id) = account_state(&dir, "setup@x.com").await;
+        // Harmless no-op before any setup started.
+        state.cancel_setup().await;
+        assert!(state.setup_token().await.is_none());
+
+        let (gen1, token1) = state.begin_setup().await;
+        assert!(state.setup_is_current(gen1).await);
+        state.cancel_setup().await;
+        assert!(token1.is_cancelled());
+        assert!(!state.setup_is_current(gen1).await);
+        assert!(state.setup_token().await.is_some());
+
+        let (gen2, token2) = state.begin_setup().await;
+        assert!(gen2 > gen1);
+        assert!(!token2.is_cancelled());
+        assert!(state.setup_is_current(gen2).await);
+        assert!(!state.setup_is_current(gen1).await);
+
+        state.begin_setup().await;
+        assert!(token2.is_cancelled());
+        assert!(!state.setup_is_current(gen2).await);
     }
 }

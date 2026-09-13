@@ -1,9 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 #[cfg(test)]
 use rusqlite::params;
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -43,6 +43,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
         "0007_attachment_cache",
         include_str!("migrations/0007_attachment_cache.sql"),
     ),
+    (
+        "0008_account_scoping",
+        include_str!("migrations/0008_account_scoping.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -60,13 +64,28 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn apply_pragmas(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;
-     PRAGMA temp_store=MEMORY; PRAGMA mmap_size=268435456; PRAGMA cache_size=-65536;
-     PRAGMA busy_timeout=5000;",
-    )?;
-    Ok(())
+/// Initial cache per pooled connection (8 MiB; measured in Phase 10).
+const CACHE_SIZE_KIB: i64 = -8192;
+/// Bounded busy timeout so a contended write fails fast instead of hanging.
+const BUSY_TIMEOUT_MS: i64 = 5_000;
+/// How many pre-migration snapshots to retain.
+const BACKUP_KEEP: usize = 3;
+
+/// Per-connection initialization. `foreign_keys`, `cache_size` and
+/// `busy_timeout` are connection-scoped: applying them to a single pooled
+/// connection left the other three without foreign-key enforcement (DB-01).
+/// This runs through r2d2's init hook for every pooled connection and is also
+/// applied to the bootstrap connection before the pool is exposed (P4.1).
+fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(&format!(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         PRAGMA foreign_keys=ON;
+         PRAGMA temp_store=MEMORY;
+         PRAGMA mmap_size=268435456;
+         PRAGMA cache_size={CACHE_SIZE_KIB};
+         PRAGMA busy_timeout={BUSY_TIMEOUT_MS};"
+    ))
 }
 
 /// Startup repair for the outbox. An op left `inflight` means the app exited
@@ -80,91 +99,162 @@ fn recover_outbox(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn run_migrations(conn: &Connection) -> Result<()> {
-    // Ensure schema_version exists (fresh DB has no tables)
-    let has_version: bool = conn
-        .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='schema_version'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|c| c > 0)
-        .unwrap_or(false);
+/// Current schema version, or `None` when the database has no schema yet
+/// (fresh install).
+fn schema_version(conn: &Connection) -> Result<Option<i64>> {
+    let has_version: bool = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='schema_version'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? > 0;
     if !has_version {
-        conn.execute_batch(MIGRATIONS[0].1)?;
-        // mark 0002 applied state: check if triggers exist; run 0002 (IF NOT EXISTS so idempotent)
-        let _ = conn.execute_batch(MIGRATIONS[1].1);
-        conn.execute_batch(MIGRATIONS[2].1)?;
-        conn.execute("UPDATE schema_version SET version=4", [])?;
-        conn.execute_batch(MIGRATIONS[3].1)?;
-        conn.execute("UPDATE schema_version SET version=5", [])?;
-        let _ = conn.execute_batch(MIGRATIONS[4].1);
-        conn.execute_batch(MIGRATIONS[5].1)?;
-        conn.execute_batch(MIGRATIONS[6].1)?;
-        conn.execute("UPDATE schema_version SET version=7", [])?;
-        return Ok(());
+        return Ok(None);
     }
-    let v: i64 = conn
-        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
-        .unwrap_or(1);
-    if v < 2 {
-        let _ = conn.execute_batch(MIGRATIONS[1].1);
-        conn.execute("UPDATE schema_version SET version=2", [])?;
+    Ok(Some(
+        conn.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?,
+    ))
+}
+
+/// Snapshot the database before an upgrade using SQLite's own consistent
+/// writer (`VACUUM INTO`), never a raw copy of a live `.db` file. A fresh
+/// install has nothing to preserve.
+fn backup_before_migration(conn: &Connection, dir: &Path, from_version: i64) -> Result<PathBuf> {
+    let backups = dir.join("backups");
+    std::fs::create_dir_all(&backups)?;
+    let dest = backups.join(format!("sift-v{from_version}-{}.db", now_ms()));
+    let escaped = dest.to_string_lossy().replace('\'', "''");
+    conn.execute_batch(&format!("VACUUM INTO '{escaped}'"))
+        .with_context(|| format!("pre-migration backup to {}", dest.display()))?;
+    prune_backups(&backups, BACKUP_KEEP);
+    Ok(dest)
+}
+
+/// Keep the newest `keep` snapshots; a failed prune never blocks the upgrade.
+fn prune_backups(dir: &Path, keep: usize) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<PathBuf> = read
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "db"))
+        .collect();
+    files.sort();
+    let drop_count = files.len().saturating_sub(keep);
+    for old in files.into_iter().take(drop_count) {
+        let _ = std::fs::remove_file(old);
     }
-    if v < 3 {
-        // Explicit transaction: ALTER TABLE is not idempotent, so a crash
-        // mid-migration must roll back for a clean retry.
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let r = conn.execute_batch(MIGRATIONS[2].1);
-        if r.is_ok() {
-            conn.execute("UPDATE schema_version SET version=3", [])?;
-            conn.execute_batch("COMMIT")?;
-        } else {
-            let _ = conn.execute_batch("ROLLBACK");
-            r?;
+}
+
+/// Register SQL helpers the migrations need. `zstd_text` decodes the
+/// compressed body payload so the FTS rebuild can re-index cached mail without
+/// a second copy of the plain text in the database.
+fn register_migration_functions(conn: &Connection) -> Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "zstd_text",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let raw: Option<Vec<u8>> = ctx.get(0)?;
+            Ok(raw.and_then(|b| zstd::decode_all(b.as_slice()).ok()).map(|v| {
+                String::from_utf8_lossy(&v).into_owned()
+            }))
+        },
+    )
+    .context("register zstd_text")?;
+    Ok(())
+}
+
+/// Apply every migration past `limit`, one immediate transaction each:
+/// `BEGIN IMMEDIATE` -> migration SQL -> `schema_version` -> `COMMIT`. Any
+/// error rolls the transaction back and aborts, so a crash leaves the
+/// pre-migration schema and version, never a half-applied one (P4.1). The
+/// fresh-install path runs through this same loop instead of a hand-rolled
+/// sequence that skipped/ignored errors.
+///
+/// `foreign_keys` is switched off around each migration (the documented SQLite
+/// table-rebuild procedure; the PRAGMA is a no-op inside a transaction) and
+/// `PRAGMA foreign_key_check` must come back empty before the commit, so a
+/// migration that would strand a child row fails and rolls back instead.
+fn apply_migrations(conn: &mut Connection, limit: i64, fail_after: Option<i64>) -> Result<()> {
+    let mut current = schema_version(conn)?.unwrap_or(0);
+    for (idx, (name, sql)) in MIGRATIONS.iter().enumerate() {
+        let version = (idx + 1) as i64;
+        if version > limit {
+            break;
         }
-    }
-    if v < 4 {
-        conn.execute_batch(MIGRATIONS[3].1)?;
-        conn.execute("UPDATE schema_version SET version=4", [])?;
-    }
-    if v < 5 {
-        conn.execute_batch(MIGRATIONS[4].1)?;
-        conn.execute("UPDATE schema_version SET version=5", [])?;
-    }
-    if v < 6 {
-        conn.execute_batch(MIGRATIONS[5].1)?;
-        conn.execute("UPDATE schema_version SET version=6", [])?;
-    }
-    if v < 7 {
-        // Table rebuild: one explicit transaction so a crash leaves either the
-        // old table or the migrated one, never half of each.
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let r = conn.execute_batch(MIGRATIONS[6].1);
-        if r.is_ok() {
-            conn.execute("UPDATE schema_version SET version=7", [])?;
-            conn.execute_batch("COMMIT")?;
-        } else {
-            let _ = conn.execute_batch("ROLLBACK");
-            r?;
+        if version <= current {
+            continue;
         }
+        // Standard SQLite table-rebuild procedure: enforcement is disabled
+        // outside the transaction (the PRAGMA is a no-op inside one) and the
+        // rebuilt schema is checked before the commit.
+        conn.execute_batch("PRAGMA foreign_keys=OFF")
+            .context("disable foreign keys for migration")?;
+        let applied: Result<()> = (|| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .with_context(|| format!("begin migration {name}"))?;
+            tx.execute_batch(sql)
+                .with_context(|| format!("apply migration {name}"))?;
+            tx.execute("UPDATE schema_version SET version=?1", [version])
+                .with_context(|| format!("record migration {name}"))?;
+            if fail_after == Some(version) {
+                anyhow::bail!("injected migration failure after {name}");
+            }
+            tx.commit()
+                .with_context(|| format!("commit migration {name}"))?;
+            Ok(())
+        })();
+        conn.execute_batch("PRAGMA foreign_keys=ON")
+            .context("re-enable foreign keys")?;
+        applied?;
+        current = version;
+    }
+    // One clean-check after the whole sequence: earlier migrations may run
+    // against a database that a pre-P4.1 delete left with orphans (foreign
+    // keys were only enforced on one pooled connection), and reconciling those
+    // is 0008's job. A violation that *survives* the sequence is a real failure
+    // and stops the open before sync starts.
+    let violations: i64 = conn
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+        .context("foreign_key_check")?;
+    if violations > 0 {
+        anyhow::bail!(
+            "{violations} foreign-key violation(s) remain after migration to version {current}"
+        );
     }
     Ok(())
+}
+
+fn run_migrations(conn: &mut Connection) -> Result<()> {
+    register_migration_functions(conn)?;
+    apply_migrations(conn, MIGRATIONS.len() as i64, None)
 }
 
 impl Db {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join("sift.db");
-        let manager = SqliteConnectionManager::file(&path);
-        let pool = Pool::builder().max_size(4).build(manager)?;
-        {
-            let conn = pool.get()?;
-            apply_pragmas(&conn)?;
-            run_migrations(&conn)?;
-            recover_outbox(&conn)?;
-            apply_pragmas(&conn)?;
+        // Bootstrap on a dedicated connection *before* the pool exists: with a
+        // single writer, initialization, the pre-migration snapshot and the
+        // migrations all observe one coherent database (P4.1).
+        let mut boot = Connection::open(&path).with_context(|| "open sift.db")?;
+        init_connection(&mut boot)?;
+        let current = schema_version(&boot)?.unwrap_or(0);
+        if (current as usize) < MIGRATIONS.len() {
+            if current > 0 {
+                backup_before_migration(&boot, dir, current)?;
+            }
+            run_migrations(&mut boot)?;
         }
+        // Startup repair for the outbox, also on the bootstrap connection.
+        recover_outbox(&boot)?;
+        drop(boot);
+
+        let manager = SqliteConnectionManager::file(&path).with_init(init_connection);
+        let pool = Pool::builder().max_size(4).build(manager)?;
         Ok(Self {
             pool,
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -213,6 +303,30 @@ impl Db {
     pub fn pool(&self) -> &Pool<SqliteConnectionManager> {
         &self.pool
     }
+
+    /// Run `f` inside one `BEGIN IMMEDIATE` transaction on a pooled
+    /// connection. The write mutex only serializes writers; it does **not**
+    /// make a multi-statement closure atomic, so any operation that must be
+    /// all-or-nothing goes through here. The transaction commits only when
+    /// `f` returns `Ok`; any error rolls back.
+    pub async fn write_tx<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Transaction<'_>) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let _guard = self.write_lock.lock().await;
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("begin write transaction")?;
+            let out = f(&tx)?;
+            tx.commit().context("commit write transaction")?;
+            Ok(out)
+        })
+        .await?
+    }
 }
 
 #[cfg(test)]
@@ -226,7 +340,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
         for t in [
             "accounts",
             "labels",
@@ -310,66 +424,218 @@ mod tests {
     #[tokio::test]
     async fn rendering_upgrade_invalidates_cached_bodies() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(dir.path()).unwrap();
-        let account = db
-            .new_account("mail@example.com", None, None)
-            .await
+        // A genuine v5 database with a cached body: the upgrade path runs
+        // 0006 (drop stale renderings) through 0008.
+        {
+            let conn = fixture_at(dir.path(), 5);
+            conn.execute_batch(
+                "INSERT INTO accounts (id,email,created_at) VALUES ('a1','mail@example.com',1);
+                 INSERT INTO messages (id,account_id,thread_id,internal_date,body_state)
+                   VALUES ('m1','a1','t1',1,'fetched');
+                 INSERT INTO bodies (message_id,html_z,text_z) VALUES ('m1',NULL,NULL);",
+            )
             .unwrap();
-        let account_id = account.id;
-        db.write(move |connection| {
-            connection.execute(
-                "INSERT INTO messages (id,account_id,thread_id,internal_date,body_state) VALUES ('m1',?,'t1',1,'fetched')",
-                params![account_id],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-        db.bodies_put(crate::db::bodies::BodyPut {
-            message_id: "m1".into(),
-            html: Some("<p>cached mail</p>".into()),
-            text: Some("cached mail".into()),
-            remote_images: 0,
-            trackers: 0,
-            dark_safe: true,
-            quoted_from: None,
-        })
-        .await
-        .unwrap();
-        db.write(|connection| {
-            connection.execute("UPDATE schema_version SET version=5", [])?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-        drop(db);
+        }
+        let account_id = "a1".to_string();
 
         // 0006 drops bodies rendered by older builds and lets them refetch, so
         // the leaked <title> and stale layout in cached mail are re-rendered.
         let reopened = Db::open(dir.path()).unwrap();
-        assert!(reopened.bodies_get("m1").await.unwrap().is_none());
+        assert!(reopened
+            .bodies_get(&crate::dto::MessageRef::new(account_id.clone(), "m1"))
+            .await
+            .unwrap()
+            .is_none());
         let conn = reopened.pool.get().unwrap();
         let state: String = conn
-            .query_row("SELECT body_state FROM messages WHERE id='m1'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT body_state FROM messages WHERE account_id=? AND id='m1'",
+                params![account_id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(state, "none");
     }
     #[test]
-    fn p1_t03_pragmas() {
+    fn p1_t03_every_pooled_connection_is_initialized() {
+        // DB-01: PRAGMAs are connection-scoped. Acquire all four connections
+        // at once and assert each one, not just the first checkout.
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
-        let conn = db.pool.get().unwrap();
-        let jm: String = conn
-            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(jm.to_lowercase(), "wal");
-        let fk: i64 = conn
-            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(fk, 1);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let pool = db.pool.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                let conn = pool.get().unwrap();
+                barrier.wait();
+                let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+                let jm: String = conn
+                    .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+                    .unwrap();
+                let bt: i64 = conn
+                    .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+                    .unwrap();
+                let cs: i64 = conn
+                    .query_row("PRAGMA cache_size", [], |r| r.get(0))
+                    .unwrap();
+                (fk, jm.to_lowercase(), bt, cs)
+            }));
+        }
+        for h in handles {
+            assert_eq!(
+                h.join().unwrap(),
+                (1, "wal".to_string(), BUSY_TIMEOUT_MS, CACHE_SIZE_KIB)
+            );
+        }
     }
+
+    /// Build a raw database at `upto` schema version, for upgrade fixtures.
+    fn fixture_at(dir: &Path, upto: i64) -> Connection {
+        let mut conn = Connection::open(dir.join("sift.db")).unwrap();
+        init_connection(&mut conn).unwrap();
+        register_migration_functions(&conn).unwrap();
+        apply_migrations(&mut conn, upto, None).unwrap();
+        conn
+    }
+
+    #[test]
+    fn p4_t01_fresh_and_v1_fixtures_upgrade_cleanly() {
+        // Fresh install.
+        let fresh = tempfile::tempdir().unwrap();
+        let db = Db::open(fresh.path()).unwrap();
+        {
+            let conn = db.pool.get().unwrap();
+            let v: i64 = conn
+                .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, 8);
+            let violations: i64 = conn
+                .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(violations, 0);
+            let recovery: i64 = conn
+                .query_row("SELECT count(*) FROM migration_recovery_rows", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(recovery, 0, "fresh install has nothing to rehome");
+        }
+        // v1 fixture: the ALTER in 0003 and every rebuild must run exactly once.
+        let old = tempfile::tempdir().unwrap();
+        {
+            let conn = fixture_at(old.path(), 1);
+            conn.execute_batch(
+                "INSERT INTO accounts (id,email,created_at) VALUES ('a1','a@x.com',1);
+                 INSERT INTO messages (id,account_id,thread_id,internal_date,subject)
+                   VALUES ('m1','a1','t1',1,'hello');",
+            )
+            .unwrap();
+        }
+        let upgraded = Db::open(old.path()).unwrap();
+        let conn = upgraded.pool.get().unwrap();
+        let v: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 8);
+        let auth_cols: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('accounts') WHERE name='auth_kind'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(auth_cols, 1, "0003 ALTER must not be applied twice");
+        let subject: String = conn
+            .query_row(
+                "SELECT subject FROM messages WHERE account_id='a1' AND id='m1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(subject, "hello");
+        let violations: i64 = conn
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(violations, 0);
+    }
+
+    #[test]
+    fn p4_t02_failed_migration_rolls_back_and_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture_at(dir.path(), 7)
+            .execute_batch(
+                "INSERT INTO accounts (id,email,created_at) VALUES ('a1','a@x.com',1);
+                 INSERT INTO messages (id,account_id,thread_id,internal_date,subject,body_state)
+                   VALUES ('m1','a1','t1',1,'hello','fetched');
+                 INSERT INTO message_labels (message_id,label_id) VALUES ('m1','INBOX');
+                 INSERT INTO bodies (message_id,text_z) VALUES ('m1',NULL);
+                 INSERT INTO attachments (id,message_id,part_id,mime) VALUES ('att1','m1','1','text/plain');",
+            )
+            .unwrap();
+
+        // Inject a failure while 0008 is being applied.
+        {
+            let mut conn = Connection::open(dir.path().join("sift.db")).unwrap();
+            init_connection(&mut conn).unwrap();
+            register_migration_functions(&conn).unwrap();
+            let err = apply_migrations(&mut conn, 8, Some(8));
+            assert!(err.is_err(), "injected failure must propagate");
+            let v: i64 = conn
+                .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, 7, "version must not advance on a rolled-back migration");
+            let leftovers: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name IN
+                       ('messages_new','message_labels_new','bodies_new','attachments_new')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(leftovers, 0, "half-applied rebuild tables must roll back");
+            // Old shape is intact.
+            let account_pk: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM pragma_table_info('messages') WHERE name='account_id' AND pk>0",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(account_pk, 0);
+            let n: i64 = conn
+                .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1);
+        }
+
+        // Reopen: the upgrade completes on the coherent pre-migration database.
+        let db = Db::open(dir.path()).unwrap();
+        let conn = db.pool.get().unwrap();
+        let v: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 8);
+        let acc: String = conn
+            .query_row(
+                "SELECT account_id FROM attachments WHERE id='att1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(acc, "a1");
+        let fts: i64 = conn
+            .query_row("SELECT count(*) FROM messages_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fts, 1);
+        let violations: i64 = conn
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(violations, 0);
+        // A pre-migration snapshot was taken before the structural rebuild.
+        let backups = std::fs::read_dir(dir.path().join("backups")).unwrap().count();
+        assert_eq!(backups, 1);
+    }
+
     #[tokio::test]
     async fn p1_t04_write_lane_serializes() {
         let dir = tempfile::tempdir().unwrap();

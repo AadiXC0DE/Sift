@@ -231,7 +231,7 @@ pub fn meta_to_upsert(
 /// Attachment rows from a BODYSTRUCTURE: filename/disposition parts plus
 /// non-text leaf parts. `attachments.id` is `<hex-msgid>:<section>` (task 6).
 /// Inline parts keep their Content-ID (brackets stripped at serve time).
-pub fn attachment_rows(message_hex: &str, bs: &BodyStruct) -> Vec<AttPut> {
+pub fn attachment_rows(account_id: &str, message_hex: &str, bs: &BodyStruct) -> Vec<AttPut> {
     let mut out = vec![];
     for (num, part) in walk_parts(bs) {
         if num.is_empty() {
@@ -283,6 +283,7 @@ pub fn attachment_rows(message_hex: &str, bs: &BodyStruct) -> Vec<AttPut> {
                         .is_some_and(|(k, _)| k.eq_ignore_ascii_case("inline")));
             out.push(AttPut {
                 id: format!("{message_hex}:{num}"),
+                account_id: account_id.to_string(),
                 message_id: message_hex.into(),
                 gmail_att_id: None,
                 part_id: num,
@@ -656,6 +657,7 @@ pub(crate) fn section_is_html(bs: &BodyStruct, section: &str) -> bool {
 /// section shape need one partial FETCH each.
 pub(crate) async fn fetch_snippet_groups(
     pool: &super::conn::ImapPool,
+    account_id: &str,
     sink: &dyn super::super::SyncSink,
     targets: &[SnipTarget],
     cancel: &tokio_util::sync::CancellationToken,
@@ -718,7 +720,12 @@ pub(crate) async fn fetch_snippet_groups(
                 if let Some(t) = by_uid.get(&uid) {
                     let text = decode_snippet(bytes, &t.enc, &t.charset, t.is_html);
                     if !text.is_empty() {
-                        let _ = sink.set_snippet(&t.message_hex, &text).await;
+                        let _ = sink
+                            .set_snippet(
+                                &crate::dto::MessageRef::new(account_id, &t.message_hex),
+                                &text,
+                            )
+                            .await;
                     }
                 }
             }
@@ -798,7 +805,7 @@ mod tests {
     fn p11_message_attachments_and_snippet_section() {
         let items = meta_fixture();
         let bs = items[1].structure.clone().expect("structure");
-        let rows = attachment_rows("abc123", &bs);
+        let rows = attachment_rows("acc", "abc123", &bs);
         // pdf + inline png; the html part itself is not an attachment
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, "abc123:2");
@@ -826,7 +833,7 @@ mod tests {
                 vec![("filename".into(), "doc.pdf".into())],
             )),
         };
-        let rows = attachment_rows("abc", &pdf);
+        let rows = attachment_rows("acc", "abc", &pdf);
         assert_eq!(rows.len(), 1, "single-part attachment must be addressable");
         assert_eq!(rows[0].id, "abc:1");
         assert_eq!(rows[0].part_id, "1");
@@ -844,7 +851,7 @@ mod tests {
             lines: Some(1),
             disposition: None,
         };
-        assert!(attachment_rows("abc", &text).is_empty());
+        assert!(attachment_rows("acc", "abc", &text).is_empty());
         assert_eq!(snippet_section(&text).map(|t| t.0), Some("1".to_string()));
 
         // Unnamed root binary is kept as an attachment (P2.7).
@@ -858,7 +865,7 @@ mod tests {
             lines: None,
             disposition: None,
         };
-        let rows = attachment_rows("abc", &bin);
+        let rows = attachment_rows("acc", "abc", &bin);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].part_id, "1");
         assert!(rows[0].filename.is_none());
@@ -874,7 +881,7 @@ mod tests {
             lines: None,
             disposition: None,
         };
-        let rows = attachment_rows("abc", &fwd);
+        let rows = attachment_rows("acc", "abc", &fwd);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].part_id, "1");
         assert_eq!(rows[0].filename.as_deref(), Some("forwarded-message.eml"));

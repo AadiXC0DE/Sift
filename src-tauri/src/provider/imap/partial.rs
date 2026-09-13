@@ -83,7 +83,7 @@ pub async fn run_partial_sync(
                         vec!["SPAM".to_string()]
                     };
                     let (a, t) = sink
-                        .apply_label_change(&mid, &add, &remove)
+                        .apply_label_change(&crate::dto::MessageRef::new(account_id, &mid), &add, &remove)
                         .await
                         .map_err(|e| SiftError::app("db", e.to_string(), false))?;
                     changed.push((a, t));
@@ -106,26 +106,26 @@ pub async fn run_partial_sync(
             .collect();
         if holders.contains("trash") {
             let (a, t) = sink
-                .apply_label_change(&mid, &["TRASH".to_string()], &["INBOX".to_string()])
+                .apply_label_change(&crate::dto::MessageRef::new(account_id, &mid), &["TRASH".to_string()], &["INBOX".to_string()])
                 .await
                 .map_err(|e| SiftError::app("db", e.to_string(), false))?;
             changed.push((a, t));
         } else if holders.contains("junk") {
             let (a, t) = sink
-                .apply_label_change(&mid, &["SPAM".to_string()], &["INBOX".to_string()])
+                .apply_label_change(&crate::dto::MessageRef::new(account_id, &mid), &["SPAM".to_string()], &["INBOX".to_string()])
                 .await
                 .map_err(|e| SiftError::app("db", e.to_string(), false))?;
             changed.push((a, t));
-        } else if let Some((a, t)) = sink
-            .message_thread(&mid)
+        } else if let Some(t) = sink
+            .message_thread(&crate::dto::MessageRef::new(account_id, &mid))
             .await
             .map_err(|e| SiftError::app("db", e.to_string(), false))?
         {
             // Deleted forever (or moved out by another client): drop the row.
-            sink.delete_message(&mid, &a, &t)
+            sink.delete_message(&crate::dto::MessageRef::new(account_id, &mid), &t)
                 .await
                 .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-            changed.push((a, t));
+            changed.push((account_id.to_string(), t));
         }
     }
 
@@ -238,7 +238,7 @@ async fn sync_one_folder(
                     }
                     uid_rows.push((item.uid as i64, mid.clone()));
                     if let Some(bs) = &item.structure {
-                        for att in message::attachment_rows(&mid, bs) {
+                        for att in message::attachment_rows(account_id, &mid, bs) {
                             let _ = sink.store_attachment(att).await;
                         }
                         if snip_targets.len() < 500 {
@@ -268,7 +268,7 @@ async fn sync_one_folder(
             sink.imap_put_uids(account_id, role, &uid_rows)
                 .await
                 .map_err(db_err)?;
-            message::fetch_snippet_groups(pool, sink, &snip_targets, cancel).await;
+            message::fetch_snippet_groups(pool, account_id, sink, &snip_targets, cancel).await;
             sink.threads_changed(
                 account_id,
                 &changed.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
@@ -301,7 +301,7 @@ async fn sync_one_folder(
                         _ => None,
                     });
                     if let Some(mid) = uid.and_then(|u| stored.get(&u).cloned()) {
-                        if let Some(tid) = apply_remote_state(sink, &mid, &meta, &flags).await? {
+                        if let Some(tid) = apply_remote_state(sink, account_id, &mid, &meta, &flags).await? {
                             changed.push((account_id.to_string(), tid));
                         }
                     }
@@ -331,7 +331,7 @@ async fn sync_one_folder(
             for item in &items {
                 if let Some(mid) = stored.get(&(item.uid as i64)).cloned() {
                     let (mapped, _, _, _, _) = message::map_labels(&item.meta.labels, &item.flags);
-                    if let Some(tid) = apply_mapped_state(sink, &mid, &mapped).await? {
+                    if let Some(tid) = apply_mapped_state(sink, account_id, &mid, &mapped).await? {
                         changed.push((account_id.to_string(), tid));
                     }
                 }
@@ -408,23 +408,25 @@ async fn sync_one_folder(
 /// when anything changed.
 async fn apply_remote_state(
     sink: &dyn SyncSink,
+    account_id: &str,
     mid: &str,
     meta: &GmailMeta,
     flags: &[String],
 ) -> Result<Option<String>, SiftError> {
     let (mapped, _, _, _, _) = message::map_labels(&meta.labels, flags);
-    apply_mapped_state(sink, mid, &mapped).await
+    apply_mapped_state(sink, account_id, mid, &mapped).await
 }
 
 /// Diff helper: returns the thread id when the row changed.
 async fn apply_mapped_state(
     sink: &dyn SyncSink,
+    account_id: &str,
     mid: &str,
     mapped: &[String],
 ) -> Result<Option<String>, SiftError> {
     let db_err = |e: anyhow::Error| SiftError::app("db", e.to_string(), false);
     let cur: HashSet<String> = sink
-        .message_labels(mid)
+        .message_labels(&crate::dto::MessageRef::new(account_id, mid))
         .await
         .map_err(db_err)?
         .into_iter()
@@ -436,7 +438,7 @@ async fn apply_mapped_state(
     let add: Vec<String> = want.difference(&cur).cloned().collect();
     let remove: Vec<String> = cur.difference(&want).cloned().collect();
     let (_, tid) = sink
-        .apply_label_change(mid, &add, &remove)
+        .apply_label_change(&crate::dto::MessageRef::new(account_id, mid), &add, &remove)
         .await
         .map_err(db_err)?;
     Ok(Some(tid))

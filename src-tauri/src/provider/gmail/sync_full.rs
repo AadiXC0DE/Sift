@@ -153,7 +153,9 @@ pub async fn run_full_sync(
                 }
                 Err(crate::errors::SiftError::NotFound(_)) => {
                     // added then deleted: drop the stub so no ghost thread remains.
-                    let _ = sink.delete_message(id, account_id, tid).await;
+                    let _ = sink
+                        .delete_message(&crate::dto::MessageRef::new(account_id, id), tid)
+                        .await;
                 }
                 Err(_) => {}
             }

@@ -98,9 +98,10 @@ pub async fn run_partial_sync(
             if let Some(deleted) = rec.deleted {
                 for d in deleted {
                     // find thread then delete
-                    if let Some((a, t)) = sink.message_thread(&d.message.id).await? {
-                        sink.delete_message(&d.message.id, &a, &t).await?;
-                        changed.push((a, t));
+                    let r = crate::dto::MessageRef::new(account_id, &d.message.id);
+                    if let Some(t) = sink.message_thread(&r).await? {
+                        sink.delete_message(&r, &t).await?;
+                        changed.push((r.account_id, t));
                     }
                 }
             }
@@ -115,8 +116,9 @@ pub async fn run_partial_sync(
                 if let Ok(m) = client.get_message_meta(&chg.message.id).await {
                     let labels = m.label_ids.clone().unwrap_or_default();
                     // compute add/remove vs DB
+                    let r = crate::dto::MessageRef::new(account_id, &chg.message.id);
                     let cur: Vec<String> = sink
-                        .message_labels(&chg.message.id)
+                        .message_labels(&r)
                         .await
                         .unwrap_or_default();
                     let add: Vec<String> = labels
@@ -131,7 +133,7 @@ pub async fn run_partial_sync(
                         .collect();
                     if !add.is_empty() || !remove.is_empty() {
                         if let Ok((a, t)) = sink
-                            .apply_label_change(&chg.message.id, &add, &remove)
+                            .apply_label_change(&r, &add, &remove)
                             .await
                         {
                             changed.push((a, t));

@@ -1,4 +1,5 @@
 use super::Db;
+use crate::dto::MessageRef;
 use anyhow::Result;
 use rusqlite::params;
 
@@ -42,7 +43,9 @@ impl Db {
       if let Some(s) = &subj { m.push(format!("{{subject}} : (\"{}\"*)", s.replace('"', "\"\""))); }
       let match_q = if m.is_empty() { None } else { Some(m.join(" AND ")) };
       let placeholders = aids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-      let mut sql = format!("SELECT f.message_id, f.account_id, m.internal_date FROM messages_fts f JOIN messages m ON m.id=f.message_id WHERE f.account_id IN ({placeholders})");
+      // Join on BOTH halves of the identity: the provider id alone is not
+      // unique across accounts (P4.2).
+      let mut sql = format!("SELECT f.message_id, f.account_id, m.internal_date FROM messages_fts f JOIN messages m ON m.id=f.message_id AND m.account_id=f.account_id WHERE f.account_id IN ({placeholders})");
       if match_q.is_some() { sql += " AND messages_fts MATCH ?"; }
       if after.is_some() { sql += " AND m.internal_date >= ?"; }
       if before.is_some() { sql += " AND m.internal_date <= ?"; }
@@ -65,72 +68,15 @@ impl Db {
       Ok(out)
     }).await
     }
-    pub async fn fts_delete_message(&self, message_id: &str) -> Result<()> {
-        let m = message_id.to_string();
+    pub async fn fts_delete_message(&self, r: &MessageRef) -> Result<()> {
+        let (aid, mid) = (r.account_id.clone(), r.message_id.clone());
         self.write(move |c| {
-            c.execute("DELETE FROM messages_fts WHERE message_id=?", params![m])?;
+            c.execute(
+                "DELETE FROM messages_fts WHERE account_id=? AND message_id=?",
+                params![aid, mid],
+            )?;
             Ok(())
         })
         .await
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::messages::MsgUpsert;
-    #[tokio::test]
-    async fn p3_t16_fts_index_and_delete() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(dir.path()).unwrap();
-        let a = db.new_account("a@x.com", None, None).await.unwrap();
-        db.messages_upsert(MsgUpsert {
-            id: "m1".into(),
-            account_id: a.id.clone(),
-            thread_id: "t1".into(),
-            internal_date: 1,
-            subject: "Quarterly numbers".into(),
-            snippet: "".into(),
-            from_name: Some("Ada".into()),
-            from_email: Some("ada@x.com".into()),
-            label_ids: vec!["INBOX".into()],
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-        let r = db
-            .fts_search_local(
-                std::slice::from_ref(&a.id),
-                "numbers",
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                10,
-            )
-            .await
-            .unwrap();
-        assert_eq!(r.len(), 1);
-        db.messages_delete("m1", &a.id, "t1").await.unwrap();
-        let r2 = db
-            .fts_search_local(
-                std::slice::from_ref(&a.id),
-                "numbers",
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                10,
-            )
-            .await
-            .unwrap();
-        assert_eq!(r2.len(), 0);
     }
 }

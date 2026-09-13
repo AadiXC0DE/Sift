@@ -5,5 +5,6 @@ pub mod compose;
 pub mod demo;
 pub mod search;
 pub mod settings;
+pub mod storage;
 pub mod system;
 pub mod threads;

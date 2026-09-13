@@ -50,9 +50,53 @@ impl Db {
         })
         .await
     }
+    /// Lookup by normalized email so a repeated sign-in reuses the existing
+    /// account identity instead of creating a parallel copy (P4.4).
+    pub async fn accounts_find_by_email(&self, email: &str) -> Result<Option<Account>> {
+        let email = email.trim().to_lowercase();
+        self.read(move |c| {
+            let mut s = c.prepare(
+                "SELECT * FROM accounts WHERE lower(trim(email))=? ORDER BY created_at LIMIT 1",
+            )?;
+            let mut rows = s.query_map(params![email], row_to_account)?;
+            Ok(rows.next().transpose()?)
+        })
+        .await
+    }
+
+    /// Remove an account and every row that belongs to it, in one transaction.
+    /// The deletes are explicit rather than relying only on cascades so that
+    /// tables without a foreign key to `accounts` (drafts, outbox, snoozes,
+    /// sender preferences, contacts, sync log) are covered too (P4.2).
     pub async fn accounts_remove(&self, id: &str) -> Result<()> {
         let id = id.to_string();
-        self.write(move |c| {
+        self.write_tx(move |c| {
+            for (table, column) in [
+                ("attachments", "account_id"),
+                ("bodies", "account_id"),
+                ("message_labels", "account_id"),
+                ("messages", "account_id"),
+                ("imap_uids", "account_id"),
+                ("threads", "account_id"),
+                ("labels", "account_id"),
+                ("imap_folders", "account_id"),
+                ("drafts", "account_id"),
+                ("outbox_ops", "account_id"),
+                ("snoozes", "account_id"),
+                ("sender_prefs", "account_id"),
+                ("contacts", "account_id"),
+                ("sync_log", "account_id"),
+            ] {
+                c.execute(
+                    &format!("DELETE FROM {table} WHERE {column}=?"),
+                    params![id],
+                )?;
+            }
+            // FTS is a virtual table: delete its rows by the account key too.
+            c.execute(
+                "DELETE FROM messages_fts WHERE account_id=?",
+                params![id],
+            )?;
             c.execute("DELETE FROM accounts WHERE id=?", params![id])?;
             Ok(())
         })

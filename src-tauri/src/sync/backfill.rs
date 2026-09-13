@@ -48,13 +48,13 @@ pub async fn run_backfill_once(
         return Ok(0);
     } // yield to foreground
     let mut n = 0;
-    for id in ids {
+    for message in ids {
         if gate.foreground.load(Ordering::SeqCst) > 0 {
             break;
         }
-        match provider.fetch_body_backfill(&id).await {
+        match provider.fetch_body_backfill(&message.message_id).await {
             Ok(parsed) => {
-                if store_parsed(sink, &id, &parsed).await.is_ok() {
+                if store_parsed(sink, &message, &parsed).await.is_ok() {
                     n += 1;
                 }
             }

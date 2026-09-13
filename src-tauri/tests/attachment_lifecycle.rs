@@ -249,6 +249,7 @@ impl Fixture {
         self.db
             .attachments_put(AttPut {
                 id: id.into(),
+                account_id: self.account.clone(),
                 message_id: message.into(),
                 gmail_att_id: None,
                 part_id: part.into(),
@@ -264,7 +265,14 @@ impl Fixture {
     }
 
     async fn record(&self, id: &str) -> sift::dto::AttachmentRecord {
-        self.db.attachment_get(id).await.unwrap().unwrap()
+        self.db
+            .attachment_get(&sift::dto::AttachmentRefKey {
+                account_id: self.account.clone(),
+                attachment_id: id.into(),
+            })
+            .await
+            .unwrap()
+            .unwrap()
     }
 
     fn progress_states(&self) -> Vec<(String, String)> {
@@ -304,7 +312,14 @@ async fn metadata_then_body_then_reopen_keeps_one_attachment_with_bytes() {
     assert_eq!(rec.id, "att1", "row id survives enrichment");
     assert_eq!(rec.filename.as_deref(), Some("invoice.pdf"));
     assert_eq!(rec.data.as_deref(), Some(&b"%PDF-1.4 body"[..]));
-    assert_eq!(fx.db.attachments_records("m1").await.unwrap().len(), 1);
+    assert_eq!(
+        fx.db
+            .attachments_records(&sift::dto::MessageRef::new(fx.account.clone(), "m1"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 
     let info = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
     assert_eq!(info.state, "ready");
@@ -732,7 +747,10 @@ async fn same_cid_on_two_messages_resolves_to_each_rows_section() {
         // Resolve through the CID so the lookup key is the CID, not the section.
         let rec = fx
             .db
-            .attachment_resolve(msg, "logo@example.test")
+            .attachment_resolve(
+                &sift::dto::MessageRef::new(fx.account.clone(), msg),
+                "logo@example.test",
+            )
             .await
             .unwrap()
             .unwrap();
@@ -778,7 +796,12 @@ async fn lookup_by_row_id_part_and_api_id_records_the_right_locator() {
         .unwrap();
 
     for key in ["att1", "1.2"] {
-        let rec = fx.db.attachment_resolve("m1", key).await.unwrap().unwrap();
+        let rec = fx
+            .db
+            .attachment_resolve(&sift::dto::MessageRef::new(fx.account.clone(), "m1"), key)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(rec.part_id, "1.2");
         assert_eq!(rec.imap_locator(), Some("1.2"));
         assert_eq!(rec.rest_locator(), Some("API-att-9"));
@@ -895,7 +918,12 @@ async fn save_all_writes_every_non_inline_attachment_and_avoids_collisions() {
         .unwrap();
 
     let dir = fx.runtime.data_dir.join("saved");
-    let first = service::save_all_into(&fx.runtime, &NoTransport, Some(&fx.account), "m1", &dir)
+    let first = service::save_all_into(
+        &fx.runtime,
+        &NoTransport,
+        &sift::dto::MessageRef::new(fx.account.clone(), "m1"),
+        &dir,
+    )
         .await
         .unwrap();
     assert_eq!(first.saved, 3);
@@ -910,7 +938,12 @@ async fn save_all_writes_every_non_inline_attachment_and_avoids_collisions() {
     assert!(!dir.join("logo.png").exists());
 
     // A second Save All never clobbers what is already there.
-    let second = service::save_all_into(&fx.runtime, &NoTransport, Some(&fx.account), "m1", &dir)
+    let second = service::save_all_into(
+        &fx.runtime,
+        &NoTransport,
+        &sift::dto::MessageRef::new(fx.account.clone(), "m1"),
+        &dir,
+    )
         .await
         .unwrap();
     assert_eq!(second.saved, 3);
@@ -925,22 +958,26 @@ async fn save_all_needs_two_non_inline_attachments() {
     fx.attach("a1", "m1", "2", Some("only.pdf"), "application/pdf", Some(vec![1]))
         .await;
     let dir = fx.runtime.data_dir.join("saved");
-    let err = service::save_all_into(&fx.runtime, &NoTransport, Some(&fx.account), "m1", &dir)
+    let err = service::save_all_into(
+        &fx.runtime,
+        &NoTransport,
+        &sift::dto::MessageRef::new(fx.account.clone(), "m1"),
+        &dir,
+    )
         .await
         .unwrap_err();
     assert_eq!(error_code(&err), "attachment_save_all_not_applicable");
 
     // A foreign account cannot save another account's message.
-    let err = service::save_all_into(&fx.runtime, &NoTransport, Some("other"), "m1", &dir)
-        .await
-        .unwrap_err();
+    let err = service::save_all_into(
+        &fx.runtime,
+        &NoTransport,
+        &sift::dto::MessageRef::new("other", "m1"),
+        &dir,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error_code(&err), "attachment_save_all_not_applicable");
-    // Pre-P4 adapter: with no account supplied, the message's own account is
-    // used rather than a guess.
-    let adopted = service::save_all_into(&fx.runtime, &NoTransport, None, "m1", &dir)
-        .await
-        .unwrap_err();
-    assert_eq!(error_code(&adopted), "attachment_save_all_not_applicable");
 }
 
 // ------------------------------------------------------------------------- P2.3 open
@@ -1075,7 +1112,10 @@ async fn migration_0007_dedupes_and_preserves_richest_row() {
 
     // The real runner path: an existing v6 database upgrades on open.
     let db = Db::open(dir.path()).unwrap();
-    let recs = db.attachments_records("m1").await.unwrap();
+    let recs = db
+        .attachments_records(&sift::dto::MessageRef::new("acc", "m1"))
+        .await
+        .unwrap();
     assert_eq!(recs.len(), 2, "duplicates collapsed");
     let one = recs.iter().find(|r| r.part_id == "1").unwrap();
     assert_eq!(one.id, "keep", "the first stable row id survives");
@@ -1097,7 +1137,8 @@ async fn migration_0007_dedupes_and_preserves_richest_row() {
         .read(|c| Ok(c.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?))
         .await
         .unwrap();
-    assert_eq!(version, 7);
+    // Hardcoded version updated for 0008_account_scoping.
+    assert_eq!(version, 8);
     let indexes: i64 = db
         .read(|c| {
             Ok(c.query_row(
@@ -1114,7 +1155,7 @@ async fn migration_0007_dedupes_and_preserves_richest_row() {
     let duplicate_rejected = db
         .write(|c| {
             Ok(c.execute(
-                "INSERT INTO attachments (id,message_id,part_id,mime) VALUES ('x','m1','1','application/pdf')",
+                "INSERT INTO attachments (id,account_id,message_id,part_id,mime) VALUES ('x','acc','m1','1','application/pdf')",
                 [],
             )
             .is_err())

@@ -49,6 +49,23 @@ export type View =
  * unique within an account, so every navigation/action target carries the pair.
  */
 export type ThreadRef = { accountId: string; threadId: string };
+/**
+ * Account-qualified message identity (P4.2). Provider message IDs are only
+ * unique within an account, so every read/mutation target carries the pair.
+ */
+export type MessageRef = { accountId: string; messageId: string };
+/** Account-qualified attachment identity (P4.2). */
+export type AttachmentRefKey = { accountId: string; attachmentId: string };
+/** Result of `attachments_save_as`; a cancelled dialog is a normal outcome. */
+export interface SaveAsResult {
+  path?: string | null;
+  cancelled: boolean;
+}
+/** Result of a message-level Save All. */
+export interface SaveAllResult {
+  saved: number;
+  failed: AttachmentRefKey[];
+}
 export interface ThreadsQuery {
   accountIds: string[];
   view: View;
@@ -234,10 +251,17 @@ export const defaultSettings: Settings = {
   remoteImages: 'always',
   stripTrackers: true,
   offlineBodyCache: '2y',
-  attachmentCacheSize: '2GB',
+  attachmentCacheSize: '512MB',
   pollFocused: 15,
   pollBackground: 60,
 };
+
+/** Counts the removal dialog shows before an account is deleted (P4.4). */
+export interface RemovalCounts {
+  drafts: number;
+  queued: number;
+  uncertainSends: number;
+}
 
 /** One class of app-owned cache; `items` counts rows or files, whichever applies. */
 export interface StorageCategory {

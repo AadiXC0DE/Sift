@@ -161,7 +161,7 @@ async fn sync_folder(
                 // foreign key and the write would fail otherwise.
                 let mut att_rows = vec![];
                 if let Some(bs) = &item.structure {
-                    att_rows = message::attachment_rows(&up.id, bs);
+                    att_rows = message::attachment_rows(account_id, &up.id, bs);
                     if !att_rows.is_empty() {
                         up.has_attachments = true;
                     }
@@ -198,7 +198,7 @@ async fn sync_folder(
         sink.imap_put_uids(account_id, role, &uid_rows)
             .await
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-        fetch_snippet_groups(pool, sink, &snip_targets, cancel).await;
+        fetch_snippet_groups(pool, account_id, sink, &snip_targets, cancel).await;
         done += chunk.len() as i64;
         sink.progress(crate::dto::SyncStatus {
             account_id: account_id.into(),

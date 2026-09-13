@@ -12,7 +12,7 @@
 use crate::db::{
     attachments::AttPut, bodies::BodyPut, imap::FolderCursor, messages::MsgUpsert, Db,
 };
-use crate::dto::{Label, SyncStatus};
+use crate::dto::{Label, MessageRef, SyncStatus};
 use crate::errors::SiftError;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -151,19 +151,20 @@ pub trait SyncSink: Send + Sync {
     async fn upsert_labels(&self, labels: &[Label]) -> Result<()>;
     async fn insert_stub(&self, id: &str, account: &str, thread: &str) -> Result<()>;
     async fn upsert_message(&self, m: MsgUpsert) -> Result<()>;
-    async fn delete_message(&self, id: &str, account: &str, thread: &str) -> Result<()>;
-    async fn message_labels(&self, id: &str) -> Result<Vec<String>>;
+    async fn delete_message(&self, r: &MessageRef, thread: &str) -> Result<()>;
+    async fn message_labels(&self, r: &MessageRef) -> Result<Vec<String>>;
     async fn apply_label_change(
         &self,
-        id: &str,
+        r: &MessageRef,
         add: &[String],
         remove: &[String],
     ) -> Result<(String, String)>;
-    async fn message_thread(&self, id: &str) -> Result<Option<(String, String)>>;
-    async fn message_snippet(&self, id: &str) -> Result<String>;
-    async fn message_flags(&self, id: &str) -> Result<(bool, bool)>;
-    async fn set_snippet(&self, id: &str, snippet: &str) -> Result<()>;
-    async fn message_exists(&self, id: &str) -> Result<bool>;
+    /// Thread id of the addressed message, if it exists in that account.
+    async fn message_thread(&self, r: &MessageRef) -> Result<Option<String>>;
+    async fn message_snippet(&self, r: &MessageRef) -> Result<String>;
+    async fn message_flags(&self, r: &MessageRef) -> Result<(bool, bool)>;
+    async fn set_snippet(&self, r: &MessageRef, snippet: &str) -> Result<()>;
+    async fn message_exists(&self, r: &MessageRef) -> Result<bool>;
     async fn list_local_messages(&self, account: &str) -> Result<Vec<(String, String)>>;
     // -- bodies / attachments -----------------------------------------------
     async fn next_bodies_to_fetch(
@@ -171,7 +172,7 @@ pub trait SyncSink: Send + Sync {
         account: &str,
         limit: i64,
         min_date: i64,
-    ) -> Result<Vec<String>>;
+    ) -> Result<Vec<MessageRef>>;
     async fn store_body(&self, b: BodyPut) -> Result<()>;
     async fn store_attachment(&self, a: AttPut) -> Result<()>;
     // -- account state --------------------------------------------------------
@@ -259,17 +260,17 @@ impl SyncSink for DbSink {
     async fn upsert_message(&self, m: MsgUpsert) -> Result<()> {
         self.db.messages_upsert(m).await
     }
-    async fn delete_message(&self, id: &str, account: &str, thread: &str) -> Result<()> {
-        self.db.messages_delete(id, account, thread).await
+    async fn delete_message(&self, r: &MessageRef, thread: &str) -> Result<()> {
+        self.db.messages_delete(r, thread).await
     }
-    async fn message_labels(&self, id: &str) -> Result<Vec<String>> {
-        let mid = id.to_string();
+    async fn message_labels(&self, r: &MessageRef) -> Result<Vec<String>> {
+        let (aid, mid) = (r.account_id.clone(), r.message_id.clone());
         let j: String = self
             .db
             .read(move |c| {
                 Ok(c.query_row(
-                    "SELECT label_ids FROM messages WHERE id=?",
-                    rusqlite::params![mid],
+                    "SELECT label_ids FROM messages WHERE account_id=? AND id=?",
+                    rusqlite::params![aid, mid],
                     |r| r.get::<_, String>(0),
                 )
                 .unwrap_or("[]".into()))
@@ -279,31 +280,31 @@ impl SyncSink for DbSink {
     }
     async fn apply_label_change(
         &self,
-        id: &str,
+        r: &MessageRef,
         add: &[String],
         remove: &[String],
     ) -> Result<(String, String)> {
-        self.db.apply_label_change(id, add, remove).await
+        self.db.apply_label_change(r, add, remove).await
     }
-    async fn message_thread(&self, id: &str) -> Result<Option<(String, String)>> {
-        self.db.message_thread(id).await
+    async fn message_thread(&self, r: &MessageRef) -> Result<Option<String>> {
+        self.db.message_thread(r).await
     }
-    async fn message_snippet(&self, id: &str) -> Result<String> {
-        self.db.message_snippet(id).await
+    async fn message_snippet(&self, r: &MessageRef) -> Result<String> {
+        self.db.message_snippet(r).await
     }
-    async fn set_snippet(&self, id: &str, snippet: &str) -> Result<()> {
-        self.db.set_snippet(id, snippet).await
+    async fn set_snippet(&self, r: &MessageRef, snippet: &str) -> Result<()> {
+        self.db.set_snippet(r, snippet).await
     }
-    async fn message_flags(&self, id: &str) -> Result<(bool, bool)> {
-        self.db.message_flags(id).await
+    async fn message_flags(&self, r: &MessageRef) -> Result<(bool, bool)> {
+        self.db.message_flags(r).await
     }
-    async fn message_exists(&self, id: &str) -> Result<bool> {
-        let mid = id.to_string();
+    async fn message_exists(&self, r: &MessageRef) -> Result<bool> {
+        let (aid, mid) = (r.account_id.clone(), r.message_id.clone());
         self.db
             .read(move |c| {
                 Ok(c.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM messages WHERE id=?)",
-                    rusqlite::params![mid],
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE account_id=? AND id=?)",
+                    rusqlite::params![aid, mid],
                     |r| r.get(0),
                 )
                 .unwrap_or(false))
@@ -327,7 +328,7 @@ impl SyncSink for DbSink {
         account: &str,
         limit: i64,
         min_date: i64,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<MessageRef>> {
         self.db.next_bodies_to_fetch(account, limit, min_date).await
     }
     async fn store_body(&self, b: BodyPut) -> Result<()> {
@@ -409,17 +410,21 @@ impl SyncSink for DbSink {
 /// single handoff type for both transports.
 pub async fn store_parsed(
     sink: &dyn SyncSink,
-    message_id: &str,
+    r: &MessageRef,
     parsed: &crate::provider::gmail::mime::ParsedMessage,
 ) -> Result<()> {
+    let message_id = r.message_id.as_str();
+    // Inline `sift-att://` references are account-qualified: the scheme
+    // resolves within one account and validates ownership.
+    let url_path = format!("{}/{}", r.account_id, r.message_id);
     let html = parsed.html.clone();
     let text = parsed.text.clone();
     let (final_html, remote, trackers, dark_safe) = if let Some(h) = html {
-        let s = crate::render::sanitize::sanitize(message_id, &h);
+        let s = crate::render::sanitize::sanitize(&url_path, &h);
         (Some(s.html), s.remote_images, s.trackers, s.dark_safe)
     } else if let Some(t) = text.clone() {
         let (h, _) = crate::render::text::to_html(&t);
-        let s = crate::render::sanitize::sanitize(message_id, &h);
+        let s = crate::render::sanitize::sanitize(&url_path, &h);
         (Some(s.html), s.remote_images, s.trackers, s.dark_safe)
     } else {
         (None, 0, 0, true)
@@ -440,6 +445,7 @@ pub async fn store_parsed(
         };
         sink.store_attachment(crate::db::attachments::AttPut {
             id: uuid::Uuid::now_v7().to_string(),
+            account_id: r.account_id.clone(),
             message_id: message_id.to_string(),
             gmail_att_id: p.attachment_id.clone(),
             part_id: p.part_id.clone(),
@@ -453,6 +459,7 @@ pub async fn store_parsed(
         .await?;
     }
     sink.store_body(crate::db::bodies::BodyPut {
+        account_id: r.account_id.clone(),
         message_id: message_id.to_string(),
         html: final_html.clone(),
         text: text.clone(),
@@ -466,7 +473,7 @@ pub async fn store_parsed(
     // past the snippet window) derive one from the fetched body. REST
     // snippets are never empty, so this is a no-op there.
     if sink
-        .message_snippet(message_id)
+        .message_snippet(r)
         .await
         .unwrap_or_default()
         .is_empty()
@@ -484,7 +491,7 @@ pub async fn store_parsed(
             .unwrap_or_default();
         let derived: String = derived.chars().take(200).collect();
         if !derived.is_empty() {
-            sink.set_snippet(message_id, &derived).await?;
+            sink.set_snippet(r, &derived).await?;
         }
     }
     Ok(())

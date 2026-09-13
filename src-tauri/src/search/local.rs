@@ -29,8 +29,9 @@ pub async fn search(
     let mut out: Vec<(String, String)> = vec![];
     let mut seen = std::collections::HashSet::new();
     for (mid, aid, _date) in hits {
-        if let Some((a, t)) = db.message_thread(&mid).await? {
-            let _ = aid;
+        let message = crate::dto::MessageRef::new(aid.clone(), mid);
+        if let Some(t) = db.message_thread(&message).await? {
+            let a = aid;
             if seen.insert((a.clone(), t.clone())) {
                 // label filter
                 if !q.labels.is_empty() {

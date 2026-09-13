@@ -503,8 +503,10 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
         ("db-m3", "<p>Statement of work for Q4 is ready for review.</p>"),
     ];
     for (mid, html) in bodies {
-        let s = sanitize(mid, html);
+        let owner = if mid.starts_with("da-") { &ada.id } else { &ben.id };
+        let s = sanitize(&format!("{owner}/{mid}"), html);
         db.bodies_put(BodyPut {
+            account_id: owner.clone(),
             message_id: mid.into(),
             html: Some(s.html),
             text: None,
@@ -518,6 +520,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
     // One PDF-ish attachment + one inline image (bytes inline, served via sift-att://).
     db.attachments_put(AttPut {
         id: "demo-att1".into(),
+        account_id: ada.id.clone(),
         message_id: "da-m5".into(),
         gmail_att_id: None,
         part_id: "att1".into(),
@@ -531,6 +534,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
     .await?;
     db.attachments_put(AttPut {
         id: "demo-att2".into(),
+        account_id: ada.id.clone(),
         message_id: "da-m2".into(),
         gmail_att_id: None,
         part_id: "img1".into(),
@@ -571,8 +575,12 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
     }
     // da-t3/da-t8 are snoozed: leave INBOX (snoozed view filters on snoozed_until).
     for mid in ["da-m4", "da-m8"] {
-        db.apply_label_change(mid, &[], &["INBOX".to_string(), "UNREAD".to_string()])
-            .await?;
+        db.apply_label_change(
+            &crate::dto::MessageRef::new(ada.id.clone(), mid),
+            &[],
+            &["INBOX".to_string(), "UNREAD".to_string()],
+        )
+        .await?;
     }
 
     for (aid, email, name) in [

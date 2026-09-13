@@ -276,7 +276,8 @@ impl Provider for GmailApiProvider {
             .map(|m| (m.id, m.thread_id))
             .collect();
         for (id, tid) in &ids {
-            if sink.message_exists(id).await.map_err(gmail_err)? {
+            let r = crate::dto::MessageRef::new(self.account_id.clone(), id);
+            if sink.message_exists(&r).await.map_err(gmail_err)? {
                 continue;
             }
             // Hydrate unknown hits with metadata so the second run is local.

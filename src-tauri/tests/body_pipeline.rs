@@ -23,12 +23,15 @@ async fn newsletter_survives_fetch_store_and_read() {
         .await
         .unwrap();
     let account_id = account.id;
-    db.write(move |connection| {
-        connection.execute(
-            "INSERT INTO messages (id,account_id,thread_id,internal_date,body_state) VALUES ('m1',?, 't1', 1, 'none')",
-            rusqlite::params![account_id],
-        )?;
-        Ok(())
+    db.write({
+        let account_id = account_id.clone();
+        move |connection| {
+            connection.execute(
+                "INSERT INTO messages (id,account_id,thread_id,internal_date,body_state) VALUES ('m1',?, 't1', 1, 'none')",
+                rusqlite::params![account_id],
+            )?;
+            Ok(())
+        }
     })
     .await
     .unwrap();
@@ -49,17 +52,18 @@ async fn newsletter_survives_fetch_store_and_read() {
         ..Default::default()
     };
     let sink = DbSink::new(db.clone());
-    store_parsed(&sink, "m1", &parsed).await.unwrap();
+    store_parsed(&sink, &sift::dto::MessageRef::new(account_id.clone(), "m1"), &parsed).await.unwrap();
 
-    let stored = db.bodies_get("m1").await.unwrap().expect("body stored");
+    let m1 = sift::dto::MessageRef::new(account_id.clone(), "m1");
+    let stored = db.bodies_get(&m1).await.unwrap().expect("body stored");
     let html = stored.0.expect("html stored");
     let remote_images = stored.2;
 
     // Serve-time embedding mirrors render_message_html in commands/threads.rs:
     // stored bodies keep sift-att:// refs; bytes are embedded when read.
-    let parts = db.attachments_with_bytes("m1").await.unwrap();
+    let parts = db.attachments_with_bytes(&m1).await.unwrap();
     assert_eq!(parts.len(), 1);
-    let html = sift::render::sanitize::embed_local_images(&html, "m1", &parts);
+    let html = sift::render::sanitize::embed_local_images(&html, &format!("{account_id}/m1"), &parts);
 
     for expected in [
         "width=",
@@ -88,12 +92,15 @@ async fn document_head_and_body_survive_pipeline() {
         .await
         .unwrap();
     let account_id = account.id;
-    db.write(move |connection| {
-        connection.execute(
-            "INSERT INTO messages (id,account_id,thread_id,internal_date,body_state) VALUES ('m2',?, 't2', 1, 'none')",
-            rusqlite::params![account_id],
-        )?;
-        Ok(())
+    db.write({
+        let account_id = account_id.clone();
+        move |connection| {
+            connection.execute(
+                "INSERT INTO messages (id,account_id,thread_id,internal_date,body_state) VALUES ('m2',?, 't2', 1, 'none')",
+                rusqlite::params![account_id],
+            )?;
+            Ok(())
+        }
     })
     .await
     .unwrap();
@@ -102,11 +109,17 @@ async fn document_head_and_body_survive_pipeline() {
         html: Some(DOCUMENT.into()),
         ..Default::default()
     };
-    store_parsed(&DbSink::new(db.clone()), "m2", &parsed)
+    store_parsed(&DbSink::new(db.clone()), &sift::dto::MessageRef::new(account_id.clone(), "m2"), &parsed)
         .await
         .unwrap();
 
-    let html = db.bodies_get("m2").await.unwrap().expect("body").0.unwrap();
+    let html = db
+        .bodies_get(&sift::dto::MessageRef::new(account_id.clone(), "m2"))
+        .await
+        .unwrap()
+        .expect("body")
+        .0
+        .unwrap();
     assert!(!html.contains("Weekly Digest"), "title leaked: {html}");
     assert!(html.contains("background-color:#f4f4f4"), "{html}");
     assert!(html.contains("padding:24px"), "{html}");

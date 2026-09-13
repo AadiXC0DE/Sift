@@ -104,7 +104,11 @@ pub async fn threads_action(
         for mid in &mids {
             state
                 .db
-                .apply_label_change(mid, &add, &remove)
+                .apply_label_change(
+                    &crate::dto::MessageRef::new(req.account_id.clone(), mid.clone()),
+                    &add,
+                    &remove,
+                )
                 .await
                 .map_err(|e| SiftError::app("db", e.to_string(), false))?;
             all_ids.push(mid.clone());
@@ -198,7 +202,14 @@ pub async fn action_undo(
                 serde_json::from_value(payload["ids"].clone()).unwrap_or_default();
             // inverse local
             for mid in &ids {
-                let _ = state.db.apply_label_change(mid, &remove, &add).await;
+                let _ = state
+                    .db
+                    .apply_label_change(
+                        &crate::dto::MessageRef::new(op.account_id.clone(), mid.clone()),
+                        &remove,
+                        &add,
+                    )
+                    .await;
             }
             let inv = serde_json::json!({"ids": ids, "add": remove, "remove": add}).to_string();
             let _ = state
@@ -224,7 +235,14 @@ pub async fn action_undo(
             let ids: Vec<String> =
                 serde_json::from_value(payload["ids"].clone()).unwrap_or_default();
             for mid in &ids {
-                let _ = state.db.apply_label_change(mid, &remove, &add).await;
+                let _ = state
+                    .db
+                    .apply_label_change(
+                        &crate::dto::MessageRef::new(op.account_id.clone(), mid.clone()),
+                        &remove,
+                        &add,
+                    )
+                    .await;
             }
         }
     }
@@ -312,7 +330,11 @@ pub async fn snooze_set(
         for mid in &mids {
             let _ = state
                 .db
-                .apply_label_change(mid, &[], &["INBOX".to_string()])
+                .apply_label_change(
+                    &crate::dto::MessageRef::new(account_id.clone(), mid.clone()),
+                    &[],
+                    &["INBOX".to_string()],
+                )
                 .await;
         }
         let payload = serde_json::json!({"ids": mids, "add": [], "remove": ["INBOX"]}).to_string();
@@ -416,9 +438,13 @@ mod tests {
         }
         // archive via apply
         for mid in ["m1", "m2", "m3"] {
-            db.apply_label_change(mid, &[], &["INBOX".to_string()])
-                .await
-                .unwrap();
+            db.apply_label_change(
+                &crate::dto::MessageRef::new(a.id.clone(), mid),
+                &[],
+                &["INBOX".to_string()],
+            )
+            .await
+            .unwrap();
         }
         let inbox: i64 = db
             .read({

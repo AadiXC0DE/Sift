@@ -231,27 +231,23 @@ fn error_code(e: &SiftError) -> Option<&str> {
 
 /// Load a row and check the caller's account owns it.
 ///
-/// `account_id` is the account-qualified key from appendix A. Until the P4
-/// scoping migration lands, callers that still pass only an attachment id are
-/// accepted: the row's own account (from the message join) governs, which is
-/// the same value the explicit key carries. A supplied account that does not
-/// own the row is always a lookup failure — never a cross-account fallback.
-pub async fn owned_record(
-    db: &Db,
-    account_id: Option<&str>,
-    attachment_id: &str,
-) -> Result<AttachmentRecord, SiftError> {
-    let rec = db
-        .attachment_get(attachment_id)
+/// `key` is the account-qualified key from appendix A; the row is looked up by
+/// both halves, so a stale key from another account is a plain lookup failure —
+/// never a cross-account fallback.
+pub async fn owned_record(db: &Db, key: &AttachmentRefKey) -> Result<AttachmentRecord, SiftError> {
+    db.attachment_get(key)
         .await
         .map_err(db_error)?
-        .ok_or_else(|| SiftError::NotFound("attachment".into()))?;
-    if let Some(supplied) = account_id.map(str::trim).filter(|a| !a.is_empty()) {
-        if supplied != rec.account_id {
-            return Err(SiftError::NotFound("attachment".into()));
-        }
+        .ok_or_else(|| SiftError::NotFound("attachment".into()))
+}
+
+/// The account-qualified key of a row, for the update paths that address a
+/// cache row rather than a message.
+pub fn rec_key(rec: &AttachmentRecord) -> AttachmentRefKey {
+    AttachmentRefKey {
+        account_id: rec.account_id.clone(),
+        attachment_id: rec.id.clone(),
     }
-    Ok(rec)
 }
 
 fn info(
@@ -304,6 +300,7 @@ pub async fn ensure_local(
     rec: &AttachmentRecord,
 ) -> Result<AttachmentCacheInfo, SiftError> {
     let basename = naming::basename(rec.filename.as_deref(), &rec.mime, &rec.id);
+    let key = rec_key(rec);
 
     // 1. A cache file already satisfies the read. Legacy rows are promoted
     //    from `unverified` to `ready` once the file checks out.
@@ -319,11 +316,11 @@ pub async fn ensure_local(
                     if rec.cache_state == CacheState::Unverified {
                         let _ = rt
                             .db
-                            .attachment_set_ready(&rec.id, &path.to_string_lossy(), meta.len())
+                            .attachment_set_ready(&key, &path.to_string_lossy(), meta.len())
                             .await;
                         quarantine::apply(path, None);
                     } else {
-                        let _ = rt.db.attachment_touch(&rec.id).await;
+                        let _ = rt.db.attachment_touch(&key).await;
                     }
                     return Ok(info(rec, &basename, CacheState::Ready, Some(path), Some(meta.len() as i64)));
                 }
@@ -338,7 +335,7 @@ pub async fn ensure_local(
             "attachment {} payload unreadable ({err}); refetching",
             rec.id
         );
-        let _ = rt.db.attachment_set_state(&rec.id, CacheState::Corrupt).await;
+        let _ = rt.db.attachment_set_state(&key, CacheState::Corrupt).await;
     } else if let Some(data) = rec.data.as_deref() {
         let dir = cache::attachment_dir(&rt.data_dir, &rec.account_id, &rec.id)
             .map_err(write_failed)?;
@@ -346,7 +343,7 @@ pub async fn ensure_local(
             .await
             .map_err(write_failed)?;
         rt.db
-            .attachment_set_ready(&rec.id, &path.to_string_lossy(), data.len() as u64)
+            .attachment_set_ready(&key, &path.to_string_lossy(), data.len() as u64)
             .await
             .map_err(db_error)?;
         quarantine::apply(&path, None);
@@ -381,21 +378,22 @@ async fn download(
 ) -> Result<AttachmentCacheInfo, SiftError> {
     let dir = cache::attachment_dir(&rt.data_dir, &rec.account_id, &rec.id)
         .map_err(write_failed)?;
+    let key = rec_key(rec);
     let request_id = rec.id.clone();
-    let (key, token) = register(&rec.account_id, &rec.id);
+    let (key_reg, token) = register(&rec.account_id, &rec.id);
     let _ = rt
         .db
-        .attachment_set_state(&rec.id, CacheState::Downloading)
+        .attachment_set_state(&key, CacheState::Downloading)
         .await;
     rt.progress(&progress(rec, &request_id, "downloading", 0, None, None));
 
     let result = stream(rt, transport, rec, locator, &dir, basename, &token, &request_id).await;
-    unregister(&key);
+    unregister(&key_reg);
 
     match result {
         Ok((path, size)) => {
             rt.db
-                .attachment_set_ready(&rec.id, &path.to_string_lossy(), size)
+                .attachment_set_ready(&key, &path.to_string_lossy(), size)
                 .await
                 .map_err(db_error)?;
             quarantine::apply(&path, None);
@@ -405,7 +403,7 @@ async fn download(
         Err(e) => {
             // A failed transfer leaves `downloading` behind; clear it so the
             // row never claims a file it does not have.
-            let _ = rt.db.attachment_set_state(&rec.id, CacheState::Missing).await;
+            let _ = rt.db.attachment_set_state(&key, CacheState::Missing).await;
             let code = error_code(&e);
             let state = if code == Some("attachment_cancelled") {
                 "cancelled"
@@ -575,14 +573,14 @@ fn bad_key(s: &str) -> bool {
 pub async fn resolve_bytes(
     db: &Db,
     provider: &dyn crate::provider::Provider,
-    message_id: &str,
+    message: &crate::dto::MessageRef,
     key: &str,
 ) -> Result<(Vec<u8>, String), SiftError> {
-    if bad_key(message_id) || bad_key(key) {
+    if bad_key(&message.account_id) || bad_key(&message.message_id) || bad_key(key) {
         return Err(locator_invalid("invalid attachment id"));
     }
     let rec = db
-        .attachment_resolve(message_id, key)
+        .attachment_resolve(message, key)
         .await
         .map_err(|e| SiftError::app("db", e.to_string(), false))?
         .ok_or_else(|| SiftError::NotFound("attachment".into()))?;
@@ -600,9 +598,9 @@ pub async fn resolve_bytes(
     let bytes = provider.fetch_attachment(&rec.message_id, locator).await?;
     if bytes.len() <= INLINE_ROW_CACHE_CAP {
         let db = db.clone();
-        let (mid, key, payload) = (rec.message_id.clone(), rec.id.clone(), bytes.clone());
+        let (message, key, payload) = (message.clone(), rec.id.clone(), bytes.clone());
         // Cache repair is best-effort; the bytes are already in hand.
-        let _ = db.attachment_cache_data(&mid, &key, &payload).await;
+        let _ = db.attachment_cache_data(&message, &key, &payload).await;
     }
     Ok((bytes, rec.mime))
 }
@@ -641,29 +639,20 @@ pub fn unique_destination(dir: &Path, name: &str) -> PathBuf {
 
 /// Save every non-inline attachment of a message into one folder (P2.6).
 /// The folder prompt itself belongs to the command; this is the queue.
-///
-/// `account_id` may be absent while callers migrate to account-qualified keys:
-/// the message's own account (from the records) governs then. A supplied
-/// account that does not own the message saves nothing.
 pub async fn save_all_into(
     rt: &AttachmentRuntime,
     source: &dyn TransportSource,
-    account_id: Option<&str>,
-    message_id: &str,
+    message: &crate::dto::MessageRef,
     dir: &Path,
 ) -> Result<SaveAllResult, SiftError> {
     let mut recs = rt
         .db
-        .attachments_records(message_id)
+        .attachments_records(message)
         .await
         .map_err(db_error)?;
-    let owner = account_id
-        .map(str::trim)
-        .filter(|a| !a.is_empty())
-        .map(str::to_string)
-        .or_else(|| recs.first().map(|r| r.account_id.clone()));
-    recs.retain(|r| !r.is_inline && Some(r.account_id.as_str()) == owner.as_deref());
-    if recs.len() < 2 || owner.is_none() {
+    let owner = message.account_id.clone();
+    recs.retain(|r| !r.is_inline && r.account_id == owner);
+    if recs.len() < 2 {
         return Err(SiftError::app(
             "attachment_save_all_not_applicable",
             "Save All needs at least two attachments",
@@ -759,6 +748,7 @@ mod tests {
         let aid = seed(&db, "m1").await;
         db.attachments_put(crate::db::attachments::AttPut {
             id: "att1".into(),
+            account_id: aid.clone(),
             message_id: "m1".into(),
             gmail_att_id: Some("rest1".into()),
             part_id: "1.2".into(),
@@ -771,15 +761,24 @@ mod tests {
         })
         .await
         .unwrap();
-        assert!(owned_record(&db, Some(&aid), "att1").await.is_ok());
+        let key = AttachmentRefKey {
+            account_id: aid.clone(),
+            attachment_id: "att1".into(),
+        };
+        assert!(owned_record(&db, &key).await.is_ok());
+        // A key from another account never resolves, even for a real row id.
+        let foreign = AttachmentRefKey {
+            account_id: "other".into(),
+            attachment_id: "att1".into(),
+        };
         assert!(matches!(
-            owned_record(&db, Some("other"), "att1").await,
+            owned_record(&db, &foreign).await,
             Err(SiftError::NotFound(_))
         ));
-        // Pre-P4 adapter: an absent account still resolves, but the row's own
-        // account is the one that governs.
-        let rec = owned_record(&db, None, "att1").await.unwrap();
-        assert_eq!(rec.account_id, aid);
-        assert!(owned_record(&db, None, "missing").await.is_err());
+        let missing = AttachmentRefKey {
+            account_id: aid.clone(),
+            attachment_id: "missing".into(),
+        };
+        assert!(owned_record(&db, &missing).await.is_err());
     }
 }

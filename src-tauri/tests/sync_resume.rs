@@ -22,7 +22,7 @@ async fn p3_t14_resume_no_dupes() {
         .await
         .unwrap();
     }
-    let remaining: Vec<String> = db
+    let remaining = db
         .next_bodies_to_fetch(&acc.id, 100, 0)
         .await
         .unwrap_or_default();

@@ -30,25 +30,27 @@ import { decodeRfc2047 } from '../../lib/rfc2047';
 import { toast } from 'sonner';
 
 const bodyCache = new Map<string, MessageBody>();
-function cacheGet(id: string) {
-  return bodyCache.get(id);
+// Cache keys are the account-qualified pair (P4.2); a provider message id
+// alone can repeat across accounts.
+function cacheGet(accountId: string, id: string) {
+  return bodyCache.get(`${accountId}:${id}`);
 }
-function cacheSet(id: string, b: MessageBody) {
-  bodyCache.set(id, b);
+function cacheSet(accountId: string, id: string, b: MessageBody) {
+  bodyCache.set(`${accountId}:${id}`, b);
   if (bodyCache.size > 50) {
     const first = bodyCache.keys().next().value;
     if (first) bodyCache.delete(first);
   }
 }
 
-async function pollBody(id: string, onUpdate: (b: MessageBody) => void) {
+async function pollBody(accountId: string, id: string, onUpdate: (b: MessageBody) => void) {
   let delay = 250;
   let last: MessageBody | undefined;
   for (let i = 0; i < 16; i++) {
     try {
-      const b = await api.message_body(id);
+      const b = await api.message_body(accountId, id);
       last = b;
-      cacheSet(id, b);
+      cacheSet(accountId, id, b);
       onUpdate(b);
       if (b.state === 'ready' || b.state === 'error') {
         return;
@@ -185,12 +187,12 @@ export function ThreadView({
     void (async () => {
       for (const id of ids) {
         if (cancelled) return;
-        const cached = cacheGet(id);
+        const cached = cacheGet(detail.accountId, id);
         if (cached?.state === 'ready' || cached?.state === 'error') {
           setBodies((p) => (p[id] ? p : { ...p, [id]: cached }));
           continue;
         }
-        await pollBody(id, (b) => {
+        await pollBody(detail.accountId, id, (b) => {
           if (!cancelled) setBodies((p) => ({ ...p, [id]: b }));
         });
       }
@@ -416,7 +418,7 @@ export function ThreadView({
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px 40px' }}>
         {detail.messages.map((m, i) => {
           const open = !!expanded[m.id];
-          const body = bodies[m.id] ?? cacheGet(m.id);
+          const body = bodies[m.id] ?? cacheGet(detail.accountId, m.id);
           return (
             <div
               key={m.id}
@@ -477,8 +479,14 @@ export function ThreadView({
               </button>
               {open && (
                 <div style={{ padding: '4px 16px 16px', borderTop: '1px solid var(--border)' }}>
-                  <MessageMetaBar m={m} />
-                  {m.hasAttachments && <AttachmentStrip messageId={m.id} attachments={m.attachments} />}
+                  <MessageMetaBar accountId={detail.accountId} m={m} />
+                  {m.hasAttachments && (
+                    <AttachmentStrip
+                      accountId={detail.accountId}
+                      messageId={m.id}
+                      attachments={m.attachments}
+                    />
+                  )}
                   {!body || body.state === 'loading' ? (
                     body?.text ? (
                       <pre
@@ -500,7 +508,11 @@ export function ThreadView({
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => void pollBody(m.id, (b) => setBodies((p) => ({ ...p, [m.id]: b })))}
+                        onClick={() =>
+                          void pollBody(detail.accountId, m.id, (b) =>
+                            setBodies((p) => ({ ...p, [m.id]: b })),
+                          )
+                        }
                       >
                         Retry
                       </Button>
@@ -773,7 +785,13 @@ function BulkBar() {
   );
 }
 
-function MessageMetaBar({ m }: { m: ThreadDetail['messages'][number] }) {
+function MessageMetaBar({
+  accountId,
+  m,
+}: {
+  accountId: string;
+  m: ThreadDetail['messages'][number];
+}) {
   const [open, setOpen] = useState(false);
   // Show the exact address in the summary (not "me"), so it is obvious which
   // identity a message was sent to when several accounts are in play.
@@ -796,7 +814,7 @@ function MessageMetaBar({ m }: { m: ThreadDetail['messages'][number] }) {
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         <span>to {summarize(to)}</span>
         {cc.length > 0 && <span>· cc {summarize(cc)}</span>}
-        {m.listUnsubscribe && <UnsubPill messageId={m.id} />}
+        {m.listUnsubscribe && <UnsubPill accountId={accountId} messageId={m.id} />}
         <button
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
@@ -837,9 +855,11 @@ function MessageMetaBar({ m }: { m: ThreadDetail['messages'][number] }) {
 }
 
 function AttachmentStrip({
+  accountId,
   messageId,
   attachments,
 }: {
+  accountId: string;
   messageId: string;
   attachments: { id: string; filename?: string | null; mime: string; size: number }[];
 }) {
@@ -858,7 +878,7 @@ function AttachmentStrip({
   const open = async (id: string) => {
     setBusy(id);
     try {
-      await api.attachments_open(id);
+      await api.attachments_open({ accountId, attachmentId: id });
     } catch (e) {
       toast.error(errorText(e));
     } finally {
@@ -869,7 +889,7 @@ function AttachmentStrip({
   const save = async (id: string, filename: string) => {
     setBusy(id);
     try {
-      const r = await api.attachments_save_as(id);
+      const r = await api.attachments_save_as({ accountId, attachmentId: id });
       if (r?.path) toast.success(`Saved ${filename}`);
     } catch (e) {
       // A cancelled save dialog is not an error.
@@ -916,7 +936,7 @@ function AttachmentStrip({
               <Spinner size={16} />
             ) : a.mime.startsWith('image/') ? (
               <img
-                src={`sift-att://${messageId}/${a.id}`}
+                src={`sift-att://${accountId}/${messageId}/${a.id}`}
                 alt=""
                 style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4 }}
               />
@@ -952,10 +972,10 @@ function AttachmentStrip({
   );
 }
 
-function UnsubPill({ messageId }: { messageId: string }) {
+function UnsubPill({ accountId, messageId }: { accountId: string; messageId: string }) {
   return (
     <button
-      onClick={() => void api.unsubscribe(messageId)}
+      onClick={() => void api.unsubscribe(accountId, messageId)}
       style={{
         marginLeft: 8,
         fontSize: 11.5,

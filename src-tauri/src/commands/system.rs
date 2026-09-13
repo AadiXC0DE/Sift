@@ -30,6 +30,13 @@ pub async fn sync_now(
             Ok(c) => c,
             Err(_) => continue,
         };
+        // The manual sync belongs to the account's current generation: a
+        // removal (or reauth) cancels it, and its late results are dropped
+        // instead of being written for an account that is gone.
+        let cancel = match state.runtime_state(&aid).await {
+            Some((_, cancel)) => cancel,
+            None => tokio_util::sync::CancellationToken::new(),
+        };
         let db = state.db.clone();
         let aid2 = aid.clone();
         let app2 = app.clone();
@@ -48,14 +55,19 @@ pub async fn sync_now(
                     let _ = app.emit("sync:state", &s);
                 }
             });
-            let outcome = provider.partial_sync(&cursor, &sink).await;
+            let outcome = tokio::select! {
+                _ = cancel.cancelled() => return,
+                outcome = provider.partial_sync(&cursor, &sink) => outcome,
+            };
             // Manual sync recovers like the poll loop (reconcile REST,
             // rebuild IMAP) instead of surfacing cursor internals.
             let outcome = match outcome {
                 Ok(PartialOutcome::NeedsFull) => {
                     if provider.kind() == crate::provider::ProviderKind::GmailImap {
-                        let cancel = tokio_util::sync::CancellationToken::new();
-                        match provider.full_sync(&sink, cancel).await {
+                        match tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            synced = provider.full_sync(&sink, cancel.clone()) => synced,
+                        } {
                             Ok(c) => {
                                 let _ = db
                                     .accounts_set_history(&aid2, &c.render(), crate::db::now_ms())
@@ -70,18 +82,20 @@ pub async fn sync_now(
                     } else {
                         // REST providers reconcile internally on an empty
                         // cursor, then continue from the fresh history id.
-                        provider
-                            .partial_sync(
-                                &Cursor::Gmail {
-                                    history_id: String::new(),
-                                },
-                                &sink,
-                            )
-                            .await
+                        let empty = Cursor::Gmail {
+                            history_id: String::new(),
+                        };
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            reconciled = provider.partial_sync(&empty, &sink) => reconciled,
+                        }
                     }
                 }
                 other => other,
             };
+            if cancel.is_cancelled() {
+                return;
+            }
             match outcome {
                 Ok(PartialOutcome::Synced {
                     changed_threads, ..

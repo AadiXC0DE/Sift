@@ -8,7 +8,13 @@ pub struct SanitizeOut {
     pub dark_safe: bool,
 }
 
-pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
+/// Sanitize one message body.
+///
+/// `url_path` is the account-qualified `<account_id>/<message_id>` path used to
+/// build `sift-att://` references, so a body can only ever reference an
+/// attachment inside the same account (P4.2). Callers that pass a bare message
+/// id get `sift-att://<id>/...` (unit tests).
+pub fn sanitize(url_path: &str, raw_html: &str) -> SanitizeOut {
     // Document-level presentation (bgcolor/background/inline style on <body>)
     // is otherwise discarded when ammonia parses the message as a fragment.
     let body_css = body_presentation(raw_html);
@@ -174,7 +180,7 @@ pub fn sanitize(message_id: &str, raw_html: &str) -> SanitizeOut {
     let trackers = 0i64;
 
     // Rewrite cid: -> sift-att:// (strip <angle brackets> Gmail puts on Content-ID)
-    html = rewrite_cid_srcs(html, message_id);
+    html = rewrite_cid_srcs(html, url_path);
 
     // Keep every image. Rendering wins over tracker stripping.
     let mut rest = html.as_str();
@@ -251,7 +257,7 @@ fn extract_attr(tag: &str, name: &str) -> Option<String> {
     None
 }
 
-fn rewrite_cid_srcs(html: String, message_id: &str) -> String {
+fn rewrite_cid_srcs(html: String, url_path: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html.as_str();
     while let Some(i) = rest.find("cid:") {
@@ -265,7 +271,7 @@ fn rewrite_cid_srcs(html: String, message_id: &str) -> String {
         if raw.starts_with('<') && after[end..].starts_with('>') {
             end += 1;
         }
-        out.push_str(&format!("sift-att://{message_id}/{cid}"));
+        out.push_str(&format!("sift-att://{url_path}/{cid}"));
         rest = &after[end..];
     }
     out.push_str(rest);
@@ -297,7 +303,7 @@ pub fn restore_remote_images(html: &str) -> String {
 /// srcdoc iframes cannot load custom `sift-att://` URLs; embed bytes as data URIs.
 pub type InlinePart = (String, String, Option<String>, String, Vec<u8>);
 
-pub fn embed_local_images(html: &str, message_id: &str, parts: &[InlinePart]) -> String {
+pub fn embed_local_images(html: &str, url_path: &str, parts: &[InlinePart]) -> String {
     let mut html = html.to_string();
     let mut replacements = Vec::new();
     for (id, part_id, content_id, mime, data) in parts {
@@ -321,13 +327,13 @@ pub fn embed_local_images(html: &str, message_id: &str, parts: &[InlinePart]) ->
     // as its prefix (for example, `image` and `image-large`).
     replacements.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
     for (key, data_url) in replacements {
-        html = replace_exact_attachment_ref(&html, message_id, &key, &data_url);
+        html = replace_exact_attachment_ref(&html, url_path, &key, &data_url);
     }
     html
 }
 
-fn replace_exact_attachment_ref(html: &str, message_id: &str, key: &str, value: &str) -> String {
-    let needle = format!("sift-att://{message_id}/{key}");
+fn replace_exact_attachment_ref(html: &str, url_path: &str, key: &str, value: &str) -> String {
+    let needle = format!("sift-att://{url_path}/{key}");
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(start) = rest.find(&needle) {
@@ -349,8 +355,8 @@ fn replace_exact_attachment_ref(html: &str, message_id: &str, key: &str, value: 
     out
 }
 
-pub fn inline_image_refs(html: &str, message_id: &str) -> Vec<String> {
-    let prefix = format!("sift-att://{message_id}/");
+pub fn inline_image_refs(html: &str, url_path: &str) -> Vec<String> {
+    let prefix = format!("sift-att://{url_path}/");
     let mut refs = Vec::new();
     let mut rest = html;
     while let Some(start) = rest.find(&prefix) {
@@ -365,6 +371,19 @@ pub fn inline_image_refs(html: &str, message_id: &str) -> Vec<String> {
         rest = &value[end..];
     }
     refs
+}
+
+/// Upgrade pre-P4 `sift-att://<message-id>/...` references in cached bodies to
+/// the account-qualified `sift-att://<account-id>/<message-id>/...` form.
+/// Idempotent, and the offline-readable content is never discarded: this is a
+/// URL rewrite, not a body re-render (P4.1/P4.2).
+pub fn qualify_attachment_urls(html: &str, account_id: &str, message_id: &str) -> String {
+    if account_id.is_empty() || message_id.is_empty() {
+        return html.to_string();
+    }
+    let legacy = format!("sift-att://{message_id}/");
+    let qualified = format!("sift-att://{account_id}/{message_id}/");
+    html.replace(&legacy, &qualified)
 }
 
 fn strip_bad_styles(html: &str) -> String {

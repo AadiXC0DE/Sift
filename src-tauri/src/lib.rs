@@ -158,34 +158,49 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
                     .body(bytes)
                     .unwrap()
             }
-            // sift-att://<message_id>/<part_id>: the message id arrives as the
-            // URI host with the part as path (be liberal: also accept /m/p).
+            // sift-att://<account-id>/<message-id>/<key>: account id arrives as
+            // the URI host, message id and key as the path. Ownership is
+            // validated by the account-qualified DB lookup (P4.2).
             let uri = req.uri().clone();
-            let (mid, part) = match uri.host() {
-                Some(h) if !uri.path().trim_start_matches('/').is_empty() => (
-                    h.to_string(),
-                    uri.path().trim_start_matches('/').to_string(),
-                ),
-                _ => match uri.path().trim_start_matches('/').split_once('/') {
-                    Some((a, b)) => (a.to_string(), b.to_string()),
-                    None => (String::new(), String::new()),
-                },
+            let (aid, mid, part) = {
+                let host = uri.host().unwrap_or_default().to_string();
+                let path: Vec<&str> = uri
+                    .path()
+                    .trim_start_matches('/')
+                    .splitn(2, '/')
+                    .collect();
+                match (host.is_empty(), path.as_slice()) {
+                    (false, [mid, part]) => (host, mid.to_string(), part.to_string()),
+                    _ => (String::new(), String::new(), String::new()),
+                }
             };
-            if mid.is_empty() || part.is_empty() || mid.contains("..") || part.contains("..") {
+            if aid.is_empty()
+                || mid.is_empty()
+                || part.is_empty()
+                || aid.contains("..")
+                || mid.contains("..")
+                || part.contains("..")
+            {
                 return respond(404, "text/plain", b"bad id".to_vec());
             }
             let app = ctx.app_handle().clone();
             let out: Result<(Vec<u8>, String), String> =
                 tauri::async_runtime::block_on(async move {
                     let state = app.state::<AppState>();
-                    let (aid, _) = state
+                    let message = crate::dto::MessageRef::new(aid, mid);
+                    // Ownership: the message must exist in this account.
+                    let exists = state
                         .db
-                        .message_thread(&mid)
+                        .message_thread(&message)
                         .await
                         .map_err(|e| e.to_string())?
                         .ok_or_else(|| "no message".to_string())?;
-                    let provider = state.provider_for(&aid).await.map_err(|e| e.to_string())?;
-                    crate::uri_scheme::resolve_attachment(&state.db, &*provider, &mid, &part)
+                    let _ = exists;
+                    let provider = state
+                        .provider_for(&message.account_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    crate::uri_scheme::resolve_attachment(&state.db, &*provider, &message, &part)
                         .await
                         .map_err(|e| e.to_string())
                 });
@@ -199,6 +214,8 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::settings::settings_set,
             commands::settings::shortcuts_get,
             commands::settings::shortcuts_set,
+            commands::storage::storage_usage,
+            commands::storage::storage_clear_attachment_cache,
             commands::accounts::accounts_list,
             commands::accounts::accounts_add_google,
             commands::accounts::accounts_probe_email,
@@ -206,6 +223,7 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::accounts::accounts_update_app_password,
             commands::accounts::accounts_cancel_add,
             commands::accounts::accounts_remove,
+            commands::accounts::accounts_removal_preview,
             commands::accounts::accounts_update,
             commands::system::sync_now,
             commands::system::system_info,

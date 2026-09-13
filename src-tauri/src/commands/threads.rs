@@ -179,7 +179,7 @@ pub async fn thread_get(
     {
         let attachments = state
             .db
-            .attachments_for_message(&id)
+            .attachments_for_message(&MessageRef::new(account_id.clone(), id.clone()))
             .await
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
         let to: Vec<Address> = serde_json::from_str(&to_json).unwrap_or_default();
@@ -290,31 +290,40 @@ fn should_refresh_body_provider(
 
 async fn render_message_html(
     state: &AppState,
-    account_id: &str,
-    message_id: &str,
+    message: &MessageRef,
     html: String,
 ) -> String {
-    let mut rendered = match state.db.attachments_with_bytes(message_id).await {
-        Ok(parts) => crate::render::sanitize::embed_local_images(&html, message_id, &parts),
+    // Inline references are account-qualified so the scheme can validate
+    // ownership; a body from one account can never address another. Cached
+    // bodies from before the scoping migration are upgraded in place (in
+    // memory) rather than re-rendered.
+    let url_path = format!("{}/{}", message.account_id, message.message_id);
+    let html = crate::render::sanitize::qualify_attachment_urls(
+        &html,
+        &message.account_id,
+        &message.message_id,
+    );
+    let mut rendered = match state.db.attachments_with_bytes(message).await {
+        Ok(parts) => crate::render::sanitize::embed_local_images(&html, &url_path, &parts),
         Err(_) => html,
     };
-    let unresolved = crate::render::sanitize::inline_image_refs(&rendered, message_id);
+    let unresolved = crate::render::sanitize::inline_image_refs(&rendered, &url_path);
     if unresolved.is_empty() {
         return rendered;
     }
-    let Ok(provider) = state.provider_for(account_id).await else {
+    let Ok(provider) = state.provider_for(&message.account_id).await else {
         return rendered;
     };
     for key in unresolved {
         if let Ok((bytes, mime)) =
-            crate::uri_scheme::resolve_attachment(&state.db, &*provider, message_id, &key).await
+            crate::uri_scheme::resolve_attachment(&state.db, &*provider, message, &key).await
         {
             let _ = state
                 .db
-                .attachment_cache_data(message_id, &key, &bytes)
+                .attachment_cache_data(message, &key, &bytes)
                 .await;
             let part = vec![(key.clone(), key.clone(), Some(key), mime, bytes)];
-            rendered = crate::render::sanitize::embed_local_images(&rendered, message_id, &part);
+            rendered = crate::render::sanitize::embed_local_images(&rendered, &url_path, &part);
         }
     }
     rendered
@@ -323,17 +332,20 @@ async fn render_message_html(
 #[tauri::command]
 pub async fn message_body(
     state: State<'_, AppState>,
+    account_id: String,
     message_id: String,
 ) -> Result<MessageBody, SiftError> {
-    // sender prefs + bodies
-    let info: Option<(String, String)> = state
+    let message = MessageRef::new(account_id, message_id);
+    // Ownership check: the message must exist in this account. The provider id
+    // alone is not a cross-account isolation boundary (P4.2).
+    let exists = state
         .db
-        .message_thread(&message_id)
+        .message_thread(&message)
         .await
         .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-    let Some((account_id, _thread)) = info else {
+    if exists.is_none() {
         return Ok(MessageBody {
-            message_id,
+            message_id: message.message_id,
             state: "error".into(),
             html: None,
             text: None,
@@ -342,7 +354,7 @@ pub async fn message_body(
             dark_safe: true,
             remote_images_allowed: false,
         });
-    };
+    }
     // Remote images load by default like any other email client.
     // Only an explicit Settings → Privacy → Never blocks them (via CSP).
     // Legacy 'ask' values and per-sender allow-lists are treated as allowed.
@@ -354,7 +366,7 @@ pub async fn message_body(
     let global_allow = settings.remote_images != "never";
     if let Some((html, text, ri, tc, ds, _q)) = state
         .db
-        .bodies_get(&message_id)
+        .bodies_get(&message)
         .await
         .map_err(|e| SiftError::app("db", e.to_string(), false))?
     {
@@ -364,11 +376,11 @@ pub async fn message_body(
             html
         };
         let html_out = match html_out {
-            Some(h) => Some(render_message_html(&state, &account_id, &message_id, h).await),
+            Some(h) => Some(render_message_html(&state, &message, h).await),
             None => None,
         };
         return Ok(MessageBody {
-            message_id,
+            message_id: message.message_id,
             state: "ready".into(),
             html: html_out,
             text,
@@ -380,11 +392,11 @@ pub async fn message_body(
     }
     // Foreground fetches must preempt bulk backfill after a rendering upgrade.
     let _foreground = state.gate.enter();
-    let mut provider = match state.provider_for(&account_id).await {
+    let mut provider = match state.provider_for(&message.account_id).await {
         Ok(p) => p,
         Err(error) => {
             return Ok(MessageBody {
-                message_id,
+                message_id: message.message_id,
                 state: body_failure_state(&error).into(),
                 html: None,
                 text: Some(error.to_string()),
@@ -395,7 +407,7 @@ pub async fn message_body(
             });
         }
     };
-    let mut fetched = provider.fetch_body(&message_id).await;
+    let mut fetched = provider.fetch_body(&message.message_id).await;
     // A cached Gmail provider owns the token it was constructed with. If the
     // server rejects that token, rebuild it from the refresh token and retry
     // the foreground request once instead of failing every opened message.
@@ -403,11 +415,11 @@ pub async fn message_body(
         .as_ref()
         .is_err_and(|error| should_refresh_body_provider(error, provider.kind()))
     {
-        state.invalidate_oauth_provider(&account_id).await;
-        match state.provider_for(&account_id).await {
+        state.invalidate_oauth_provider(&message.account_id).await;
+        match state.provider_for(&message.account_id).await {
             Ok(refreshed) => {
                 provider = refreshed;
-                fetched = provider.fetch_body(&message_id).await;
+                fetched = provider.fetch_body(&message.message_id).await;
             }
             Err(refresh_error) => fetched = Err(refresh_error),
         }
@@ -415,12 +427,12 @@ pub async fn message_body(
     match fetched {
         Ok(parsed) => {
             let sink = crate::provider::DbSink::new(state.db.clone());
-            if crate::provider::store_parsed(&sink, &message_id, &parsed)
+            if crate::provider::store_parsed(&sink, &message, &parsed)
                 .await
                 .is_err()
             {
                 return Ok(MessageBody {
-                    message_id,
+                    message_id: message.message_id,
                     state: "error".into(),
                     html: None,
                     text: parsed.text,
@@ -433,7 +445,7 @@ pub async fn message_body(
         }
         Err(error) => {
             return Ok(MessageBody {
-                message_id,
+                message_id: message.message_id,
                 state: body_failure_state(&error).into(),
                 html: None,
                 text: Some(error.to_string()),
@@ -446,7 +458,7 @@ pub async fn message_body(
     }
     if let Some((html, text, ri, tc, ds, _q)) = state
         .db
-        .bodies_get(&message_id)
+        .bodies_get(&message)
         .await
         .map_err(|e| SiftError::app("db", e.to_string(), false))?
     {
@@ -456,11 +468,11 @@ pub async fn message_body(
             html
         };
         let html_out = match html_out {
-            Some(h) => Some(render_message_html(&state, &account_id, &message_id, h).await),
+            Some(h) => Some(render_message_html(&state, &message, h).await),
             None => None,
         };
         return Ok(MessageBody {
-            message_id,
+            message_id: message.message_id,
             state: "ready".into(),
             html: html_out,
             text,
@@ -471,7 +483,7 @@ pub async fn message_body(
         });
     }
     Ok(MessageBody {
-        message_id,
+        message_id: message.message_id,
         state: "error".into(),
         html: None,
         text: None,
@@ -485,49 +497,51 @@ pub async fn message_body(
 #[tauri::command]
 pub async fn message_raw_source(
     state: State<'_, AppState>,
+    account_id: String,
     message_id: String,
 ) -> Result<String, SiftError> {
-    let info = state
+    let message = MessageRef::new(account_id, message_id);
+    let exists = state
         .db
-        .message_thread(&message_id)
+        .message_thread(&message)
         .await
         .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-    let Some((account_id, _)) = info else {
+    if exists.is_none() {
         return Err(SiftError::NotFound("message".into()));
-    };
-    let provider = state.provider_for(&account_id).await?;
-    provider.fetch_raw(&message_id).await
+    }
+    let provider = state.provider_for(&message.account_id).await?;
+    provider.fetch_raw(&message.message_id).await
 }
 
 #[tauri::command]
 pub async fn remote_images_load(
     state: State<'_, AppState>,
+    account_id: String,
     message_id: String,
     remember_sender: bool,
 ) -> Result<MessageBody, SiftError> {
+    let message = MessageRef::new(account_id, message_id);
     if remember_sender {
+        let (aid, mid) = (message.account_id.clone(), message.message_id.clone());
         let from_email: String = state
             .db
-            .read({
-                let mid = message_id.clone();
-                move |c| {
-                    Ok(c.query_row(
-                        "SELECT COALESCE(from_email,'') FROM messages WHERE id=?",
-                        rusqlite::params![mid],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or_default())
-                }
+            .read(move |c| {
+                Ok(c.query_row(
+                    "SELECT COALESCE(from_email,'') FROM messages WHERE account_id=? AND id=?",
+                    rusqlite::params![aid, mid],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default())
             })
             .await
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-        let fe = from_email.clone();
+        let (aid, fe) = (message.account_id.clone(), from_email.clone());
         state
             .db
             .write(move |c| {
                 c.execute(
-                    "INSERT OR REPLACE INTO sender_prefs (email,allow_remote_images) VALUES (?,1)",
-                    rusqlite::params![fe],
+                    "INSERT OR REPLACE INTO sender_prefs (account_id,email,allow_remote_images) VALUES (?,?,1)",
+                    rusqlite::params![aid, fe],
                 )?;
                 Ok(())
             })
@@ -535,7 +549,7 @@ pub async fn remote_images_load(
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
     }
     // return body with images allowed
-    let mut body = message_body(state.clone(), message_id).await?;
+    let mut body = message_body(state.clone(), message.account_id.clone(), message.message_id.clone()).await?;
     if let Some(h) = body.html.take() {
         let restored = crate::render::sanitize::restore_remote_images(&h);
         body.html = Some(restored);
@@ -578,6 +592,10 @@ mod tests {
       move |c| { c.execute("INSERT INTO messages (id,account_id,thread_id,internal_date,body_state) VALUES ('m9',?, 't9', 1, 'none')", rusqlite::params![aid])?; Ok(()) }
     }).await.unwrap();
         // bodies_get none -> would schedule; assert none exists
-        assert!(db.bodies_get("m9").await.unwrap().is_none());
+        assert!(db
+            .bodies_get(&crate::dto::MessageRef::new(a.id.clone(), "m9"))
+            .await
+            .unwrap()
+            .is_none());
     }
 }
