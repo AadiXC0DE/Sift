@@ -82,7 +82,14 @@ async fn ensure_downloaded(
     }
     // fetch (transport locator: Gmail attachmentId, or the IMAP section path
     // stored in part_id when gmail_att_id is NULL)
-    let provider = state.provider_for(&message_id).await?;
+    let account_id = state
+        .db
+        .message_thread(&message_id)
+        .await
+        .map_err(|e| SiftError::app("db", e.to_string(), false))?
+        .map(|(account, _)| account)
+        .ok_or_else(|| SiftError::NotFound("message".into()))?;
+    let provider = state.provider_for(&account_id).await?;
     let locator = gmail_att_id.as_deref().unwrap_or(&part_id);
     if locator.is_empty() {
         return Err(SiftError::app("nodata", "no data", true));
