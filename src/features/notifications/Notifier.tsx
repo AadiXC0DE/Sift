@@ -1,8 +1,14 @@
 import { useEffect } from 'react';
 import { on } from '../../app/ipc/events';
 import { useSettings } from '../../stores/settingsStore';
+import type { ThreadRef } from '../../app/ipc/types';
 
-export function useNotifier(onOpenThread: (accountId: string, threadId: string) => void) {
+/**
+ * Native new-mail notifications. The click/routing callback receives the
+ * account-qualified ref, so a notification can never open another account's
+ * thread that happens to share an id.
+ */
+export function useNotifier(onOpenThread: (thread: ThreadRef) => void) {
   const settings = useSettings((s) => s.settings);
   useEffect(() => {
     let unsub = () => {};
@@ -35,9 +41,7 @@ export function useNotifier(onOpenThread: (accountId: string, threadId: string) 
         } catch {
           /* noop */
         }
-        void onOpenThread;
-        void account_id;
-        void thread_id;
+        void onOpenThread({ accountId: account_id, threadId: thread_id });
       },
     )
       .then((u) => {

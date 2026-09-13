@@ -7,6 +7,7 @@ import { participantsLabel } from '../../lib/names';
 import { accentHex } from '../../lib/colors';
 import { useSettings } from '../../stores/settingsStore';
 import { decodeRfc2047 } from '../../lib/rfc2047';
+import { rowHeightForDensity } from './rowHeight';
 import { Archive, Clock, Mail, MailOpen, Star, Paperclip, Trash2 } from 'lucide-react';
 
 export type RowAction = 'archive' | 'trash' | 'read' | 'star' | 'snooze';
@@ -16,12 +17,39 @@ interface Props {
   focused: boolean;
   selected: boolean;
   accountColor?: string;
+  accountLabel?: string;
   showStripe: boolean;
   onFocus: () => void;
   onToggleSelect: (e: React.MouseEvent) => void;
   onOpen: () => void;
   onAction?: (kind: RowAction) => void;
 }
+
+// Inset accent dash that identifies the account. It never touches the row
+// edges, so same-account rows can never join into a continuous line, and it is
+// decorative: the account name travels in the row's accessible label instead.
+const ACCOUNT_DASH: React.CSSProperties = {
+  position: 'absolute',
+  left: 3,
+  top: '50%',
+  transform: 'translateY(-50%)',
+  width: 3,
+  height: 12,
+  borderRadius: 999,
+  pointerEvents: 'none',
+};
+
+const SR_ONLY: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
 
 function HoverActions({
   row,
@@ -97,6 +125,7 @@ export const ThreadRowView = memo(function ThreadRowView({
   focused,
   selected,
   accountColor,
+  accountLabel,
   showStripe,
   onFocus,
   onToggleSelect,
@@ -106,7 +135,7 @@ export const ThreadRowView = memo(function ThreadRowView({
   const [hover, setHover] = useState(false);
   const avatars = useSettings((s) => s.settings.avatarsInList);
   const density = useSettings((s) => s.settings.density);
-  const h = density === 'compact' ? 32 : density === 'comfortable' ? 48 : 40;
+  const h = rowHeightForDensity(density);
   const unread = row.unreadCount > 0;
   const chips = row.labelIds
     .filter((l) => !['INBOX', 'UNREAD', 'STARRED', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'IMPORTANT'].includes(l))
@@ -133,9 +162,15 @@ export const ThreadRowView = memo(function ThreadRowView({
   };
 
   const onClick = (e: React.MouseEvent) => {
+    // Modifier clicks keep the current anchor: resolve the toggle before the
+    // focus moves to the clicked row.
+    if (e.metaKey || e.ctrlKey || e.shiftKey) {
+      onToggleSelect(e);
+      onFocus();
+      return;
+    }
     onFocus();
-    if (e.metaKey || e.ctrlKey || e.shiftKey) onToggleSelect(e);
-    else onOpen();
+    onOpen();
   };
 
   if (density === 'compact') {
@@ -149,21 +184,16 @@ export const ThreadRowView = memo(function ThreadRowView({
         style={shell}
         className="sift-row"
         data-testid={`row-${row.id}`}
+        title={showStripe && accountLabel ? accountLabel : undefined}
       >
         {showStripe && (
           <span
-            style={{
-              position: 'absolute',
-              left: 0,
-              top: '26%',
-              bottom: '26%',
-              width: 3,
-              borderRadius: '0 3px 3px 0',
-              background: accentHex(accountColor ?? 'blue'),
-              opacity: 0.85,
-            }}
+            aria-hidden
+            data-testid="account-marker"
+            style={{ ...ACCOUNT_DASH, background: accentHex(accountColor ?? 'blue'), opacity: 0.85 }}
           />
         )}
+        {showStripe && accountLabel ? <span style={SR_ONLY}>Account: {accountLabel}</span> : null}
         {unread && (
           <span
             style={{
@@ -217,19 +247,16 @@ export const ThreadRowView = memo(function ThreadRowView({
       style={shell}
       className="sift-row"
       data-testid={`row-${row.id}`}
+      title={showStripe && accountLabel ? accountLabel : undefined}
     >
       {showStripe && (
         <span
-          style={{
-            position: 'absolute',
-            left: focused ? 2 : 0,
-            top: 0,
-            bottom: 0,
-            width: 2,
-            background: accentHex(accountColor ?? 'blue'),
-          }}
+          aria-hidden
+          data-testid="account-marker"
+          style={{ ...ACCOUNT_DASH, background: accentHex(accountColor ?? 'blue'), opacity: 0.85 }}
         />
       )}
+      {showStripe && accountLabel ? <span style={SR_ONLY}>Account: {accountLabel}</span> : null}
       {unread && (
         <span
           style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--unread-dot)', flexShrink: 0 }}

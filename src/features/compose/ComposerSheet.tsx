@@ -5,7 +5,7 @@ import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
 import { Sheet } from '../../ui/Sheet';
 import { api } from '../../app/ipc/commands';
-import type { Address, AttachmentRef, Draft } from '../../app/ipc/types';
+import type { Address, AttachmentRef, Draft, ThreadRef } from '../../app/ipc/types';
 import { useAccounts } from '../../stores/accountsStore';
 import { useSettings } from '../../stores/settingsStore';
 import { toast } from 'sonner';
@@ -13,11 +13,11 @@ import { Button } from '../../ui/Button';
 
 export function ComposerSheet({
   mode,
-  threadId,
+  thread,
   onClose,
 }: {
   mode: string;
-  threadId?: string;
+  thread?: ThreadRef;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -53,32 +53,30 @@ export function ComposerSheet({
 
   // prefill reply
   useEffect(() => {
-    if ((mode === 'reply' || mode === 'reply_all' || mode === 'forward') && threadId) {
-      const acc = (window as unknown as { __lastAccount?: string }).__lastAccount ?? accounts[0]?.id ?? '';
-      if (acc) {
-        api
-          .thread_get(acc, threadId)
-          .then((d) => {
-            const last = d.messages[d.messages.length - 1];
-            if (!last) return;
-            if (mode === 'forward') {
-              setSubject(`Fwd: ${last.subject}`);
-            } else {
-              setSubject(last.subject.startsWith('Re:') ? last.subject : `Re: ${last.subject}`);
-              setTo([{ e: last.from.e, n: last.from.n }]);
-              if (mode === 'reply_all') setCc(last.cc);
-            }
-            setFrom(d.accountId);
-            // signature above quote
-            const sig = accounts.find((a) => a.id === d.accountId)?.signature_html ?? '';
-            const quote = `<details class="sift-quote"><summary>•••</summary><div>${last.snippet}</div></details>`;
-            editor?.commands.setContent(`${sig ? `<div>${sig}</div>` : ''}<p></p>${quote}`);
-          })
-          .catch(() => {});
-      }
+    if ((mode === 'reply' || mode === 'reply_all' || mode === 'forward') && thread) {
+      const { accountId, threadId } = thread;
+      api
+        .thread_get(accountId, threadId)
+        .then((d) => {
+          const last = d.messages[d.messages.length - 1];
+          if (!last) return;
+          if (mode === 'forward') {
+            setSubject(`Fwd: ${last.subject}`);
+          } else {
+            setSubject(last.subject.startsWith('Re:') ? last.subject : `Re: ${last.subject}`);
+            setTo([{ e: last.from.e, n: last.from.n }]);
+            if (mode === 'reply_all') setCc(last.cc);
+          }
+          setFrom(d.accountId);
+          // signature above quote
+          const sig = accounts.find((a) => a.id === d.accountId)?.signature_html ?? '';
+          const quote = `<details class="sift-quote"><summary>•••</summary><div>${last.snippet}</div></details>`;
+          editor?.commands.setContent(`${sig ? `<div>${sig}</div>` : ''}<p></p>${quote}`);
+        })
+        .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, threadId]);
+  }, [mode, thread?.accountId, thread?.threadId]);
 
   const save = useCallback(
     async (html: string) => {
@@ -86,7 +84,7 @@ export function ComposerSheet({
       const d: Draft = {
         localId: localId,
         accountId: from,
-        threadId,
+        threadId: thread?.threadId,
         mode,
         toJson: to,
         ccJson: cc,
@@ -102,7 +100,7 @@ export function ComposerSheet({
         /* offline: keep local */
       }
     },
-    [from, threadId, mode, to, cc, bcc, subject, atts, localId],
+    [from, thread?.threadId, mode, to, cc, bcc, subject, atts, localId],
   );
 
   useEffect(() => {
@@ -135,7 +133,7 @@ export function ComposerSheet({
     const d: Draft = {
       localId: localId,
       accountId: from,
-      threadId,
+      threadId: thread?.threadId,
       mode,
       toJson: to,
       ccJson: cc,
@@ -162,9 +160,13 @@ export function ComposerSheet({
         if (archive) {
           // send & archive: archive thread
           import('../actions/dispatch').then(({ dispatchAction }) => {
-            if (threadId)
+            if (thread)
               void dispatchAction(
-                { accountId: from, threadIds: [threadId], action: { kind: 'archive' } },
+                {
+                  accountId: thread.accountId,
+                  threadIds: [thread.threadId],
+                  action: { kind: 'archive' },
+                },
                 { silent: true },
               );
           });

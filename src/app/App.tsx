@@ -12,8 +12,9 @@ import { useAccounts } from '../stores/accountsStore';
 import { api } from './ipc/commands';
 import { on } from './ipc/events';
 import { useSync } from '../stores/syncStore';
-import type { SyncStatus } from './ipc/types';
+import type { SyncStatus, ThreadRef } from './ipc/types';
 import { engine } from '../keymap/engine';
+import { activeKeyScopes } from '../keymap/scopes';
 import { undoLast } from '../features/actions/dispatch';
 import { Kbd } from '../ui/Kbd';
 import { Button } from '../ui/Button';
@@ -21,17 +22,19 @@ import { Button } from '../ui/Button';
 export function App() {
   const paneLayout = useView((s) => s.paneLayout);
   const cyclePane = useView((s) => s.cyclePane);
-  const threadId = useView((s) => s.threadId);
+  const openThread = useView((s) => s.openThread);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [addAccountOpen, setAddAccountOpen] = useState(false);
-  const [composeOpen, setComposeOpen] = useState<null | { mode: string; threadId?: string }>(null);
+  const [composeOpen, setComposeOpen] = useState<null | { mode: string; thread?: ThreadRef }>(null);
   const [sidebarHidden, setSidebarHidden] = useState(false);
   const online = useSync((s) => s.online);
 
   const refreshAccounts = useAccounts((s) => s.refresh);
-  const setThread = useView((s) => s.setThread);
+  const setOpenThread = useView((s) => s.setOpenThread);
+  // Any overlay covers the reader: its mark-read timer must not fire behind it.
+  const modalOpen = paletteOpen || composeOpen != null || settingsOpen || helpOpen || addAccountOpen;
 
   // Engine owns sequences (g i …), go-tos and global undo; single-key
   // shortcuts live with their feature handlers to avoid double dispatch.
@@ -118,8 +121,15 @@ export function App() {
         setPaletteOpen((v) => !v);
         return;
       }
-      // Sequences + global undo first (engine ignores text inputs itself).
-      if (engine.handle(e, ['global'])) return;
+      // Modal scopes win: while an overlay is open the list/thread scopes are
+      // not active, so a keystroke cannot trigger a hidden mail action.
+      const scopes = activeKeyScopes({
+        paletteOpen,
+        modalOpen: composeOpen != null || settingsOpen || helpOpen || addAccountOpen,
+        threadOpen: useView.getState().openThread != null,
+      });
+      // Sequences + scoped bindings first (engine ignores text inputs itself).
+      if (engine.handle(e, scopes)) return;
       if (typing) return;
       // Back out of a full-width thread to the list.
       if (
@@ -129,10 +139,10 @@ export function App() {
         !settingsOpen &&
         !helpOpen &&
         useView.getState().paneLayout === 'off' &&
-        useView.getState().threadId != null
+        useView.getState().openThread != null
       ) {
         e.preventDefault();
-        setThread(null);
+        setOpenThread(null);
         return;
       }
       if (e.key === '?') setHelpOpen(true);
@@ -172,7 +182,9 @@ export function App() {
       }
     };
     window.addEventListener('keydown', onEsc, true);
-    window.addEventListener('keydown', h);
+    // Capture so the list/thread bindings beat in-page typeahead helpers, as
+    // the feature-level listeners used to.
+    window.addEventListener('keydown', h, true);
     // first paint mark
     requestAnimationFrame(() => {
       api.perf_mark('first-paint').catch(() => {});
@@ -181,10 +193,10 @@ export function App() {
     // kitchen sink route
     return () => {
       window.removeEventListener('keydown', onEsc, true);
-      window.removeEventListener('keydown', h);
+      window.removeEventListener('keydown', h, true);
       unsubs.forEach((u) => u());
     };
-  }, [cyclePane, paletteOpen, composeOpen, settingsOpen, helpOpen, setThread]);
+  }, [cyclePane, paletteOpen, composeOpen, settingsOpen, helpOpen, addAccountOpen, setOpenThread]);
 
   useEffect(() => {
     refreshAccounts();
@@ -220,10 +232,10 @@ export function App() {
     };
   }, []);
 
-  const paneOffOpen = paneLayout === 'off' && threadId != null;
+  const paneOffOpen = paneLayout === 'off' && openThread != null;
   const bottom = paneLayout === 'bottom';
   const showList = !paneOffOpen;
-  const showThread = paneLayout !== 'off' || threadId != null;
+  const showThread = paneLayout !== 'off' || openThread != null;
 
   if (window.location.hash === '#/kitchen-sink') {
     return <KitchenSink />;
@@ -313,7 +325,10 @@ export function App() {
                   background: 'var(--bg-pane)',
                 }}
               >
-                <ThreadView onReply={(mode, tid) => setComposeOpen({ mode, threadId: tid })} />
+                <ThreadView
+                  obscured={modalOpen}
+                  onReply={(mode, thread) => setComposeOpen({ mode, thread })}
+                />
               </div>
             )}
           </div>
@@ -331,7 +346,7 @@ export function App() {
       {composeOpen && (
         <ComposerSheet
           mode={composeOpen.mode}
-          threadId={composeOpen.threadId}
+          thread={composeOpen.thread}
           onClose={() => setComposeOpen(null)}
         />
       )}

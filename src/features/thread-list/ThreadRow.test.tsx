@@ -1,6 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/react';
 import { ThreadRowView } from './ThreadRow';
+import { ROW_HEIGHTS } from './rowHeight';
+import { useSettings } from '../../stores/settingsStore';
+import { defaultSettings } from '../../app/ipc/types';
 import type { ThreadRow } from '../../app/ipc/types';
 
 const base: ThreadRow = {
@@ -75,5 +78,76 @@ describe('P4-T04 memo', () => {
     rerender(<Probe row={base} />);
     // memo on ThreadRowView prevents inner re-render; Probe itself re-renders but inner memo holds
     expect(spy.mock.calls.length).toBeGreaterThanOrEqual(n);
+  });
+});
+
+describe('P3.1 account marker geometry', () => {
+  const densities = ['compact', 'default', 'comfortable'] as const;
+
+  beforeEach(() => {
+    useSettings.setState({ settings: { ...defaultSettings, density: 'default' } });
+  });
+
+  it.each(densities)('renders an inset centered dash in %s rows that cannot join its neighbor', (density) => {
+    useSettings.setState({ settings: { ...defaultSettings, density } });
+    const { container, getByTestId } = render(
+      <ThreadRowView
+        row={base}
+        focused={false}
+        selected={false}
+        accountColor="blue"
+        accountLabel="ada@x"
+        showStripe
+        onFocus={() => {}}
+        onToggleSelect={() => {}}
+        onOpen={() => {}}
+      />,
+    );
+    const rowEl = container.querySelector('[data-testid="row-t1"]') as HTMLElement;
+    const marker = getByTestId('account-marker') as HTMLElement;
+    expect(rowEl.style.height).toBe(`${ROW_HEIGHTS[density]}px`);
+    expect(marker.style.width).toBe('3px');
+    expect(marker.style.height).toBe('12px');
+    expect(marker.style.pointerEvents).toBe('none');
+    expect(marker.getAttribute('aria-hidden')).toBe('true');
+    expect(marker.style.top).toBe('50%');
+    // Centered inset dash: the gap to the row edge is (height - 12) / 2, so a
+    // segment can never touch, let alone span, the neighbouring row.
+    const gap = (ROW_HEIGHTS[density] - 12) / 2;
+    expect(gap).toBeGreaterThanOrEqual(10);
+    expect(Number.parseFloat(marker.style.left)).toBeGreaterThan(0);
+  });
+
+  it('hides the marker and names the account accessibly when shown', () => {
+    const hidden = render(
+      <ThreadRowView
+        row={base}
+        focused={false}
+        selected={false}
+        showStripe={false}
+        onFocus={() => {}}
+        onToggleSelect={() => {}}
+        onOpen={() => {}}
+      />,
+    );
+    expect(hidden.queryByTestId('account-marker')).toBeNull();
+
+    const { container, getByTestId } = render(
+      <ThreadRowView
+        row={base}
+        focused={false}
+        selected={false}
+        accountColor="rose"
+        accountLabel="ada@x"
+        showStripe
+        onFocus={() => {}}
+        onToggleSelect={() => {}}
+        onOpen={() => {}}
+      />,
+    );
+    const rowEl = container.querySelector('[data-testid="row-t1"]') as HTMLElement;
+    expect(rowEl.getAttribute('title')).toBe('ada@x');
+    expect(rowEl.textContent).toContain('Account: ada@x');
+    expect(getByTestId('account-marker').style.background).toBe('rgb(214, 69, 109)');
   });
 });

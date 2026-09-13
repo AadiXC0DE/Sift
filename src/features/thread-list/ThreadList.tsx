@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useThreadsWindow } from './useThreadsWindow';
+import { useThreadsWindow, type ThreadsWindowResult } from './useThreadsWindow';
 import { ThreadRowView } from './ThreadRow';
+import { rowHeightForDensity, densityScrollTop } from './rowHeight';
+import { rowKey } from './threadWindow';
+import { resolveCommandTargets, runMailCommand, setListContext, type ListPickerKind } from './listCommands';
 import { useView } from '../../stores/viewStore';
 import { useSelection } from '../../stores/selectionStore';
 import { useAccounts } from '../../stores/accountsStore';
@@ -18,14 +21,15 @@ import { Popover } from '../../ui/Popover';
 import { LabelPicker } from '../actions/LabelPicker';
 import { toast } from 'sonner';
 import type { Label } from '../../app/ipc/types';
+import { useKeymap } from '../../keymap/engine';
 import { Paperclip, Sun } from 'lucide-react';
 
 export function ThreadList({ onCompose }: { onCompose: () => void }) {
   void onCompose;
   const view = useView((s) => s.view);
   const scope = useView((s) => s.accountScope);
-  const setThread = useView((s) => s.setThread);
-  const threadId = useView((s) => s.threadId);
+  const setOpenThread = useView((s) => s.setOpenThread);
+  const openThread = useView((s) => s.openThread);
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [hasAtt, setHasAtt] = useState(false);
   const [pickerHost, setPickerHost] = useState<null | {
@@ -35,21 +39,47 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
   }>(null);
   const [hostLabels, setHostLabels] = useState<Label[]>([]);
   const [labelName, setLabelName] = useState<string | null>(null);
-  const { rows, loading, loadMore } = useThreadsWindow(view, { unreadOnly, hasAttachment: hasAtt });
-  const focusedIndex = useSelection((s) => s.focusedIndex);
+  const [announce, setAnnounce] = useState<string | null>(null);
+
+  const {
+    rows,
+    nextCursor,
+    initialLoading,
+    loadingMore,
+    error,
+    refreshRevision,
+    loadMore,
+    reload,
+  }: ThreadsWindowResult = useThreadsWindow(view, { unreadOnly, hasAttachment: hasAtt });
+
+  const focusedKey = useSelection((s) => s.focusedKey);
   const setFocus = useSelection((s) => s.setFocus);
   const selectedIds = useSelection((s) => s.selectedIds);
   const accounts = useAccounts((s) => s.accounts);
+  const included = useAccounts((s) => s.included);
   const density = useSettings((s) => s.settings.density);
-  const rowH = density === 'compact' ? 32 : density === 'comfortable' ? 48 : 40;
+  const rowH = rowHeightForDensity(density);
   const parentRef = useRef<HTMLDivElement>(null);
   const [searching, setSearching] = useState(false);
+  const searchPending = view.kind === 'search' && searching;
+
+  const keys = useMemo(() => rows.map(rowKey), [rows]);
+  const focusedIndex = useMemo(() => {
+    const i = focusedKey ? keys.indexOf(focusedKey) : -1;
+    return i < 0 ? 0 : i;
+  }, [keys, focusedKey]);
 
   const colorOf = useCallback(
     (accountId: string) => accounts.find((a) => a.id === accountId)?.color ?? 'blue',
     [accounts],
   );
-  const showStripe = scope === 'all' && accounts.length > 1;
+  const labelOf = useCallback(
+    (accountId: string) => accounts.find((a) => a.id === accountId)?.email ?? undefined,
+    [accounts],
+  );
+  const includedAccounts = accounts.filter((a) => included[a.id] !== false);
+  // One account in view → the marker carries no information.
+  const showStripe = scope === 'all' && includedAccounts.length > 1;
   const scopedIds = scope === 'all' ? accounts.map((a) => a.id) : [scope];
   const progress = useSyncProgress(scopedIds);
   const retrySync = useCallback(() => {
@@ -61,47 +91,46 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     count: rows.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => rowH,
+    getItemKey: useCallback((index: number) => keys[index] ?? `row-${index}`, [keys]),
     overscan: 8,
   });
 
-  // Group the selection by account for bulk actions (spec 3.4.5); falls back
-  // to the focused row for single actions.
-  const targets = (): { accountId: string; threadIds: string[] }[] => {
-    const sel = [...useSelection.getState().selectedIds];
-    if (sel.length > 1) {
-      const byAcc: Record<string, string[]> = {};
-      for (const k of sel) {
-        const i = k.indexOf(':');
-        if (i < 0) continue;
-        (byAcc[k.slice(0, i)] ??= []).push(k.slice(i + 1));
+  const openRow = useCallback(
+    (index: number) => {
+      const r = rows[index];
+      if (!r) return;
+      // The opened row becomes the keyboard-active row (P3.2 #6).
+      setFocus(rowKey(r));
+      setOpenThread({ accountId: r.accountId, threadId: r.id });
+    },
+    [rows, setFocus, setOpenThread],
+  );
+
+  const moveCursor = useCallback(
+    (d: number) => {
+      useSelection.getState().move(d, keys);
+      const nextKey = useSelection.getState().focusedKey;
+      // The reading pane follows the keyboard cursor (spec 12.2).
+      if (nextKey && useView.getState().paneLayout !== 'off') {
+        const r = rows.find((x) => rowKey(x) === nextKey);
+        if (r) setOpenThread({ accountId: r.accountId, threadId: r.id });
       }
-      return Object.entries(byAcc).map(([accountId, threadIds]) => ({ accountId, threadIds }));
-    }
-    const r = rows[useSelection.getState().focusedIndex];
-    return r ? [{ accountId: r.accountId, threadIds: [r.id] }] : [];
-  };
+    },
+    [keys, rows, setOpenThread],
+  );
 
-  const openRow = (index: number) => {
-    const r = rows[index];
-    if (!r) return;
-    (window as unknown as { __lastAccount?: string }).__lastAccount = r.accountId;
-    setThread(r.id);
-  };
+  const extendSelection = useCallback(
+    (d: number) => {
+      const current = useSelection.getState().focusedKey;
+      const i = current ? keys.indexOf(current) : -1;
+      const at = i < 0 ? (d > 0 ? -1 : 0) : i;
+      const target = keys[Math.max(0, Math.min(keys.length - 1, at + d))];
+      if (target) useSelection.getState().extendTo(target, keys);
+    },
+    [keys],
+  );
 
-  const moveCursor = (d: number) => {
-    const n = Math.max(0, Math.min(rows.length - 1, focusedIndex + d));
-    setFocus(n);
-    // The reading pane follows the keyboard cursor (spec 12.2).
-    if (useView.getState().paneLayout !== 'off') {
-      const r = rows[n];
-      if (r) {
-        (window as unknown as { __lastAccount?: string }).__lastAccount = r.accountId;
-        setThread(r.id);
-      }
-    }
-  };
-
-  const snoozeTomorrow = (accountId: string, threadIds: string[]) => {
+  const snoozeTomorrow = useCallback((accountId: string, threadIds: string[]) => {
     const d = new Date();
     d.setDate(d.getDate() + 1);
     d.setHours(8, 0, 0, 0);
@@ -110,77 +139,129 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
         action: { label: 'Undo (z)', onClick: () => void undoLast() },
       });
     });
-  };
+  }, []);
 
-  // keyboard for list scope (capture so j/k beat typeahead-find and iframes)
+  const openPicker = useCallback(
+    (kind: ListPickerKind) => {
+      const targets = resolveCommandTargets('list');
+      const first = targets[0];
+      if (!first) return;
+      if (kind === 'snooze') {
+        snoozeTomorrow(first.accountId, first.threadIds);
+        return;
+      }
+      setPickerHost({ kind, accountId: first.accountId, threadIds: first.threadIds });
+    },
+    [snoozeTomorrow],
+  );
+
+  // The mounted list owns command targets for the keymap engine and the
+  // palette; publish the current window and clear it on unmount.
+  useEffect(() => {
+    return setListContext({ rows, openPicker });
+  }, [rows, openPicker]);
+
+  // Configurable list commands route through the keymap engine, so remapping a
+  // binding (or running it from the palette) never touches this component.
+  const listMap: Record<string, () => void> = {
+    focusNext: () => moveCursor(1),
+    focusPrev: () => moveCursor(-1),
+    open: () => openRow(focusedIndex),
+    toggleSelect: () => {
+      const key = useSelection.getState().focusedKey;
+      if (key) useSelection.getState().toggle(key);
+    },
+    extendDown: () => extendSelection(1),
+    extendUp: () => extendSelection(-1),
+    selectAll: () => {
+      useSelection.getState().selectAll(keys);
+      setAnnounce(`Selected ${keys.length} conversations`);
+    },
+    archive: () => void runMailCommand('archive', 'list'),
+    trash: () => void runMailCommand('trash', 'list'),
+    spam: () => void runMailCommand('spam', 'list'),
+    star: () => void runMailCommand('star', 'list'),
+    markUnread: () => void runMailCommand('markUnread', 'list'),
+    markRead: () => void runMailCommand('markRead', 'list'),
+    snooze: () => openPicker('snooze'),
+    label: () => openPicker('label'),
+    move: () => openPicker('move'),
+  };
+  useKeymap('list', searchPending ? {} : listMap);
+
+  // Escape clears the selection. Modals own Escape first (App's capture
+  // handler stops propagation), so this never fights a dialog.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const w = window as unknown as { __paletteOpen?: boolean; __composeOpen?: boolean };
-      if (w.__paletteOpen || w.__composeOpen) return;
-      if (view.kind === 'search' && searching) return;
-      const k = e.key;
-      if (k === 'j' || k === 'ArrowDown') {
-        e.preventDefault();
-        e.stopPropagation();
-        moveCursor(1);
-      } else if (k === 'k' || k === 'ArrowUp') {
-        e.preventDefault();
-        e.stopPropagation();
-        moveCursor(-1);
-      } else if (k === 'x') {
-        const r = rows[focusedIndex];
-        if (r) useSelection.getState().toggle(`${r.accountId}:${r.id}`);
-      } else if (k === 'Enter' || (k === 'o' && useView.getState().threadId == null)) {
-        openRow(focusedIndex);
-      } else if (useView.getState().threadId != null) {
-        return; // open thread owns e/#//!/s/u/i/h/l/v
-      } else if (k === 'e') {
-        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'archive' } });
-      } else if (k === '#') {
-        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'trash' } });
-      } else if (k === '!') {
-        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'spam' } });
-      } else if (k === 's') {
-        const r = rows[focusedIndex];
-        if (r)
-          void dispatchAction({
-            accountId: r.accountId,
-            threadIds: [r.id],
-            action: { kind: 'star', on: !r.isStarred },
-          });
-      } else if (k === 'U') {
-        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'read', on: false } });
-      } else if (k === 'I') {
-        for (const g of targets()) void dispatchAction({ ...g, action: { kind: 'read', on: true } });
-      } else if (k === 'h') {
-        const g = targets()[0];
-        if (g) snoozeTomorrow(g.accountId, g.threadIds);
-      } else if (k === 'l' || k === 'v') {
-        const g = targets()[0];
-        if (g) setPickerHost({ kind: k === 'l' ? 'label' : 'move', ...g });
-      }
+      if (useSelection.getState().selectedIds.size === 0) return;
+      e.preventDefault();
+      useSelection.getState().clearSelection();
     };
-    window.addEventListener('keydown', h, true);
-    return () => window.removeEventListener('keydown', h, true);
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
+
+  // A window refresh replaces rows in place; keep the row that was at the top
+  // of the viewport (and its offset) there instead of letting the list jump.
+  const anchorRef = useRef<{ key: string; offset: number } | null>(null);
+  useEffect(() => {
+    const el = parentRef.current;
+    const anchor = anchorRef.current;
+    if (!el || !anchor) return;
+    const index = rows.findIndex((r) => rowKey(r) === anchor.key);
+    if (index < 0) return;
+    el.scrollTop = index * rowH + anchor.offset;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, focusedIndex, setFocus, setThread, view.kind, searching, selectedIds]);
+  }, [refreshRevision]);
+
+  // Record the top visible row after the restore above has run.
+  useEffect(() => {
+    const el = parentRef.current;
+    const first = virtual.getVirtualItems()[0];
+    if (!el || !first) return;
+    const row = rows[first.index];
+    if (row) anchorRef.current = { key: rowKey(row), offset: el.scrollTop - first.start };
+  });
+
+  // Density changes invalidate every measured row. Reset measurement, then put
+  // the previously top visible row and its offset back where they were.
+  const prevRowH = useRef(rowH);
+  useEffect(() => {
+    const prev = prevRowH.current;
+    if (prev === rowH) return;
+    prevRowH.current = rowH;
+    const el = parentRef.current;
+    if (!el) return;
+    const first = virtual.getVirtualItems()[0];
+    const index = first?.index ?? 0;
+    const within = first ? el.scrollTop - first.start : 0;
+    virtual.measure();
+    const top = densityScrollTop(index, within, prev, rowH);
+    requestAnimationFrame(() => {
+      el.scrollTop = top;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowH]);
 
   // Archive-and-go (]/[ from the thread view): archive happened there; advance here.
   useEffect(() => {
     const h = (e: Event) => {
       const dir = (e as CustomEvent).detail?.dir as 1 | -1;
-      const cur = useSelection.getState().focusedIndex;
-      const next = Math.max(0, Math.min(rows.length - 1, cur + dir));
-      setFocus(next);
+      const current = useSelection.getState().focusedKey;
+      const i = current ? keys.indexOf(current) : -1;
+      const at = i < 0 ? 0 : i;
+      const next = Math.max(0, Math.min(rows.length - 1, at + dir));
+      const r = rows[next];
+      if (!r) return;
+      setFocus(rowKey(r));
       if (useView.getState().paneLayout !== 'off') openRow(next);
     };
     document.addEventListener('sift:archive-nav', h as EventListener);
     return () => document.removeEventListener('sift:archive-nav', h as EventListener);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, setThread]);
+  }, [rows, keys, setFocus, openRow]);
 
   useEffect(() => {
     if (pickerHost) {
@@ -215,36 +296,35 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
   // thread is selected this never fires, so it cannot fight the user.
   useEffect(() => {
     if (useView.getState().paneLayout === 'off') return;
-    if (useView.getState().threadId != null) return;
+    if (useView.getState().openThread != null) return;
     if (!rows.length) return;
     const r = rows[Math.min(focusedIndex, rows.length - 1)];
     if (r) {
-      (window as unknown as { __lastAccount?: string }).__lastAccount = r.accountId;
-      setThread(r.id);
+      setFocus(rowKey(r));
+      setOpenThread({ accountId: r.accountId, threadId: r.id });
     }
-  }, [rows, focusedIndex, setThread]);
+  }, [rows, focusedIndex, setOpenThread, setFocus]);
 
   // If the open conversation leaves the current view (trashed, archived, moved
   // away, or removed by sync), move the reading pane to the closest remaining
   // one instead of leaving a stale message on screen.
   useEffect(() => {
     if (useView.getState().paneLayout === 'off') return;
-    const openId = useView.getState().threadId;
-    if (openId == null) return;
-    if (loading) return;
-    if (rows.some((r) => r.id === openId)) return;
+    const open = useView.getState().openThread;
+    if (open == null) return;
+    if (initialLoading) return;
+    if (rows.some((r) => r.accountId === open.accountId && r.id === open.threadId)) return;
     if (!rows.length) {
-      setThread(null);
+      setOpenThread(null);
       return;
     }
     const i = Math.min(focusedIndex, rows.length - 1);
     const r = rows[i];
     if (r) {
-      (window as unknown as { __lastAccount?: string }).__lastAccount = r.accountId;
-      setFocus(i);
-      setThread(r.id);
+      setFocus(rowKey(r));
+      setOpenThread({ accountId: r.accountId, threadId: r.id });
     }
-  }, [rows, loading, focusedIndex, setFocus, setThread]);
+  }, [rows, initialLoading, focusedIndex, setFocus, setOpenThread]);
 
   const title = useMemo(() => {
     if (view.kind === 'label') return labelName ?? (view as { labelId: string }).labelId;
@@ -280,6 +360,17 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
         >
           {title}
         </span>
+        {selectedIds.size > 0 && (
+          <span
+            aria-live="polite"
+            style={{ fontSize: 12, color: 'var(--fg-2)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}
+          >
+            {selectedIds.size} selected
+          </span>
+        )}
+        <span aria-live="polite" style={SR_ONLY_LIVE}>
+          {announce ?? ''}
+        </span>
         <SearchInput onSearching={setSearching} />
         <button
           onClick={() => setUnreadOnly((v) => !v)}
@@ -300,16 +391,38 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
         </button>
       </div>
       {rows.length > 0 && <SyncInlineBar progress={progress} />}
+      {error && rows.length > 0 && (
+        <div
+          role="alert"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 12px',
+            fontSize: 12,
+            color: 'var(--fg-2)',
+            borderBottom: '1px solid var(--border)',
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{error}</span>
+          <button className="sift-chip-btn" onClick={reload}>
+            Retry
+          </button>
+        </div>
+      )}
       <div
         ref={parentRef}
         style={{ flex: 1, overflowY: 'auto', position: 'relative' }}
         role="listbox"
         aria-label={title}
+        aria-multiselectable={selectedIds.size > 0}
       >
         {rows.length === 0 ? (
-          progress.active || progress.failed ? (
+          error ? (
+            <QueryErrorState message={error} onRetry={reload} />
+          ) : progress.active || progress.failed ? (
             <SyncPanel progress={progress} onRetry={retrySync} />
-          ) : loading ? (
+          ) : initialLoading ? (
             <DelayedSkeleton />
           ) : view.kind === 'inbox' ? (
             <div style={{ animation: 'sift-fade 400ms var(--ease-out)' }}>
@@ -327,7 +440,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
             {virtual.getVirtualItems().map((vi) => {
               const r = rows[vi.index];
               if (!r) return null;
-              const key = `${r.accountId}:${r.id}`;
+              const key = rowKey(r);
               return (
                 <div
                   key={key}
@@ -345,9 +458,13 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
                     focused={vi.index === focusedIndex}
                     selected={selectedIds.has(key)}
                     accountColor={colorOf(r.accountId)}
+                    accountLabel={labelOf(r.accountId)}
                     showStripe={showStripe}
-                    onFocus={() => setFocus(vi.index)}
-                    onToggleSelect={() => useSelection.getState().toggle(key)}
+                    onFocus={() => setFocus(key)}
+                    onToggleSelect={(e) => {
+                      if (e.shiftKey) useSelection.getState().extendTo(key, keys);
+                      else useSelection.getState().toggle(key);
+                    }}
                     onOpen={() => openRow(vi.index)}
                     onAction={(kind) => {
                       if (kind === 'snooze') {
@@ -378,14 +495,14 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
             })}
           </div>
         )}
-        {!loading && <ScrollSentinel onVisible={loadMore} />}
-        {loading && rows.length > 0 && (
+        {!initialLoading && nextCursor ? <ScrollSentinel onVisible={loadMore} /> : null}
+        {loadingMore && rows.length > 0 && (
           <div style={{ padding: 8, display: 'flex', justifyContent: 'center' }}>
             <Spinner size={12} />
           </div>
         )}
       </div>
-      {threadId && <div style={{ display: 'none' }}>{threadId}</div>}
+      {openThread && <div style={{ display: 'none' }}>{openThread.accountId}:{openThread.threadId}</div>}
       {pickerHost && (
         <Popover
           open
@@ -420,6 +537,31 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
           />
         </Popover>
       )}
+    </div>
+  );
+}
+
+const SR_ONLY_LIVE: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
+/** Query failure is a retryable state — never the empty-inbox copy. */
+export function QueryErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div style={{ padding: 24, textAlign: 'center' }}>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Couldn’t load conversations.</div>
+      <div style={{ fontSize: 12, color: 'var(--fg-3)', marginBottom: 12 }}>{message}</div>
+      <button className="sift-chip-btn" onClick={onRetry}>
+        Retry
+      </button>
     </div>
   );
 }

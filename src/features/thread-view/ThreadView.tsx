@@ -1,6 +1,6 @@
-import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../app/ipc/commands';
-import type { MessageBody, ThreadDetail, Address } from '../../app/ipc/types';
+import type { MessageBody, ThreadDetail, Address, ThreadRef } from '../../app/ipc/types';
 import { useView } from '../../stores/viewStore';
 import { useSelection } from '../../stores/selectionStore';
 import { useSettings } from '../../stores/settingsStore';
@@ -10,6 +10,13 @@ import { Chip } from '../../ui/Chip';
 import { Spinner } from '../../ui/Spinner';
 import { EmptyState } from '../../ui/EmptyState';
 import { dispatchAction } from '../actions/dispatch';
+import { useKeymap } from '../../keymap/engine';
+import {
+  openListPicker,
+  runMailCommand,
+  type ListPickerKind,
+  type MailCommand,
+} from '../thread-list/listCommands';
 import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Paperclip, Tag, Download } from 'lucide-react';
 import { IconButton } from '../../ui/IconButton';
 import { Popover } from '../../ui/Popover';
@@ -66,74 +73,110 @@ async function pollBody(id: string, onUpdate: (b: MessageBody) => void) {
   }
 }
 
-export function ThreadView({ onReply }: { onReply: (mode: string, threadId: string) => void }) {
-  const threadId = useView((s) => s.threadId);
-  const scope = useView((s) => s.accountScope);
-  const view = useView((s) => s.view);
-  const [detail, setDetail] = useState<ThreadDetail | null>(null);
+export function ThreadView({
+  onReply,
+  obscured = false,
+}: {
+  onReply: (mode: string, thread: ThreadRef) => void;
+  /** A modal overlay (compose, palette, settings) covers the reader. */
+  obscured?: boolean;
+}) {
+  const openThread = useView((s) => s.openThread);
+  const [loaded, setLoaded] = useState<ThreadDetail | null>(null);
   const [bodies, setBodies] = useState<Record<string, MessageBody>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [focusMsg, setFocusMsg] = useState(0);
   const settings = useSettings((s) => s.settings);
   const markAsRead = settings.markAsRead;
-  void scope;
-  void view;
 
-  // find account for thread: use current scope or first message's account after load
-  const _accountId = useMemo(() => {
-    if (scope !== 'all') return scope;
-    return detail?.accountId ?? '';
-  }, [scope, detail]);
-  void _accountId;
+  // Generation guards every async result for the open key (P3.2): a response
+  // for an older click can never overwrite the current one.
+  const generationRef = useRef(0);
+  // Only the detail belonging to the current key is ever displayed, so the
+  // previous thread's account/subject cannot leak into a new click.
+  const detail =
+    loaded && openThread && loaded.accountId === openThread.accountId && loaded.id === openThread.threadId
+      ? loaded
+      : null;
+
+  const readTimer = useRef<number | null>(null);
+  const onOpenMarkedRef = useRef<string | null>(null);
+  const clearReadTimer = useCallback(() => {
+    if (readTimer.current != null) {
+      window.clearTimeout(readTimer.current);
+      readTimer.current = null;
+    }
+  }, []);
 
   useEffect(() => {
-    if (!threadId) {
-      setDetail(null);
-      return;
-    }
-    const aid = scope === 'all' ? undefined : scope;
-    // resolve account: try scope, else search loaded detail
-    const run = async () => {
-      // When unified, we need accountId: look up via threads_query? Simplify: use detail?.accountId or first account.
-      // For now, if scope is 'all', fetch via all accounts by trying thread_get on each is expensive;
-      // the list row knows accountId - ThreadList should set it. Fallback: use stored last account.
-      const account =
-        aid ?? detail?.accountId ?? (window as unknown as { __lastAccount?: string }).__lastAccount ?? '';
-      if (!account) return;
+    const generation = ++generationRef.current;
+    onOpenMarkedRef.current = null;
+    clearReadTimer();
+    // Reset the displayed thread immediately: rows, bodies and expansion from
+    // the previous key must not describe the newly clicked row.
+    setLoaded(null);
+    setBodies({});
+    setExpanded({});
+    setFocusMsg(0);
+    if (!openThread) return;
+    const { accountId, threadId } = openThread;
+    let cancelled = false;
+    void (async () => {
       const t0 = performance.now();
-      const d = await api.thread_get(account, threadId).catch(() => null);
-      if (!d) return;
-      setDetail(d);
-      (window as unknown as { __lastAccount?: string }).__lastAccount = d.accountId;
+      const d = await api.thread_get(accountId, threadId).catch(() => null);
+      if (cancelled || generationRef.current !== generation || !d) return;
+      // The backend echoes the account it resolved; refuse a mismatched one.
+      if (d.accountId !== accountId || d.id !== threadId) return;
+      setLoaded(d);
       const exp: Record<string, boolean> = {};
       d.messages.forEach((m, i) => {
         exp[m.id] = m.isUnread || i === d.messages.length - 1;
       });
       setExpanded(exp);
-      setFocusMsg(d.messages.findIndex((m) => m.isUnread));
-      // bodies fetched in the expanded-ids effect below
-      // mark as read
-      if (markAsRead === 'on-open') {
-        const unread = d.messages.some((m) => m.isUnread);
-        if (unread)
-          void dispatchAction(
-            { accountId: d.accountId, threadIds: [d.id], action: { kind: 'read', on: true } },
-            { silent: true },
-          );
-      } else if (markAsRead === 'after-2s') {
-        setTimeout(() => {
-          void dispatchAction(
-            { accountId: d.accountId, threadIds: [d.id], action: { kind: 'read', on: true } },
-            { silent: true },
-          );
-        }, 2000);
-      }
+      const firstUnread = d.messages.findIndex((m) => m.isUnread);
+      setFocusMsg(firstUnread < 0 ? 0 : firstUnread);
       const dt = performance.now() - t0;
       if (import.meta.env.DEV) console.debug(`[perf] thread-open ${dt.toFixed(1)}ms`);
+    })();
+    return () => {
+      cancelled = true;
     };
-    run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId]);
+  }, [openThread?.accountId, openThread?.threadId, clearReadTimer]);
+
+  // Mark read only after the *same visible message* has stayed active for the
+  // configured duration. Navigation, close, a covering modal and unmount all
+  // clear the pending timer, so an abandoned hover never marks mail read.
+  useEffect(() => {
+    clearReadTimer();
+    if (markAsRead === 'manual') return;
+    if (obscured || !detail || !openThread) return;
+    const threadKey = `${openThread.accountId}:${openThread.threadId}`;
+    if (!detail.messages.some((m) => m.isUnread)) return;
+    if (markAsRead === 'on-open') {
+      if (onOpenMarkedRef.current === threadKey) return;
+      onOpenMarkedRef.current = threadKey;
+      void dispatchAction(
+        { accountId: openThread.accountId, threadIds: [openThread.threadId], action: { kind: 'read', on: true } },
+        { silent: true },
+      );
+      return clearReadTimer;
+    }
+    const visible = detail.messages[focusMsg] ?? detail.messages[0];
+    if (!visible) return clearReadTimer;
+    readTimer.current = window.setTimeout(() => {
+      readTimer.current = null;
+      const cur = useView.getState().openThread;
+      const keyNow = cur ? `${cur.accountId}:${cur.threadId}` : null;
+      if (keyNow !== threadKey) return; // navigated away
+      void dispatchAction(
+        { accountId: openThread.accountId, threadIds: [openThread.threadId], action: { kind: 'read', on: true } },
+        { silent: true },
+      );
+    }, 2000);
+    return clearReadTimer;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail, focusMsg, markAsRead, obscured, openThread?.accountId, openThread?.threadId, clearReadTimer]);
 
   useEffect(() => {
     if (!detail) return;
@@ -159,94 +202,134 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
 
   // Re-fetch the open thread when its rows change (actions, undo, sync).
   useEffect(() => {
-    if (!threadId) return;
+    if (!openThread) return;
+    const { accountId, threadId } = openThread;
+    const generation = generationRef.current;
+    let cancelled = false;
     let unsub = () => {};
     on<{ account_id: string; thread_ids: string[] }>('store:threads', (p) => {
-      const ids = (p as unknown as { thread_ids: string[] }).thread_ids ?? [];
-      if (!ids.includes(threadId) && ids.length > 0) return;
-      const acc = (window as unknown as { __lastAccount?: string }).__lastAccount;
-      if (acc)
-        api
-          .thread_get(acc, threadId)
-          .then(setDetail)
-          .catch(() => {});
+      const payload = p as unknown as { account_id?: string; thread_ids?: string[] };
+      const ids = payload.thread_ids ?? [];
+      if (payload.account_id && payload.account_id !== accountId) return;
+      if (ids.length > 0 && !ids.includes(threadId)) return;
+      api
+        .thread_get(accountId, threadId)
+        .then((d) => {
+          if (cancelled || generationRef.current !== generation) return;
+          const cur = useView.getState().openThread;
+          if (!cur || cur.accountId !== accountId || cur.threadId !== threadId) return;
+          setLoaded(d);
+        })
+        .catch(() => {});
     })
       .then((u) => {
-        unsub = u;
+        if (cancelled) u();
+        else unsub = u;
       })
       .catch(() => {});
-    return () => unsub();
-  }, [threadId]);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openThread?.accountId, openThread?.threadId]);
 
-  // Thread-scope keyboard: triage the open conversation without touching the mouse.
-  useEffect(() => {
+  // Thread-scope keyboard: triage the open conversation without touching the
+  // mouse. Configurable commands go through the keymap engine so remapping and
+  // palette runs behave identically; Escape stays local because the engine
+  // deliberately leaves it to the overlay/back-out handlers.
+  const stale = detail == null;
+  const replyRef: ThreadRef | null = detail ? { accountId: detail.accountId, threadId: detail.id } : null;
+  const stepMessage = (d: number) => {
     if (!detail) return;
-    const ids = { accountId: detail.accountId, threadIds: [detail.id] };
+    setFocusMsg((v) => {
+      const n = Math.max(0, Math.min(detail.messages.length - 1, v + d));
+      const m = detail.messages[n];
+      if (m) setExpanded((ex) => ({ ...ex, [m.id]: true }));
+      return n;
+    });
+  };
+  const toggleMessage = () => {
+    if (!detail) return;
+    const m = detail.messages[focusMsg];
+    if (m) setExpanded((ex) => ({ ...ex, [m.id]: !ex[m.id] }));
+  };
+  const pick = (what: ListPickerKind) => {
+    // A selection belongs to the list; otherwise the picker targets the reader.
+    if (useSelection.getState().selectedIds.size > 0 && openListPicker(what)) return;
+    document.dispatchEvent(new CustomEvent('sift:thread-picker', { detail: { what } }));
+  };
+  const runThreadMail = (command: MailCommand, overrides?: { starOn?: boolean }) => {
+    if (stale && useSelection.getState().selectedIds.size === 0) return;
+    void runMailCommand(command, 'thread', overrides);
+  };
+  useKeymap(
+    'thread',
+    detail
+      ? {
+          back: () => {
+            const v = useView.getState();
+            if (v.paneLayout === 'off' && v.openThread != null) v.setOpenThread(null);
+            else useSelection.getState().clearKeepFocus();
+          },
+          archive: () => runThreadMail('archive'),
+          trash: () => runThreadMail('trash'),
+          spam: () => runThreadMail('spam'),
+          star: () => runThreadMail('star', { starOn: !detail.messages.some((m) => m.isStarred) }),
+          markUnread: () => runThreadMail('markUnread'),
+          markRead: () => runThreadMail('markRead'),
+          snooze: () => pick('snooze'),
+          label: () => pick('label'),
+          move: () => pick('move'),
+          reply: () => {
+            if (!replyRef) return;
+            onReply('reply', replyRef);
+          },
+          replyAll: () => {
+            if (!replyRef) return;
+            onReply('reply_all', replyRef);
+          },
+          forward: () => {
+            if (!replyRef) return;
+            onReply('forward', replyRef);
+          },
+          nextMsg: () => {
+            if (stale) return;
+            stepMessage(1);
+          },
+          prevMsg: () => {
+            if (stale) return;
+            stepMessage(-1);
+          },
+          toggleMsg: () => {
+            if (stale) return;
+            toggleMessage();
+          },
+          archiveNext: () => {
+            document.dispatchEvent(new CustomEvent('sift:archive-nav', { detail: { dir: 1 as const } }));
+            runThreadMail('archive');
+          },
+          archivePrev: () => {
+            document.dispatchEvent(new CustomEvent('sift:archive-nav', { detail: { dir: -1 as const } }));
+            runThreadMail('archive');
+          },
+        }
+      : {},
+  );
+
+  useEffect(() => {
     const h = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const k = e.key;
-      // Leave full-width reader back to the list (palette/compose own their Esc).
-      if (k === 'Escape' || k === 'u') {
-        const w = window as unknown as { __paletteOpen?: boolean; __composeOpen?: boolean };
-        if (
-          useView.getState().paneLayout === 'off' &&
-          !w.__paletteOpen &&
-          !w.__composeOpen &&
-          (k === 'u' || useView.getState().threadId != null)
-        ) {
-          e.preventDefault();
-          useView.getState().setThread(null);
-          return;
-        }
-        if (k === 'Escape') return;
-        useSelection.getState().clearKeepFocus();
-        return;
-      }
-      // Ignore action keys while the detail is stale (cursor moved on).
-      if (detail.id !== useView.getState().threadId) return;
-      const starred = detail.messages.some((m) => m.isStarred);
-      const focusStep = (d: number) => {
-        setFocusMsg((v) => {
-          const n = Math.max(0, Math.min(detail.messages.length - 1, v + d));
-          const m = detail.messages[n];
-          if (m) setExpanded((ex) => ({ ...ex, [m.id]: true }));
-          return n;
-        });
-      };
-      const pick = (what: 'snooze' | 'label' | 'move') =>
-        document.dispatchEvent(new CustomEvent('sift:thread-picker', { detail: { what } }));
-      if (k === 'e') void dispatchAction({ ...ids, action: { kind: 'archive' } });
-      else if (k === '#' || k === 'Backspace') {
-        e.preventDefault();
-        void dispatchAction({ ...ids, action: { kind: 'trash' } });
-      } else if (k === '!') void dispatchAction({ ...ids, action: { kind: 'spam' } });
-      else if (k === 's') void dispatchAction({ ...ids, action: { kind: 'star', on: !starred } });
-      else if (k === 'U') void dispatchAction({ ...ids, action: { kind: 'read', on: false } });
-      else if (k === 'I') void dispatchAction({ ...ids, action: { kind: 'read', on: true } });
-      else if (k === 'h') pick('snooze');
-      else if (k === 'l') pick('label');
-      else if (k === 'v') pick('move');
-      else if (k === 'r') onReply('reply', detail.id);
-      else if (k === 'a') onReply('reply_all', detail.id);
-      else if (k === 'f') onReply('forward', detail.id);
-      else if (k === 'n') focusStep(1);
-      else if (k === 'p') focusStep(-1);
-      else if (k === 'o') {
-        const m = detail.messages[focusMsg];
-        if (m) setExpanded((ex) => ({ ...ex, [m.id]: !ex[m.id] }));
-      } else if (k === ']') {
-        document.dispatchEvent(new CustomEvent('sift:archive-nav', { detail: { dir: 1 as const } }));
-        void dispatchAction({ ...ids, action: { kind: 'archive' } });
-      } else if (k === '[') {
-        document.dispatchEvent(new CustomEvent('sift:archive-nav', { detail: { dir: -1 as const } }));
-        void dispatchAction({ ...ids, action: { kind: 'archive' } });
-      }
+      const v = useView.getState();
+      // Full-width reader: App backs out to the list.
+      if (v.paneLayout === 'off' && v.openThread != null) return;
+      useSelection.getState().clearKeepFocus();
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [detail, focusMsg, onReply]);
+  }, []);
 
   const selected = useSelection((s) => s.selectedIds);
   if (selected.size > 1) {
@@ -267,7 +350,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
     );
   }
 
-  if (!threadId) {
+  if (!openThread) {
     return (
       <div style={{ flex: 1 }}>
         <EmptyState line="Select a conversation" sub="j/k to move · Enter to open" />
@@ -316,7 +399,10 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
             {decodeRfc2047(detail.subject) || '(No subject)'}
           </h1>
           <div style={{ flexShrink: 0 }}>
-            <HeaderActions detail={detail} onReply={(mode) => onReply(mode, detail.id)} />
+            <HeaderActions
+              detail={detail}
+              onReply={(mode) => onReply(mode, { accountId: detail.accountId, threadId: detail.id })}
+            />
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
@@ -440,7 +526,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
                   )}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     <button
-                      onClick={() => onReply('reply', detail.id)}
+                      onClick={() => onReply('reply', { accountId: detail.accountId, threadId: detail.id })}
                       style={{
                         background: 'none',
                         border: 'none',
@@ -482,7 +568,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
           }}
         >
           <button
-            onClick={() => onReply('reply', detail.id)}
+            onClick={() => onReply('reply', { accountId: detail.accountId, threadId: detail.id })}
             style={{
               fontSize: 13,
               background: 'var(--n2)',
@@ -495,7 +581,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
             Reply ▾
           </button>
           <button
-            onClick={() => onReply('forward', detail.id)}
+            onClick={() => onReply('forward', { accountId: detail.accountId, threadId: detail.id })}
             style={{
               fontSize: 13,
               background: 'none',

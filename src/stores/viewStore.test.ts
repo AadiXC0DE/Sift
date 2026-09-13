@@ -43,3 +43,31 @@ describe('P1-T11 + P4-T17 pane cycle and unified query', () => {
     expect(useAccounts.getState().includedIds()).toEqual(['a']);
   });
 });
+
+describe('P3.2 account-qualified open thread', () => {
+  beforeEach(() => {
+    useView.setState({ openThread: null, accountScope: 'all', view: { kind: 'inbox' } });
+  });
+
+  it('clears a reader owned by another account when the scope narrows', () => {
+    useView.setState({ openThread: { accountId: 'a', threadId: 't1' }, accountScope: 'all' });
+    useView.getState().setScope('b');
+    expect(useView.getState().openThread).toBeNull();
+    // Switching into the owning account keeps it.
+    useView.setState({ openThread: { accountId: 'b', threadId: 't2' }, accountScope: 'all' });
+    useView.getState().setScope('b');
+    expect(useView.getState().openThread).toEqual({ accountId: 'b', threadId: 't2' });
+  });
+
+  it('keeps the reader when returning to the unified scope', () => {
+    useView.setState({ openThread: { accountId: 'a', threadId: 't1' }, accountScope: 'a' });
+    useView.getState().setScope('all');
+    expect(useView.getState().openThread).toEqual({ accountId: 'a', threadId: 't1' });
+  });
+
+  it('clears the open thread on view navigation', () => {
+    useView.setState({ openThread: { accountId: 'a', threadId: 't1' } });
+    useView.getState().setView({ kind: 'archive' });
+    expect(useView.getState().openThread).toBeNull();
+  });
+});

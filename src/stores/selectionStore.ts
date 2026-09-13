@@ -1,46 +1,64 @@
 import { create } from 'zustand';
 
+/**
+ * Selection is stored by account/thread key (`accountId:threadId`) and never by
+ * index, so inserts/removals above the window cannot silently retarget an
+ * action. `focusedKey` is the active list row; the renderer derives its index.
+ */
 interface Sel {
-  focusedIndex: number;
+  focusedKey: string | null;
   selectedIds: Set<string>;
-  anchorIndex: number | null;
-  setFocus: (i: number) => void;
-  move: (d: number, count: number) => void;
-  toggle: (id: string) => void;
-  extendTo: (index: number, idAt: (i: number) => string | undefined) => void;
-  selectAll: (ids: string[]) => void;
+  anchorKey: string | null;
+  setFocus: (key: string | null) => void;
+  move: (delta: number, keys: string[]) => void;
+  toggle: (key: string) => void;
+  extendTo: (key: string, keys: string[]) => void;
+  selectAll: (keys: string[]) => void;
   clearSelection: () => void;
   clearKeepFocus: () => void;
 }
 
 export const useSelection = create<Sel>((set, get) => ({
-  focusedIndex: 0,
+  focusedKey: null,
   selectedIds: new Set(),
-  anchorIndex: null,
-  setFocus: (focusedIndex) => set({ focusedIndex }),
-  move: (d, count) => {
-    const { focusedIndex } = get();
-    const n = Math.max(0, Math.min(count - 1, focusedIndex + d));
-    set({ focusedIndex: n });
+  anchorKey: null,
+  setFocus: (focusedKey) => set({ focusedKey }),
+  move: (delta, keys) => {
+    if (!keys.length) return;
+    const { focusedKey } = get();
+    const at = focusedKey ? keys.indexOf(focusedKey) : -1;
+    const base = at < 0 ? (delta > 0 ? -1 : 0) : at;
+    const next = keys[Math.max(0, Math.min(keys.length - 1, base + delta))];
+    if (next !== undefined) set({ focusedKey: next });
   },
-  toggle: (id) => {
+  toggle: (key) => {
     const s = new Set(get().selectedIds);
-    if (s.has(id)) s.delete(id);
-    else s.add(id);
-    set({ selectedIds: s, anchorIndex: get().focusedIndex });
+    if (s.has(key)) s.delete(key);
+    else s.add(key);
+    set({ selectedIds: s, anchorKey: key });
   },
-  extendTo: (index, idAt) => {
-    const { anchorIndex, focusedIndex } = get();
-    const anchor = anchorIndex ?? focusedIndex;
+  extendTo: (key, keys) => {
+    const { anchorKey, focusedKey } = get();
+    const anchor = anchorKey ?? focusedKey;
     const s = new Set<string>();
-    const [a, b] = anchor < index ? [anchor, index] : [index, anchor];
-    for (let i = a; i <= b; i++) {
-      const id = idAt(i);
-      if (id) s.add(id);
+    if (!anchor) {
+      s.add(key);
+    } else {
+      const a = keys.indexOf(anchor);
+      const b = keys.indexOf(key);
+      if (a < 0 || b < 0) {
+        s.add(key);
+      } else {
+        const [from, to] = a < b ? [a, b] : [b, a];
+        for (let i = from; i <= to; i++) {
+          const k = keys[i];
+          if (k !== undefined) s.add(k);
+        }
+      }
     }
-    set({ selectedIds: s, focusedIndex: index });
+    set({ selectedIds: s, anchorKey: anchor ?? key, focusedKey: key });
   },
-  selectAll: (ids) => set({ selectedIds: new Set(ids) }),
-  clearSelection: () => set({ selectedIds: new Set(), anchorIndex: null }),
-  clearKeepFocus: () => set({ selectedIds: new Set(), anchorIndex: null }),
+  selectAll: (keys) => set({ selectedIds: new Set(keys), anchorKey: keys[0] ?? null }),
+  clearSelection: () => set({ selectedIds: new Set(), anchorKey: null }),
+  clearKeepFocus: () => set({ selectedIds: new Set(), anchorKey: null }),
 }));

@@ -10,11 +10,18 @@ export function Providers({ children }: { children: React.ReactNode }) {
   const load = useSettings((s) => s.load);
   const refresh = useAccounts((s) => s.refresh);
   useEffect(() => {
-    // The engine owns only multi-key sequences (g i …), go-tos and global
-    // undo. Single-key shortcuts live with their feature handlers so one
-    // keystroke never dispatches twice.
+    // The engine resolves bindings for the active scopes; feature components
+    // subscribe by action name (useKeymap), so list/thread bindings participate
+    // in remapping instead of being hardcoded in each feature's key handler.
     engine.register(
-      defaultBindings.filter((b) => b.key.includes(' ') || b.action === 'undo' || b.action.startsWith('go')),
+      defaultBindings.filter(
+        (b) =>
+          b.key.includes(' ') ||
+          b.action === 'undo' ||
+          b.action.startsWith('go') ||
+          b.scope === 'list' ||
+          b.scope === 'thread',
+      ),
     );
     load();
     refresh();

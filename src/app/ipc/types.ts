@@ -44,6 +44,11 @@ export type View =
   | { kind: 'trash' }
   | { kind: 'label'; labelId: string }
   | { kind: 'search'; q: string };
+/**
+ * Account-qualified thread identity (P3.2). Provider thread IDs are only
+ * unique within an account, so every navigation/action target carries the pair.
+ */
+export type ThreadRef = { accountId: string; threadId: string };
 export interface ThreadsQuery {
   accountIds: string[];
   view: View;
