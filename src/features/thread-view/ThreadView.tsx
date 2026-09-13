@@ -4,7 +4,6 @@ import type { MessageBody, ThreadDetail, Address } from '../../app/ipc/types';
 import { useView } from '../../stores/viewStore';
 import { useSelection } from '../../stores/selectionStore';
 import { useSettings } from '../../stores/settingsStore';
-import { useAccounts } from '../../stores/accountsStore';
 import { MailFrame } from './MailFrame';
 import { Avatar } from '../../ui/Avatar';
 import { Chip } from '../../ui/Chip';
@@ -392,7 +391,7 @@ export function ThreadView({ onReply }: { onReply: (mode: string, threadId: stri
               </button>
               {open && (
                 <div style={{ padding: '4px 16px 16px', borderTop: '1px solid var(--border)' }}>
-                  <MessageMetaBar m={m} accountId={detail.accountId} />
+                  <MessageMetaBar m={m} />
                   {m.hasAttachments && <AttachmentStrip messageId={m.id} attachments={m.attachments} />}
                   {!body || body.state === 'loading' ? (
                     body?.text ? (
@@ -688,11 +687,11 @@ function BulkBar() {
   );
 }
 
-function MessageMetaBar({ m, accountId }: { m: ThreadDetail['messages'][number]; accountId: string }) {
+function MessageMetaBar({ m }: { m: ThreadDetail['messages'][number] }) {
   const [open, setOpen] = useState(false);
-  const accounts = useAccounts((s) => s.accounts);
-  const myEmail = accounts.find((a) => a.id === accountId)?.email?.toLowerCase();
-  const short = (a: Address) => (a.e && a.e.toLowerCase() === myEmail ? 'me' : a.n?.trim() || a.e);
+  // Show the exact address in the summary (not "me"), so it is obvious which
+  // identity a message was sent to when several accounts are in play.
+  const short = (a: Address) => a.e;
   const full = (a: Address) => (a.n?.trim() ? `${a.n.trim()} <${a.e}>` : a.e);
   const summarize = (list: string[]) =>
     list.length <= 2 ? list.join(', ') : `${list.slice(0, 2).join(', ')} +${list.length - 2}`;

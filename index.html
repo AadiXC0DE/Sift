@@ -39,16 +39,10 @@
         pointer-events: none;
       }
       #sift-splash .mark {
-        width: 62px;
-        height: 62px;
-        border-radius: 15px;
-        background: #2456e0;
-        color: #fff;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font: 800 36px/1 -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+        width: 76px;
+        height: 76px;
+        display: block;
+        filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.24));
         animation: sift-pulse 1.7s ease-in-out infinite;
       }
       @keyframes sift-pulse {
@@ -70,7 +64,7 @@
     </style>
   </head>
   <body>
-    <div id="sift-splash" aria-hidden="true"><div class="mark">S</div></div>
+    <div id="sift-splash" aria-hidden="true"><img class="mark" src="/logo.png" alt="" width="76" height="76" /></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

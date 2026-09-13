@@ -36,7 +36,14 @@ select {
 :focus {
   outline: none;
 }
-:focus-visible {
+/* Scope the ring to interactive elements. Applied globally it drew a long
+   blue outline around focusable containers such as the thread list. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:not([tabindex='-1']):focus-visible {
   box-shadow: var(--focus-ring);
   border-radius: var(--r-sm);
 }

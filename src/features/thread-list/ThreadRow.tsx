@@ -154,11 +154,13 @@ export const ThreadRowView = memo(function ThreadRowView({
           <span
             style={{
               position: 'absolute',
-              left: focused ? 2 : 0,
-              top: 0,
-              bottom: 0,
-              width: 2,
+              left: 0,
+              top: '26%',
+              bottom: '26%',
+              width: 3,
+              borderRadius: '0 3px 3px 0',
               background: accentHex(accountColor ?? 'blue'),
+              opacity: 0.85,
             }}
           />
         )}

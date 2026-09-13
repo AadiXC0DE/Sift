@@ -65,54 +65,66 @@ export function AccountSwitcher() {
     );
   }
 
+  const selected = accounts.find((a) => a.id === scope);
+
   return (
-    <div
-      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px' }}
-      role="tablist"
-      aria-label="Accounts"
-    >
-      <button
-        onClick={() => setScope('all')}
-        style={{
-          border: scope === 'all' ? '2px solid var(--accent)' : '2px solid transparent',
-          borderRadius: 999,
-          height: 30,
-          padding: '0 12px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: 'var(--n3)',
-          color: 'var(--fg)',
-          cursor: 'pointer',
-          fontSize: 11,
-          fontWeight: 700,
-        }}
-        title="All accounts (⌘0)"
-      >
-        All
-      </button>
-      {accounts.map((a, i) => (
+    <div style={{ padding: '8px 12px' }}>
+      <div role="tablist" aria-label="Accounts" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <button
-          key={a.id}
-          onClick={() => setScope(a.id)}
-          title={`${a.email} (⌘${i + 1})`}
+          onClick={() => setScope('all')}
+          aria-selected={scope === 'all'}
           style={{
-            border: scope === a.id ? `2px solid ${accentHex(a.color)}` : '2px solid transparent',
-            borderRadius: '50%',
-            padding: 0,
-            background: 'none',
+            height: 28,
+            padding: '0 12px',
+            borderRadius: 999,
+            border: 'none',
             cursor: 'pointer',
+            background: scope === 'all' ? 'var(--accent)' : 'var(--n3)',
+            color: scope === 'all' ? 'var(--fg-on-accent)' : 'var(--fg-2)',
+            fontSize: 11.5,
+            fontWeight: 700,
           }}
-          role="tab"
-          aria-selected={scope === a.id}
+          title="All accounts (⌘0)"
         >
-          <span
-            style={{ boxShadow: `0 0 0 2px ${accentHex(a.color)}`, borderRadius: '50%', display: 'block' }}
-          >
-            <Avatar email={a.email} name={a.display_name} image={a.avatar_url} size={26} />
-          </span>
+          All
         </button>
-      ))}
+        {accounts.map((a, i) => {
+          const on = scope === a.id;
+          return (
+            <button
+              key={a.id}
+              onClick={() => setScope(a.id)}
+              title={`${a.email} (⌘${i + 1})`}
+              aria-selected={on}
+              style={{
+                position: 'relative',
+                padding: 0,
+                border: 'none',
+                background: 'none',
+                cursor: 'pointer',
+                borderRadius: '50%',
+                opacity: on ? 1 : 0.5,
+                boxShadow: on ? `0 0 0 2px var(--bg-sidebar), 0 0 0 4px ${accentHex(a.color)}` : 'none',
+                transition: 'opacity 120ms var(--ease-out), box-shadow 120ms var(--ease-out)',
+              }}
+            >
+              <Avatar email={a.email} name={a.display_name} image={a.avatar_url} size={26} />
+            </button>
+          );
+        })}
+      </div>
+      <div
+        style={{
+          marginTop: 6,
+          fontSize: 11.5,
+          color: 'var(--fg-3)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {scope === 'all' ? `All accounts · ${accounts.length}` : (selected?.email ?? '')}
+      </div>
     </div>
   );
 }

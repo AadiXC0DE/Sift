@@ -342,9 +342,30 @@ impl Provider for GmailImapProvider {
         attachment_id: &str,
     ) -> Result<Vec<u8>, SiftError> {
         // attachment_id is the IMAP section path (stored in part_id).
-        let (_role, folder, uid) = self.locate(message_id).await?;
-        let mut guard = self.pool.worker().await?;
-        let conn = guard.as_mut().expect("connected");
+        //
+        // Resolve the folder from the local mirror and use a dedicated
+        // connection. A user-initiated download must never wait behind a busy
+        // or stuck sync loop holding the shared worker connection.
+        let mut resolved: Option<(String, u32)> = None;
+        for (role, uid) in self
+            .db
+            .uids_for_message(&self.account_id, message_id)
+            .await
+            .unwrap_or_default()
+        {
+            if let Ok(Some(cur)) = self.db.imap_get_folder(&self.account_id, &role).await {
+                resolved = Some((cur.name, uid as u32));
+                break;
+            }
+        }
+        let (folder, uid) = match resolved {
+            Some(v) => v,
+            None => {
+                let (_role, folder, uid) = self.locate(message_id).await?;
+                (folder, uid)
+            }
+        };
+        let mut conn = self.pool.fresh_conn().await?;
         conn.select(&folder, true).await?;
         // Encoding comes from a fresh BODYSTRUCTURE (cheap, small).
         let rows = conn
