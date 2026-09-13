@@ -21,13 +21,9 @@ export default defineConfig({
     minify: !isTauri ? 'esbuild' : true,
     sourcemap: !!isTauri,
     chunkSizeWarningLimit: 300,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          'compose-editor': ['@tiptap/react', '@tiptap/starter-kit'],
-        },
-      },
-    },
+    // Emitted as dist/.vite/manifest.json; scripts/check-bundle.sh walks it to
+    // find every statically imported chunk instead of guessing at "main".
+    manifest: true,
   },
   test: undefined as unknown as Record<string, unknown>,
 });

@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "tauri dev",
     "dev:vite": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/eager-js.mjs --dist dist",
     "build:tauri": "tauri build",
+    "check:bundle": "bash scripts/check-bundle.sh",
     "preview": "vite preview",
     "lint": "eslint src e2e --max-warnings 0 && tsc --noEmit && prettier --check src e2e && tsx scripts/check-dto-sync.ts && tsx scripts/check-colors.ts",
     "lint:fix": "eslint src e2e --fix && prettier --write src e2e",

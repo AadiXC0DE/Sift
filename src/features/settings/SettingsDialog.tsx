@@ -8,6 +8,7 @@ import { api } from '../../app/ipc/commands';
 import { Button } from '../../ui/Button';
 import { Kbd } from '../../ui/Kbd';
 import { defaultBindings } from '../../keymap/defaults';
+import { StoragePanel } from './StoragePanel';
 import { toast } from 'sonner';
 import type { Account } from '../../app/ipc/types';
 
@@ -151,7 +152,16 @@ export function SettingsDialog({
   const accounts = useAccounts((s) => s.accounts);
   const refreshAccounts = useAccounts((s) => s.refresh);
   const [tab, setTab] = React.useState('General');
-  const tabs = ['General', 'Appearance', 'Accounts', 'Shortcuts', 'Notifications', 'Privacy', 'Advanced'];
+  const tabs = [
+    'General',
+    'Appearance',
+    'Accounts',
+    'Shortcuts',
+    'Notifications',
+    'Privacy',
+    'Storage',
+    'Advanced',
+  ];
 
   React.useEffect(() => {
     if (open) void refreshAccounts();
@@ -411,6 +421,7 @@ export function SettingsDialog({
               </Row>
             </>
           )}
+          {tab === 'Storage' && <StoragePanel />}
           {tab === 'Advanced' && (
             <>
               <Row label="Offline body cache">

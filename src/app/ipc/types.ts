@@ -239,5 +239,28 @@ export const defaultSettings: Settings = {
   pollBackground: 60,
 };
 
+/** One class of app-owned cache; `items` counts rows or files, whichever applies. */
+export interface StorageCategory {
+  bytes: number;
+  items: number;
+}
+
+/**
+ * Settings -> Storage payload (P10.4). Sizes are exact app-owned bytes, not
+ * filesystem allocation, so a clear action can be verified against them.
+ */
+export interface StorageUsage {
+  metadata: StorageCategory;
+  bodies: StorageCategory;
+  attachments: StorageCategory;
+  draftCache: StorageCategory;
+  /** Configured cap for `attachments`, in bytes (eviction target, not usage). */
+  attachmentCacheLimitBytes: number;
+  /** Backend-reported sum of the four categories. */
+  totalBytes: number;
+  /** Unix ms when the backend measured. */
+  computedAt: number;
+}
+
 export type SetupProgress =
   'connecting' | 'authenticating' | 'listing' | 'syncing' | 'done' | { error: string };

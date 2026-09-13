@@ -1,12 +1,9 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Sidebar } from '../features/sidebar/Sidebar';
 import { ThreadList } from '../features/thread-list/ThreadList';
 import { ThreadView } from '../features/thread-view/ThreadView';
-import { Palette } from '../features/palette/Palette';
-import { ComposerSheet } from '../features/compose/ComposerSheet';
-import { SettingsDialog } from '../features/settings/SettingsDialog';
 import { Onboarding } from '../features/onboarding/Onboarding';
-import { ShortcutHelp } from '../features/palette/ShortcutHelp';
+import { onIdle } from '../lib/idle';
 import { useView } from '../stores/viewStore';
 import { useAccounts } from '../stores/accountsStore';
 import { api } from './ipc/commands';
@@ -19,6 +16,21 @@ import { undoLast } from '../features/actions/dispatch';
 import { Kbd } from '../ui/Kbd';
 import { Button } from '../ui/Button';
 
+// Overlays and optional utilities stay out of the startup bundle: TipTap, the
+// command palette and the settings panes must not be parsed or downloaded
+// before the inbox and reader have painted. `manualChunks` plus a dynamic
+// import keeps each in its own lazily requested chunk.
+const Palette = React.lazy(() => import('../features/palette/Palette').then((m) => ({ default: m.Palette })));
+const ComposerSheet = React.lazy(() =>
+  import('../features/compose/ComposerSheet').then((m) => ({ default: m.ComposerSheet })),
+);
+const SettingsDialog = React.lazy(() =>
+  import('../features/settings/SettingsDialog').then((m) => ({ default: m.SettingsDialog })),
+);
+const ShortcutHelp = React.lazy(() =>
+  import('../features/palette/ShortcutHelp').then((m) => ({ default: m.ShortcutHelp })),
+);
+
 export function App() {
   const paneLayout = useView((s) => s.paneLayout);
   const cyclePane = useView((s) => s.cyclePane);
@@ -29,12 +41,37 @@ export function App() {
   const [addAccountOpen, setAddAccountOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState<null | { mode: string; thread?: ThreadRef }>(null);
   const [sidebarHidden, setSidebarHidden] = useState(false);
+  // Lazy overlays mount on first open and stay mounted so their close
+  // transitions still run; they are never parsed before the user asks.
+  const [settingsMounted, setSettingsMounted] = useState(false);
+  const [helpMounted, setHelpMounted] = useState(false);
+  const prefetchedComposer = useRef(false);
   const online = useSync((s) => s.online);
+  const accountsReady = useAccounts((s) => s.accounts.length > 0);
 
   const refreshAccounts = useAccounts((s) => s.refresh);
   const setOpenThread = useView((s) => s.setOpenThread);
   // Any overlay covers the reader: its mark-read timer must not fire behind it.
   const modalOpen = paletteOpen || composeOpen != null || settingsOpen || helpOpen || addAccountOpen;
+
+  useEffect(() => {
+    if (settingsOpen) setSettingsMounted(true);
+  }, [settingsOpen]);
+  useEffect(() => {
+    if (helpOpen) setHelpMounted(true);
+  }, [helpOpen]);
+
+  // Warm the composer once the inbox has something to show and the engine is
+  // idle, so `c` is instant without paying TipTap's parse cost at launch.
+  // First-run onboarding owns the screen instead; it prefetches when the
+  // account list arrives.
+  useEffect(() => {
+    if (!accountsReady || prefetchedComposer.current) return;
+    prefetchedComposer.current = true;
+    return onIdle(() => {
+      void import('../features/compose/ComposerSheet');
+    });
+  }, [accountsReady]);
 
   // Engine owns sequences (g i …), go-tos and global undo; single-key
   // shortcuts live with their feature handlers to avoid double dispatch.
@@ -337,28 +374,40 @@ export function App() {
       </div>
       <Onboarding force={addAccountOpen} onClose={() => setAddAccountOpen(false)} />
       {paletteOpen && (
-        <Palette
-          onClose={() => setPaletteOpen(false)}
-          onCompose={() => setComposeOpen({ mode: 'new' })}
-          onSettings={() => setSettingsOpen(true)}
-        />
+        <Suspense fallback={null}>
+          <Palette
+            onClose={() => setPaletteOpen(false)}
+            onCompose={() => setComposeOpen({ mode: 'new' })}
+            onSettings={() => setSettingsOpen(true)}
+          />
+        </Suspense>
       )}
       {composeOpen && (
-        <ComposerSheet
-          mode={composeOpen.mode}
-          thread={composeOpen.thread}
-          onClose={() => setComposeOpen(null)}
-        />
+        <Suspense fallback={null}>
+          <ComposerSheet
+            mode={composeOpen.mode}
+            thread={composeOpen.thread}
+            onClose={() => setComposeOpen(null)}
+          />
+        </Suspense>
       )}
-      <SettingsDialog
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        onAddAccount={() => {
-          setSettingsOpen(false);
-          setAddAccountOpen(true);
-        }}
-      />
-      <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      {settingsMounted && (
+        <Suspense fallback={null}>
+          <SettingsDialog
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            onAddAccount={() => {
+              setSettingsOpen(false);
+              setAddAccountOpen(true);
+            }}
+          />
+        </Suspense>
+      )}
+      {helpMounted && (
+        <Suspense fallback={null}>
+          <ShortcutHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+        </Suspense>
+      )}
       <SeqHint />
     </div>
   );

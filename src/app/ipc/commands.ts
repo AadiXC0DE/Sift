@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { Channel } from '@tauri-apps/api/core';
+import type { StorageUsage } from './types';
 
 export async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const t0 = performance.now();
@@ -89,6 +90,11 @@ export const api = {
   settings_get: () => call<import('./types').Settings>('settings_get'),
   settings_set: (p: Partial<import('./types').Settings>) =>
     call<import('./types').Settings>('settings_set', { patch: p }),
+  // P10.4 Storage. The Rust half (cache metering + LRU eviction) is not
+  // registered yet; these are the only names it may use. Callers must treat a
+  // rejection as "unavailable" rather than a hard failure.
+  storage_usage: () => call<StorageUsage>('storage_usage'),
+  storage_clear_attachment_cache: () => call<StorageUsage>('storage_clear_attachment_cache'),
   app_set_badge: (count: number) => call<void>('app_set_badge', { count }),
   app_open_url: (url: string) => call<void>('app_open_url', { url }),
   unsubscribe: (message_id: string) =>
