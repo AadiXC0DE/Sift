@@ -1,18 +1,32 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { api } from '../../app/ipc/commands';
+import React, { useEffect, useRef } from 'react';
+import {
+  cancelSearchTimer,
+  scheduleLocalSearch,
+  startServerSearch,
+  useSearch,
+  type SearchOrigin,
+} from '../../stores/searchStore';
 import { useView } from '../../stores/viewStore';
-import { useAccounts } from '../../stores/accountsStore';
-import { debounce } from '../../lib/debounce';
 
-export function SearchInput({ onSearching }: { onSearching: (v: boolean) => void }) {
-  const [q, setQ] = useState('');
-  const view = useView((s) => s.view);
-  const setView = useView((s) => s.setView);
+/**
+ * The search field edits the shared search state only (P7.2). It owns no query
+ * of its own, so a debounced request can never resurrect a cleared query, and
+ * Escape restores the mailbox it was entered from.
+ */
+export function SearchInput({
+  captureOrigin,
+  restoreOrigin,
+}: {
+  captureOrigin: () => SearchOrigin;
+  restoreOrigin: (origin: SearchOrigin) => void;
+}) {
+  const q = useSearch((s) => s.query);
   const scope = useView((s) => s.accountScope);
-  const includedIds = useAccounts((s) => s.includedIds);
   const inputRef = useRef<HTMLInputElement>(null);
-  const stash = useRef<{ view: typeof view; scroll: number } | null>(null);
+  const restoreRef = useRef(restoreOrigin);
+  restoreRef.current = restoreOrigin;
 
+  // `/` focuses the field from anywhere in the shell.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === '/' && !e.metaKey && !e.ctrlKey) {
@@ -26,26 +40,27 @@ export function SearchInput({ onSearching }: { onSearching: (v: boolean) => void
     return () => window.removeEventListener('keydown', h);
   }, []);
 
-  const doLocal = React.useMemo(
-    () =>
-      debounce(async (query: string) => {
-        if (!query) {
-          if (stash.current) {
-            // Esc path restores; empty query returns to inbox? keep search view cleared
-          }
-          onSearching(false);
-          return;
-        }
-        onSearching(true);
-        const ids = scope === 'all' ? includedIds() : [scope];
-        // local search replaces list via view state search
-        setView({ kind: 'search', q: query });
-        // warm local results (ThreadList uses view search -> threads_query search branch)
-        void api.search(ids, query, 'local').catch(() => {});
-      }, 40),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scope],
-  );
+  // A pending debounce must never outlive the field or follow the user into a
+  // different account scope.
+  useEffect(() => cancelSearchTimer, []);
+
+  const firstScope = useRef(scope);
+  useEffect(() => {
+    if (firstScope.current === scope) return;
+    firstScope.current = scope;
+    // The query has not changed, so re-run it against the new account scope
+    // instead of leaving a half-applied search behind.
+    const search = useSearch.getState();
+    if (!search.query.trim()) return;
+    if (search.scope === 'server') startServerSearch();
+    else scheduleLocalSearch(search.query);
+  }, [scope]);
+
+  const leaveSearch = () => {
+    cancelSearchTimer();
+    const origin = useSearch.getState().leave();
+    if (origin) restoreRef.current(origin);
+  };
 
   return (
     <input
@@ -54,35 +69,24 @@ export function SearchInput({ onSearching }: { onSearching: (v: boolean) => void
       placeholder="Search ( / )"
       onChange={(e) => {
         const v = e.target.value;
-        setQ(v);
-        if (!stash.current) stash.current = { view, scroll: window.scrollY };
-        if (!v) {
-          useView.getState().restore();
-          onSearching(false);
+        if (!v.trim()) {
+          // Cleared before the debounce settled: nothing may switch the view.
+          useSearch.getState().setQuery(v);
+          leaveSearch();
           return;
         }
-        doLocal(v);
+        useSearch.getState().begin(captureOrigin());
+        useSearch.getState().setQuery(v);
+        scheduleLocalSearch(v);
       }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
-          const ids = scope === 'all' ? includedIds() : [scope];
-          void api.search(ids, q, 'server').catch(() => {});
-          // save recent
-          try {
-            const raw = localStorage.getItem('sift-recent-search') ?? '[]';
-            const arr: string[] = JSON.parse(raw);
-            localStorage.setItem(
-              'sift-recent-search',
-              JSON.stringify([q, ...arr.filter((x) => x !== q)].slice(0, 10)),
-            );
-          } catch {
-            /* noop */
-          }
+          startServerSearch();
+          return;
         }
         if (e.key === 'Escape') {
-          setQ('');
-          useView.getState().restore();
-          onSearching(false);
+          e.preventDefault();
+          leaveSearch();
           (e.target as HTMLInputElement).blur();
         }
       }}

@@ -16,9 +16,15 @@ export async function sidebarView(page: Page, label: string): Promise<void> {
     .click();
 }
 
-/** Label entries are keyed by their display name in the sidebar tree. */
-export async function sidebarLabel(page: Page, name: string): Promise<void> {
-  await page.locator(`nav[aria-label="Mailbox"] button[title="${name}"]`).first().click();
+/**
+ * Label entries are keyed by display name *and* account: two accounts can each
+ * own a label with the same name, and they are different labels (P3.6).
+ */
+export async function sidebarLabel(page: Page, name: string, accountId: string): Promise<void> {
+  await page
+    .locator(`nav[aria-label="Mailbox"] button[data-label-name="${name}"][data-account-id="${accountId}"]`)
+    .first()
+    .click();
 }
 
 /** The 6px unread dot is the row's visible unread state. */

@@ -66,13 +66,34 @@ export function AccountSwitcher() {
   }
 
   const selected = accounts.find((a) => a.id === scope);
+  const scopeIds: string[] = ['all', ...accounts.map((a) => a.id)];
+  const onTabKey = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const i = scopeIds.indexOf(scope === 'all' ? 'all' : scope);
+    const at = i < 0 ? 0 : i;
+    const next = scopeIds[(at + (e.key === 'ArrowRight' ? 1 : scopeIds.length - 1)) % scopeIds.length];
+    e.preventDefault();
+    setScope(next === 'all' ? 'all' : next);
+    const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>(
+      `[data-account-tab="${next}"]`,
+    );
+    el?.focus();
+  };
 
   return (
     <div style={{ padding: '8px 12px' }}>
-      <div role="tablist" aria-label="Accounts" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div
+        role="tablist"
+        aria-label="Accounts"
+        onKeyDown={onTabKey}
+        style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+      >
         <button
-          onClick={() => setScope('all')}
+          role="tab"
           aria-selected={scope === 'all'}
+          tabIndex={scope === 'all' ? 0 : -1}
+          data-account-tab="all"
+          onClick={() => setScope('all')}
           style={{
             height: 28,
             padding: '0 12px',
@@ -93,9 +114,13 @@ export function AccountSwitcher() {
           return (
             <button
               key={a.id}
+              role="tab"
+              aria-selected={on}
+              tabIndex={on ? 0 : -1}
+              data-account-tab={a.id}
+              aria-label={`${a.display_name ?? a.email} — ${a.email}`}
               onClick={() => setScope(a.id)}
               title={`${a.email} (⌘${i + 1})`}
-              aria-selected={on}
               style={{
                 position: 'relative',
                 padding: 0,
@@ -103,9 +128,8 @@ export function AccountSwitcher() {
                 background: 'none',
                 cursor: 'pointer',
                 borderRadius: '50%',
-                opacity: on ? 1 : 0.5,
                 boxShadow: on ? `0 0 0 2px var(--bg-sidebar), 0 0 0 4px ${accentHex(a.color)}` : 'none',
-                transition: 'opacity 120ms var(--ease-out), box-shadow 120ms var(--ease-out)',
+                transition: 'box-shadow 120ms var(--ease-out)',
               }}
             >
               <Avatar email={a.email} name={a.display_name} image={a.avatar_url} size={26} />

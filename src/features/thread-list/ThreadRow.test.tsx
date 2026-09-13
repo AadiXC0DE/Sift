@@ -3,6 +3,7 @@ import { render } from '@testing-library/react';
 import { ThreadRowView } from './ThreadRow';
 import { ROW_HEIGHTS } from './rowHeight';
 import { useSettings } from '../../stores/settingsStore';
+import { resetLabelIndex, useLabels } from '../../stores/labelsStore';
 import { defaultSettings } from '../../app/ipc/types';
 import type { ThreadRow } from '../../app/ipc/types';
 
@@ -78,6 +79,65 @@ describe('P4-T04 memo', () => {
     rerender(<Probe row={base} />);
     // memo on ThreadRowView prevents inner re-render; Probe itself re-renders but inner memo holds
     expect(spy.mock.calls.length).toBeGreaterThanOrEqual(n);
+  });
+});
+
+describe('P3.6 row metadata', () => {
+  beforeEach(() => resetLabelIndex());
+
+  it("prints the label name for the row's own account, never the raw id", () => {
+    useLabels.getState().apply('a', [
+      {
+        account_id: 'a',
+        id: 'Label_A_Client',
+        name: 'Client Work',
+        kind: 'user',
+        color_bg: null,
+        color_fg: null,
+        visible: true,
+        unread_count: 0,
+        total_count: 0,
+        sort_order: 0,
+      },
+    ]);
+    const { container } = render(
+      <ThreadRowView
+        row={{ ...base, labelIds: ['INBOX', 'Label_A_Client'] }}
+        focused={false}
+        selected={false}
+        showStripe={false}
+        onFocus={() => {}}
+        onToggleSelect={() => {}}
+        onOpen={() => {}}
+      />,
+    );
+    expect(container.textContent).toContain('Client Work');
+    expect(container.textContent).not.toContain('Label_A_Client');
+  });
+
+  it('names the recipients on a conversation the reader sent', () => {
+    const { container } = render(
+      <ThreadRowView
+        row={{
+          ...base,
+          labelIds: ['SENT'],
+          participants: [
+            { n: 'Ada Lovelace', e: 'ada@x' },
+            { n: 'Client Team', e: 'client@x' },
+          ],
+        }}
+        accountColor="blue"
+        accountLabel="ada@x"
+        focused={false}
+        selected={false}
+        showStripe={false}
+        onFocus={() => {}}
+        onToggleSelect={() => {}}
+        onOpen={() => {}}
+      />,
+    );
+    expect(container.textContent).toContain('To Client');
+    expect(container.textContent).not.toContain('Ada Lovelace');
   });
 });
 

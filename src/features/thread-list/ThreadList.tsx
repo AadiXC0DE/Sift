@@ -1,20 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useThreadsWindow, type ThreadsWindowResult } from './useThreadsWindow';
-import { ThreadRowView } from './ThreadRow';
+import { ThreadRowView, rowDomId } from './ThreadRow';
 import { rowHeightForDensity, densityScrollTop } from './rowHeight';
-import { rowKey } from './threadWindow';
+import { MAX_WINDOW, rowKey } from './threadWindow';
 import { resolveCommandTargets, runMailCommand, setListContext, type ListPickerKind } from './listCommands';
 import { useView } from '../../stores/viewStore';
 import { useSelection } from '../../stores/selectionStore';
 import { useAccounts } from '../../stores/accountsStore';
+import { useLabels } from '../../stores/labelsStore';
 import { useSettings } from '../../stores/settingsStore';
 import { viewTitle } from '../../app/routes';
 import { Spinner } from '../../ui/Spinner';
 import { EmptyState } from '../../ui/EmptyState';
 import { Skeleton } from '../../ui/Skeleton';
 import { SyncPanel, SyncInlineBar, useSyncProgress } from '../sync/SyncPanel';
+import { useScopedConnectivity } from '../sync/ConnectivityStrip';
+import { relativeTime } from '../../lib/dates';
 import { SearchInput } from '../search/SearchInput';
+import { startServerSearch, useSearch, type SearchOrigin } from '../../stores/searchStore';
 import { dispatchAction, undoLast } from '../actions/dispatch';
 import { api } from '../../app/ipc/commands';
 import { Popover } from '../../ui/Popover';
@@ -41,16 +45,34 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
   const [labelName, setLabelName] = useState<string | null>(null);
   const [announce, setAnnounce] = useState<string | null>(null);
 
+  // One visible search state (P7.2): a completed Gmail search replaces the
+  // downloaded window instead of layering the two result sets. The window is
+  // paused while the Gmail response owns the list.
+  const search = useSearch();
+  const gmailSearchActive =
+    view.kind === 'search' && search.scope === 'server' && search.query.trim() === view.q;
+
   const {
-    rows,
-    nextCursor,
-    initialLoading,
+    rows: windowRows,
+    nextCursor: windowCursor,
+    initialLoading: windowLoading,
     loadingMore,
-    error,
+    error: windowError,
     refreshRevision,
+    queryGeneration,
     loadMore,
     reload,
-  }: ThreadsWindowResult = useThreadsWindow(view, { unreadOnly, hasAttachment: hasAtt });
+  }: ThreadsWindowResult = useThreadsWindow(view, {
+    unreadOnly,
+    hasAttachment: hasAtt,
+    paused: gmailSearchActive,
+  });
+
+  const rows = gmailSearchActive ? search.results : windowRows;
+  const nextCursor = gmailSearchActive ? undefined : windowCursor;
+  const initialLoading = gmailSearchActive ? search.loading : windowLoading;
+  const error = gmailSearchActive ? search.error : windowError;
+  const retry = gmailSearchActive ? startServerSearch : reload;
 
   const focusedKey = useSelection((s) => s.focusedKey);
   const setFocus = useSelection((s) => s.setFocus);
@@ -60,8 +82,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
   const density = useSettings((s) => s.settings.density);
   const rowH = rowHeightForDensity(density);
   const parentRef = useRef<HTMLDivElement>(null);
-  const [searching, setSearching] = useState(false);
-  const searchPending = view.kind === 'search' && searching;
+  const searchPending = view.kind === 'search' && search.loading;
 
   const keys = useMemo(() => rows.map(rowKey), [rows]);
   const focusedIndex = useMemo(() => {
@@ -81,7 +102,22 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
   // One account in view → the marker carries no information.
   const showStripe = scope === 'all' && includedAccounts.length > 1;
   const scopedIds = scope === 'all' ? accounts.map((a) => a.id) : [scope];
+  // Row chips and the reader show label names, indexed per account (P3.6).
+  // The index is fetched once per account and refreshed when labels change.
+  const scopedKey = scopedIds.join(',');
+  useEffect(() => {
+    useLabels.getState().ensure(scopedIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopedKey]);
   const progress = useSyncProgress(scopedIds);
+  // The empty list reports the real last successful sync (or the cached/offline
+  // state) instead of always claiming "just now" (P3.6/P4.6).
+  const scoped = useScopedConnectivity(scopedIds);
+  const emptySub = scoped.rows.length
+    ? 'Offline — showing cached mail'
+    : scoped.lastOkAt
+      ? `Last synced ${relativeTime(scoped.lastOkAt)}`
+      : 'Not synced yet';
   const retrySync = useCallback(() => {
     const ids = scope === 'all' ? accounts.filter((a) => a.sync_state === 'error').map((a) => a.id) : [scope];
     for (const id of ids) void api.sync_now(id).catch(() => {});
@@ -106,17 +142,35 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     [rows, setFocus, setOpenThread],
   );
 
+  /**
+   * Keyboard navigation owns its own scrolling: the focused row is brought
+   * into view only when the user actually moved the focus. A refresh that
+   * shifts the focused row's index or removes it must not touch the scroll
+   * offset — restoring the visible anchor is the refresh path's job
+   * (P3.4/P3.5), and this effect previously overrode it with a jump to the top.
+   */
+  const scrollFocusedIntoView = useCallback(
+    (key: string | null | undefined) => {
+      if (!key) return;
+      const i = keys.indexOf(key);
+      if (i < 0) return;
+      virtual.scrollToIndex(i, { align: 'auto' });
+    },
+    [keys, virtual],
+  );
+
   const moveCursor = useCallback(
     (d: number) => {
       useSelection.getState().move(d, keys);
       const nextKey = useSelection.getState().focusedKey;
+      scrollFocusedIntoView(nextKey);
       // The reading pane follows the keyboard cursor (spec 12.2).
       if (nextKey && useView.getState().paneLayout !== 'off') {
         const r = rows.find((x) => rowKey(x) === nextKey);
         if (r) setOpenThread({ accountId: r.accountId, threadId: r.id });
       }
     },
-    [keys, rows, setOpenThread],
+    [keys, rows, setOpenThread, scrollFocusedIntoView],
   );
 
   const extendSelection = useCallback(
@@ -125,9 +179,12 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
       const i = current ? keys.indexOf(current) : -1;
       const at = i < 0 ? (d > 0 ? -1 : 0) : i;
       const target = keys[Math.max(0, Math.min(keys.length - 1, at + d))];
-      if (target) useSelection.getState().extendTo(target, keys);
+      if (target) {
+        useSelection.getState().extendTo(target, keys);
+        scrollFocusedIntoView(target);
+      }
     },
-    [keys],
+    [keys, scrollFocusedIntoView],
   );
 
   const snoozeTomorrow = useCallback((accountId: string, threadIds: string[]) => {
@@ -204,9 +261,49 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     return () => window.removeEventListener('keydown', h);
   }, []);
 
+  // A new query identity (view, account scope or filter) starts at the top:
+  // the previous window's anchor describes rows that are no longer loaded.
+  // Only a refresh of the *same* query keeps the anchor (P3.4/P3.5).
+  const anchorRef = useRef<{ key: string; offset: number } | null>(null);
+  const pendingRestore = useRef<SearchOrigin | null>(null);
+  useEffect(() => {
+    anchorRef.current = null;
+    const el = parentRef.current;
+    if (el) el.scrollTop = 0;
+    // A pending search restore only survives the view it belongs to.
+    const target = pendingRestore.current;
+    if (target && JSON.stringify(target.view) !== JSON.stringify(view)) pendingRestore.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryGeneration]);
+
+  const captureSearchOrigin = useCallback(
+    (): SearchOrigin => ({
+      view: useView.getState().view,
+      accountScope: useView.getState().accountScope,
+      anchorKey: anchorRef.current?.key ?? null,
+      anchorOffset: anchorRef.current?.offset ?? 0,
+      focusedKey: useSelection.getState().focusedKey,
+    }),
+    [],
+  );
+
+  /**
+   * Leaving search puts the user back in the mailbox they searched from: the
+   * view and account scope are restored immediately, and the anchor row, its
+   * offset and the focused row are applied once that window is loaded again
+   * (P7.2).
+   */
+  const restoreSearchOrigin = useCallback((origin: SearchOrigin) => {
+    pendingRestore.current = origin;
+    if (useView.getState().accountScope !== origin.accountScope) {
+      useView.getState().setScope(origin.accountScope);
+    }
+    useView.getState().setView(origin.view);
+    if (origin.focusedKey) useSelection.getState().setFocus(origin.focusedKey);
+  }, []);
+
   // A window refresh replaces rows in place; keep the row that was at the top
   // of the viewport (and its offset) there instead of letting the list jump.
-  const anchorRef = useRef<{ key: string; offset: number } | null>(null);
   useEffect(() => {
     const el = parentRef.current;
     const anchor = anchorRef.current;
@@ -217,7 +314,9 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshRevision]);
 
-  // Record the top visible row after the restore above has run.
+  // Record the top visible row after the restore above has run. Both the key
+  // and the offset are stored, so the anchor survives a refresh that inserts or
+  // removes rows above the viewport (P3.4/P3.5).
   useEffect(() => {
     const el = parentRef.current;
     const first = virtual.getVirtualItems()[0];
@@ -225,6 +324,30 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     const row = rows[first.index];
     if (row) anchorRef.current = { key: rowKey(row), offset: el.scrollTop - first.start };
   });
+
+  // Apply a pending search restore as soon as its window is loaded. The anchor
+  // row can sit further down the window than the first page — paging back to it
+  // (bounded by the window cap) is what makes Escape return to the same
+  // reading position instead of to the top.
+  useEffect(() => {
+    const el = parentRef.current;
+    const target = pendingRestore.current;
+    if (!el || !target) return;
+    if (initialLoading) return;
+    if (!target.anchorKey) {
+      pendingRestore.current = null;
+      return;
+    }
+    const index = rows.findIndex((r) => rowKey(r) === target.anchorKey);
+    if (index < 0) {
+      if (nextCursor && !loadingMore && rows.length < MAX_WINDOW) loadMore();
+      else pendingRestore.current = null;
+      return;
+    }
+    el.scrollTop = index * rowH + target.anchorOffset;
+    anchorRef.current = { key: target.anchorKey, offset: target.anchorOffset };
+    pendingRestore.current = null;
+  }, [rows, initialLoading, nextCursor, loadingMore, loadMore, rowH]);
 
   // Density changes invalidate every measured row. Reset measurement, then put
   // the previously top visible row and its offset back where they were.
@@ -257,11 +380,12 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
       const r = rows[next];
       if (!r) return;
       setFocus(rowKey(r));
+      scrollFocusedIntoView(rowKey(r));
       if (useView.getState().paneLayout !== 'off') openRow(next);
     };
     document.addEventListener('sift:archive-nav', h as EventListener);
     return () => document.removeEventListener('sift:archive-nav', h as EventListener);
-  }, [rows, keys, setFocus, openRow]);
+  }, [rows, keys, setFocus, openRow, scrollFocusedIntoView]);
 
   useEffect(() => {
     if (pickerHost) {
@@ -277,19 +401,13 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
       setLabelName(null);
       return;
     }
-    const id = (view as { labelId: string }).labelId;
+    const id = view.labelId;
     const aids = scope === 'all' ? accounts.map((a) => a.id) : [scope];
     Promise.all(aids.map((a) => api.labels_list(a).catch(() => [] as Label[]))).then((all) => {
       const found = all.flat().find((l) => l.id === id);
       setLabelName(found ? (found.name.split('/').pop() ?? found.name) : id);
     });
   }, [view, scope, accounts]);
-
-  // keep focused visible
-  useEffect(() => {
-    virtual.scrollToIndex(focusedIndex, { align: 'auto' });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedIndex]);
 
   // Auto-open the focused conversation when the pane is visible but nothing is
   // open yet (first load, view or account switch), like Apple Mail. Once a
@@ -327,10 +445,29 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
   }, [rows, initialLoading, focusedIndex, setFocus, setOpenThread]);
 
   const title = useMemo(() => {
-    if (view.kind === 'label') return labelName ?? (view as { labelId: string }).labelId;
-    if (view.kind === 'search') return `Results for “${(view as { q: string }).q}”`;
+    if (view.kind === 'label') return labelName ?? view.labelId;
+    if (view.kind === 'search') return `Results for “${view.q}”`;
     return viewTitle[view.kind] ?? 'Inbox';
   }, [view, labelName]);
+
+  // `aria-activedescendant` may only point at a row that is actually rendered:
+  // the list is virtualized, so the active row can be outside the window.
+  //
+  // The rendered window keeps its generous tail margin (paging walks and fast
+  // scrolling need the rows below) but drops the rows parked far *above* the
+  // viewport. Those rows are what the browser's own `scrollIntoViewIfNeeded`
+  // targets when a pointer click (or assistive focus) lands on them, and that
+  // scroll silently redefines the reading anchor the refresh restore depends on
+  // — no anchor policy can undo a scroll the app never initiated (P3.4/P3.5).
+  const virtualItems = virtual.getVirtualItems();
+  const scrollOffset = virtual.scrollOffset ?? 0;
+  const firstRenderedIndex = Math.max(0, Math.floor(scrollOffset / rowH) - 1);
+  const renderedItems = virtualItems.filter((vi) => vi.index >= firstRenderedIndex);
+  const focusedRowIndex = focusedKey ? keys.indexOf(focusedKey) : -1;
+  const activeDescendant =
+    focusedRowIndex >= 0 && renderedItems.some((vi) => vi.index === focusedRowIndex)
+      ? rowDomId(rows[focusedRowIndex])
+      : undefined;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
@@ -371,7 +508,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
         <span aria-live="polite" style={SR_ONLY_LIVE}>
           {announce ?? ''}
         </span>
-        <SearchInput onSearching={setSearching} />
+        <SearchInput captureOrigin={captureSearchOrigin} restoreOrigin={restoreSearchOrigin} />
         <button
           onClick={() => setUnreadOnly((v) => !v)}
           title="Unread only"
@@ -405,7 +542,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
           }}
         >
           <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{error}</span>
-          <button className="sift-chip-btn" onClick={reload}>
+          <button className="sift-chip-btn" onClick={retry}>
             Retry
           </button>
         </div>
@@ -414,12 +551,17 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
         ref={parentRef}
         style={{ flex: 1, overflowY: 'auto', position: 'relative' }}
         role="listbox"
+        // One tab stop for the whole list (P9.5): the scrollable region is
+        // reachable from the keyboard and reports the active row through
+        // aria-activedescendant instead of holding focus on each row.
+        tabIndex={0}
         aria-label={title}
-        aria-multiselectable={selectedIds.size > 0}
+        aria-multiselectable
+        aria-activedescendant={activeDescendant}
       >
         {rows.length === 0 ? (
           error ? (
-            <QueryErrorState message={error} onRetry={reload} />
+            <QueryErrorState message={error} onRetry={retry} />
           ) : progress.active || progress.failed ? (
             <SyncPanel progress={progress} onRetry={retrySync} />
           ) : initialLoading ? (
@@ -427,7 +569,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
           ) : view.kind === 'inbox' ? (
             <div style={{ animation: 'sift-fade 400ms var(--ease-out)' }}>
               <style>{'@keyframes sift-fade { from { opacity: 0; } }'}</style>
-              <EmptyState icon={<Sun size={24} />} line="You're all caught up." sub="Last synced just now" />
+              <EmptyState icon={<Sun size={24} />} line="You're all caught up." sub={emptySub} />
             </div>
           ) : (
             <EmptyState
@@ -437,7 +579,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
           )
         ) : (
           <div style={{ height: virtual.getTotalSize(), position: 'relative' }}>
-            {virtual.getVirtualItems().map((vi) => {
+            {renderedItems.map((vi) => {
               const r = rows[vi.index];
               if (!r) return null;
               const key = rowKey(r);

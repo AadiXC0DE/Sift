@@ -412,7 +412,9 @@ export function ComposerSheet({
             );
           });
         }
-        void api.drafts_delete(lid).catch(() => {});
+        // The draft row survives the enqueue: "Undo" cancels the send and puts
+        // the draft back to editing, which is impossible once the row is gone
+        // (P5.1). Cleanup for an accepted send belongs to the outbox, not here.
       }, 200);
     } catch {
       toast.error('Send failed. Draft kept');

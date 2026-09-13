@@ -12,14 +12,11 @@ interface ViewState {
    */
   openThread: ThreadRef | null;
   paneLayout: PaneLayout;
-  prevView?: { view: View; scroll: number; cursor: number };
   setView: (v: View) => void;
   setScope: (s: string | 'all') => void;
   setOpenThread: (ref: ThreadRef | null) => void;
   cyclePane: () => void;
   setPane: (p: PaneLayout) => void;
-  stashForSearch: (scroll: number, cursor: number) => void;
-  restore: () => void;
 }
 
 const order: PaneLayout[] = ['right', 'bottom', 'off'];
@@ -46,11 +43,6 @@ export const useView = create<ViewState>((set, get) => ({
     set({ paneLayout: order[(order.indexOf(cur) + 1) % order.length] });
   },
   setPane: (paneLayout) => set({ paneLayout }),
-  stashForSearch: (scroll, cursor) => set((s) => ({ prevView: { view: s.view, scroll, cursor } })),
-  restore: () => {
-    const p = get().prevView;
-    if (p) set({ view: p.view, prevView: undefined });
-  },
 }));
 
 export function viewKey(view: View, scope: string | 'all'): string {

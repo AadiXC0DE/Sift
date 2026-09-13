@@ -17,6 +17,20 @@ import { E2E_ENTRY } from './entry';
 /** Dev-mode noise that is not an application defect. */
 const ALLOWED_CONSOLE: RegExp[] = [/Download the React DevTools/, /\[vite\] connect/];
 
+/**
+ * Errors raised with a `null` (opaque) origin that the app cannot fix.
+ *
+ * axe-core analyses same-origin frames by posting into them. The rendered
+ * message frame is `sandbox="allow-scripts"` without `allow-same-origin`
+ * (spec-mandated, so mail HTML cannot reach the app), which makes its origin
+ * opaque and the post impossible. Chromium drops it silently; WebKit logs this
+ * `console.error`. The frame is deliberately unanalysable cross-origin, so
+ * this is an environment limitation of the a11y scan, not an app defect.
+ */
+const ALLOWED_OPAQUE_ORIGIN_CONSOLE: RegExp[] = [
+  /^Unable to post message to .+ Recipient has origin null\.?\s*$/,
+];
+
 export interface AppFixture {
   gotoApp: (opts?: { scenario?: 'default' | 'empty' }) => Promise<void>;
   rows: () => Locator;
@@ -50,6 +64,7 @@ export const test = base.extend<{ guards: void; app: AppFixture }>({
         // "unsupported URL"); it is an environment limitation, not an app error.
         if (url.startsWith('sift-att://')) return;
         if (ALLOWED_CONSOLE.some((re) => re.test(text))) return;
+        if (ALLOWED_OPAQUE_ORIGIN_CONSOLE.some((re) => re.test(text))) return;
         errors.push(`console.error: ${text}`);
       });
       page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`));

@@ -3,7 +3,8 @@ import type { ThreadRow as Row } from '../../app/ipc/types';
 import { Avatar } from '../../ui/Avatar';
 import { Chip } from '../../ui/Chip';
 import { formatRowDate } from '../../lib/dates';
-import { participantsLabel } from '../../lib/names';
+import { participantsLabel, recipientsLabel } from '../../lib/names';
+import { labelKey, useLabels } from '../../stores/labelsStore';
 import { accentHex } from '../../lib/colors';
 import { useSettings } from '../../stores/settingsStore';
 import { decodeRfc2047 } from '../../lib/rfc2047';
@@ -11,6 +12,14 @@ import { rowHeightForDensity } from './rowHeight';
 import { Archive, Clock, Mail, MailOpen, Star, Paperclip, Trash2 } from 'lucide-react';
 
 export type RowAction = 'archive' | 'trash' | 'read' | 'star' | 'snooze';
+
+/**
+ * DOM id for a row (P9.5). Provider thread ids are only unique per account, so
+ * the id the listbox points at with `aria-activedescendant` has to carry both.
+ */
+export function rowDomId(row: Pick<Row, 'accountId' | 'id'>): string {
+  return `listrow-${row.accountId}-${row.id}`;
+}
 
 interface Props {
   row: Row;
@@ -137,13 +146,24 @@ export const ThreadRowView = memo(function ThreadRowView({
   const density = useSettings((s) => s.settings.density);
   const h = rowHeightForDensity(density);
   const unread = row.unreadCount > 0;
-  const chips = row.labelIds
+  // Chips carry real label names, resolved per account (P3.6): a raw
+  // `Label_...`/`imap:...` id is not something a reader can act on, and the
+  // same name in another account is a different label.
+  const names = useLabels((s) => s.names);
+  const chipIds = row.labelIds
     .filter((l) => !['INBOX', 'UNREAD', 'STARRED', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'IMPORTANT'].includes(l))
     .slice(0, 2);
   const overflow =
     row.labelIds.filter(
       (l) => !['INBOX', 'UNREAD', 'STARRED', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'IMPORTANT'].includes(l),
-    ).length - chips.length;
+    ).length - chipIds.length;
+  // A conversation the reader sent is headed by its recipients, not by the
+  // account that sent it (P3.6). Falls back to the participant label when the
+  // conversation holds nobody else.
+  const headline =
+    (row.labelIds.includes('SENT') && !row.labelIds.includes('INBOX') && accountLabel
+      ? recipientsLabel(row.participants, [accountLabel])
+      : null) ?? participantsLabel(row.participants, row.messageCount);
   const surface = rowSurface(focused, selected, hover);
   const shell: React.CSSProperties = {
     height: h,
@@ -177,6 +197,7 @@ export const ThreadRowView = memo(function ThreadRowView({
     return (
       <div
         role="option"
+        id={rowDomId(row)}
         aria-selected={selected}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
@@ -214,7 +235,7 @@ export const ThreadRowView = memo(function ThreadRowView({
             fontSize: 12.5,
           }}
         >
-          {participantsLabel(row.participants, row.messageCount)}
+          {headline}
         </span>
         <span
           style={{
@@ -227,9 +248,26 @@ export const ThreadRowView = memo(function ThreadRowView({
           }}
         >
           {decodeRfc2047(row.subject)}{' '}
-          <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>· {decodeRfc2047(row.snippet)}</span>
+          <span style={{ color: 'var(--fg-row-meta)', fontWeight: 400 }}>· {decodeRfc2047(row.snippet)}</span>
         </span>
-        <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)', flexShrink: 0 }}>
+        {row.isStarred && (
+          <Star
+            data-testid="star-affordance"
+            size={13}
+            fill="var(--star)"
+            color="var(--star)"
+            style={{ flexShrink: 0, width: 13, height: 13 }}
+          />
+        )}
+        {row.hasAttachments && (
+          <Paperclip
+            data-testid="attachment-affordance"
+            size={13}
+            color="var(--fg-row-meta)"
+            style={{ flexShrink: 0, width: 13, height: 13 }}
+          />
+        )}
+        <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-row-meta)', flexShrink: 0 }}>
           {formatRowDate(row.lastMessageAt)}
         </span>
         {hover && onAction ? <HoverActions row={row} onAction={onAction} surface={surface} /> : null}
@@ -240,6 +278,7 @@ export const ThreadRowView = memo(function ThreadRowView({
   return (
     <div
       role="option"
+      id={rowDomId(row)}
       aria-selected={selected}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
@@ -275,9 +314,9 @@ export const ThreadRowView = memo(function ThreadRowView({
               flex: 1,
             }}
           >
-            {participantsLabel(row.participants, row.messageCount)}
+            {headline}
           </span>
-          <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)', flexShrink: 0 }}>
+          <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-row-meta)', flexShrink: 0 }}>
             {formatRowDate(row.lastMessageAt)}
           </span>
         </div>
@@ -295,7 +334,7 @@ export const ThreadRowView = memo(function ThreadRowView({
           </span>
           <span
             style={{
-              color: 'var(--fg-3)',
+              color: 'var(--fg-row-meta)',
               fontSize: 13,
               whiteSpace: 'nowrap',
               overflow: 'hidden',
@@ -307,6 +346,7 @@ export const ThreadRowView = memo(function ThreadRowView({
           </span>
           {row.isStarred && (
             <Star
+              data-testid="star-affordance"
               size={14}
               fill="var(--star)"
               color="var(--star)"
@@ -314,12 +354,17 @@ export const ThreadRowView = memo(function ThreadRowView({
             />
           )}
           {row.hasAttachments && (
-            <Paperclip size={14} color="var(--fg-2)" style={{ flexShrink: 0, width: 14, height: 14 }} />
+            <Paperclip
+              data-testid="attachment-affordance"
+              size={14}
+              color="var(--fg-2)"
+              style={{ flexShrink: 0, width: 14, height: 14 }}
+            />
           )}
-          {chips.map((c) => (
-            <Chip key={c} label={c} />
+          {chipIds.map((c) => (
+            <Chip key={c} label={names[labelKey(row.accountId, c)] ?? c} />
           ))}
-          {overflow > 0 && <span style={{ fontSize: 11, color: 'var(--fg-3)' }}>+{overflow}</span>}
+          {overflow > 0 && <span style={{ fontSize: 11, color: 'var(--fg-row-meta)' }}>+{overflow}</span>}
         </div>
       </div>
       {hover && onAction ? <HoverActions row={row} onAction={onAction} surface={surface} /> : null}

@@ -28,7 +28,10 @@ export function Avatar({
         width: size,
         height: size,
         borderRadius: '50%',
-        background: `oklch(0.72 0.12 ${hue})`,
+        // L 0.52 at chroma 0.12 keeps white initials above 4.5:1 for every hue
+        // axe checks (wcag2aa normal text), at the cost of a slightly deeper
+        // swatch (P9.5).
+        background: `oklch(0.52 0.12 ${hue})`,
         color: '#fff',
         fontSize: size <= 24 ? 10 : 11,
         fontWeight: 600,

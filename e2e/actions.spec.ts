@@ -135,7 +135,7 @@ test('label: adding Client Work exposes the thread in that label view', async ({
     .poll(async () => (await persistedThread(page, 'blue-01')).labelIds.includes('Label_A_Client'))
     .toBe(true);
 
-  await sidebarLabel(page, 'Client Work');
+  await sidebarLabel(page, 'Client Work', 'acc-a');
   await expect(app.row('blue-01')).toHaveCount(1);
   await expect(app.row('blue-00')).toHaveCount(0); // not labelled
   // Every thread carrying that label id is listed.
@@ -148,7 +148,7 @@ test('label: the account-qualified label id is what the query uses, not the disp
 }) => {
   await app.gotoApp();
   await app.ready();
-  await sidebarLabel(page, 'Client Work');
+  await sidebarLabel(page, 'Client Work', 'acc-a');
   await expect.poll(async () => (await fixtureCalls(page, 'threads_query')).length).toBeGreaterThan(1);
   const queries = await fixtureCalls(page, 'threads_query');
   const view = (queries[queries.length - 1].query as { view: { kind: string; labelId?: string } }).view;

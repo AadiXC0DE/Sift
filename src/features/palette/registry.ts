@@ -95,6 +95,14 @@ registerCommand({
   run: () => useView.getState().setView({ kind: 'archive' }),
 });
 registerCommand({
+  id: 'go-all-mail',
+  title: 'Go to All Mail',
+  section: 'Go to',
+  shortcut: 'g m',
+  when: () => true,
+  run: () => useView.getState().setView({ kind: 'all_mail' }),
+});
+registerCommand({
   id: 'compose',
   title: 'Compose',
   section: 'Compose',

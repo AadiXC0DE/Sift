@@ -5,7 +5,8 @@ import { useSync } from '../../stores/syncStore';
 import { api } from '../../app/ipc/commands';
 import type { Label } from '../../app/ipc/types';
 import { AccountSwitcher } from '../accounts/AccountSwitcher';
-import { Inbox, Star, Clock, Send, FileText, Archive, AlertOctagon, Trash2, Settings } from 'lucide-react';
+import { Inbox, Star, Clock, Send, FileText, Archive, Layers, AlertOctagon, Trash2, Settings } from 'lucide-react';
+import { useLabels } from '../../stores/labelsStore';
 
 const views = [
   { kind: 'inbox', label: 'Inbox', icon: Inbox },
@@ -14,6 +15,9 @@ const views = [
   { kind: 'sent', label: 'Sent', icon: Send },
   { kind: 'drafts', label: 'Drafts', icon: FileText },
   { kind: 'archive', label: 'Archive', icon: Archive },
+  // All Mail is a mailbox, not the account scope: it lists every conversation
+  // with a message outside Trash/Junk, and the account scope still filters it.
+  { kind: 'all_mail', label: 'All Mail', icon: Layers },
   { kind: 'spam', label: 'Spam', icon: AlertOctagon },
   { kind: 'trash', label: 'Trash', icon: Trash2 },
 ] as const;
@@ -43,6 +47,10 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
     Promise.all(ids.map((id) => api.labels_list(id).catch(() => [] as Label[]))).then((all) => {
       const merged = all.flat();
       setLabels(merged);
+      for (const labels of all) {
+        const accountId = labels[0]?.account_id;
+        if (accountId) useLabels.getState().apply(accountId, labels);
+      }
       const c: Record<string, { unread: number; total: number }> = {};
       for (const l of merged) {
         const e = (c[l.id] ??= { unread: 0, total: 0 });
@@ -61,15 +69,20 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
     });
   };
 
-  // One entry per user label name; unified mode merges accounts.
-  const userLabels = Object.values(
-    labels
-      .filter((l) => l.kind === 'user' && l.visible)
-      .reduce<Record<string, Label>>((acc, l) => {
-        acc[l.name] ??= l;
-        return acc;
-      }, {}),
-  );
+  // One entry per label, keyed by `(account, id)`. Two accounts can each own a
+  // label called "Client Work" and they are different labels: merging them by
+  // name would navigate to one account's label id for a row that belongs to the
+  // other, and would send mutations to the wrong account (P3.6).
+  const userLabels = labels.filter((l) => l.kind === 'user' && l.visible);
+  // Only disambiguate where the tree would otherwise show one name twice.
+  const nameCounts: Record<string, number> = {};
+  for (const l of userLabels) nameCounts[l.name] = (nameCounts[l.name] ?? 0) + 1;
+  const accountHints: Record<string, string> = {};
+  for (const l of userLabels) {
+    if (nameCounts[l.name] < 2) continue;
+    const email = accounts.find((a) => a.id === l.account_id)?.email;
+    if (email) accountHints[`${l.account_id}:${l.id}`] = email;
+  }
 
   // Subtle per-view counts: Inbox and Spam show unread, the rest show totals.
   const countFor = (kind: string): number => {
@@ -137,7 +150,7 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
               <Icon size={16} strokeWidth={1.5} color={active ? 'var(--fg)' : 'var(--fg-3)'} />
               <span style={{ flex: 1, textAlign: 'left' }}>{v.label}</span>
               {countFor(v.kind) > 0 && (
-                <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-3)' }}>
+                <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-2)' }}>
                   {countFor(v.kind)}
                 </span>
               )}
@@ -155,7 +168,12 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
         >
           Labels
         </div>
-        <LabelTree labels={userLabels} collapsed={collapsed} onToggle={toggleCollapse} />
+        <LabelTree
+          labels={userLabels}
+          collapsed={collapsed}
+          onToggle={toggleCollapse}
+          accountHints={accountHints}
+        />
       </nav>
       <PendingFooter />
       <button
@@ -184,10 +202,12 @@ function LabelTree({
   labels,
   collapsed,
   onToggle,
+  accountHints,
 }: {
   labels: Label[];
   collapsed: Record<string, boolean>;
   onToggle: (n: string) => void;
+  accountHints: Record<string, string>;
 }) {
   const setView = useView((s) => s.setView);
   // nest by '/'
@@ -202,10 +222,16 @@ function LabelTree({
       roots[root].push(l);
     }
   }
+  const keyOf = (l: Label) => `${l.account_id}:${l.id}`;
   return (
     <div>
       {top.map((l) => (
-        <LabelRow key={l.id} label={l} onClick={() => setView({ kind: 'label', labelId: l.id })} />
+        <LabelRow
+          key={keyOf(l)}
+          label={l}
+          hint={accountHints[keyOf(l)]}
+          onClick={() => setView({ kind: 'label', labelId: l.id })}
+        />
       ))}
       {Object.entries(roots).map(([root, kids]) => (
         <div key={root}>
@@ -228,8 +254,13 @@ function LabelTree({
           </button>
           {!collapsed[root] &&
             kids.map((l) => (
-              <div key={l.id} style={{ paddingLeft: 16 }}>
-                <LabelRow label={l} short onClick={() => setView({ kind: 'label', labelId: l.id })} />
+              <div key={keyOf(l)} style={{ paddingLeft: 16 }}>
+                <LabelRow
+                  label={l}
+                  hint={accountHints[keyOf(l)]}
+                  short
+                  onClick={() => setView({ kind: 'label', labelId: l.id })}
+                />
               </div>
             ))}
         </div>
@@ -238,14 +269,28 @@ function LabelTree({
   );
 }
 
-function LabelRow({ label, onClick, short }: { label: Label; onClick: () => void; short?: boolean }) {
+function LabelRow({
+  label,
+  onClick,
+  short,
+  hint,
+}: {
+  label: Label;
+  onClick: () => void;
+  short?: boolean;
+  /** Account email, shown only when the same label name exists twice (P3.6). */
+  hint?: string;
+}) {
   const view = useView((s) => s.view);
-  const active = view.kind === 'label' && (view as { labelId?: string }).labelId === label.id;
+  const active = view.kind === 'label' && view.labelId === label.id;
   const name = short ? label.name.split('/').slice(1).join('/') : label.name;
+  const title = hint ? `${label.name} — ${hint}` : label.name;
   return (
     <button
       onClick={onClick}
-      title={label.name}
+      title={title}
+      data-label-name={label.name}
+      data-account-id={label.account_id}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -282,6 +327,21 @@ function LabelRow({ label, onClick, short }: { label: Label; onClick: () => void
       >
         {name}
       </span>
+      {hint && (
+        <span
+          style={{
+            fontSize: 11,
+            color: 'var(--fg-3)',
+            flexShrink: 0,
+            maxWidth: 96,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {hint}
+        </span>
+      )}
       {label.unread_count > 0 && (
         <span className="num" style={{ fontSize: 11.5 }}>
           {label.unread_count}

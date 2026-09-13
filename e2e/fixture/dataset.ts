@@ -148,6 +148,12 @@ interface ThreadSpec {
   from: string;
   fromName: string;
   blocksHtml?: string;
+  /**
+   * Further messages in the same conversation. Membership is decided per
+   * message (P3.6), and a Sent-only row names the recipients, which is only
+   * observable on a conversation with more than one participant.
+   */
+  extra?: { labelIds: string[]; from: Address; unread: boolean }[];
 }
 
 function threadSpecs(): ThreadSpec[] {
@@ -306,6 +312,44 @@ function threadSpecs(): ThreadSpec[] {
     from: aFrom.e,
     fromName: aFrom.n!,
   });
+
+  // A Sent conversation with a reply the reader archived. The conversation
+  // holds the sender *and* the recipient, so a Sent-only row must name the
+  // recipient rather than echoing the account that sent it (P3.6).
+  push({
+    accountId: ACCOUNT_A,
+    id: 'sent-thread-0',
+    subject: 'Sent to the client',
+    snippet: 'Sent snippet with a reply',
+    lastMessageAt: FIXED_NOW - 750 * 60_000,
+    labelIds: ['SENT'],
+    unread: false,
+    from: aFrom.e,
+    fromName: aFrom.n!,
+    extra: [
+      {
+        labelIds: ['ARCHIVE'],
+        from: addr('client@example.test', 'Client Team'),
+        unread: false,
+      },
+    ],
+  });
+
+  // One inbox message beside one trashed message. All Mail membership is per
+  // message, so this conversation stays in All Mail; Trash asks whether every
+  // message is trashed, so Trash excludes it (P3.6).
+  push({
+    accountId: ACCOUNT_A,
+    id: 'mixed-thread-0',
+    subject: 'Half-trashed conversation',
+    snippet: 'One inbox message, one trashed',
+    lastMessageAt: FIXED_NOW - 800 * 60_000,
+    labelIds: ['INBOX'],
+    unread: false,
+    from: aFrom.e,
+    fromName: aFrom.n!,
+    extra: [{ labelIds: ['TRASH'], from: aFrom, unread: false }],
+  });
   return specs;
 }
 
@@ -339,6 +383,18 @@ function attachmentSet(accountId: string, messageId: string): FixtureAttachment[
       downloaded: false,
       bytes: 'TXT',
     },
+    {
+      // The sender left the filename off a real part. It is still an
+      // attachment: it belongs in the strip and Save All must not skip it
+      // (P2.6).
+      id: `${base}:att-unnamed`,
+      filename: null,
+      mime: 'application/octet-stream',
+      size: 2_048,
+      isInline: false,
+      downloaded: false,
+      bytes: 'BIN',
+    },
   ];
 }
 
@@ -371,7 +427,7 @@ export function seedDatabase(scenario: Scenario = 'default'): FixtureDb {
       spec.blocksHtml ??
       `<p>${spec.subject} — body for ${spec.id}.</p>` +
         (spec.id === 'blue-00' ? '<script>window.__sift_xss=1</script>' : '');
-    messages.push({
+    const first: FixtureMessage = {
       id: messageId,
       threadId: spec.id,
       accountId: spec.accountId,
@@ -395,21 +451,49 @@ export function seedDatabase(scenario: Scenario = 'default'): FixtureDb {
       ...(spec.id === 'mixed-04'
         ? { listUnsubscribe: { url: 'https://lists.example.test/u', oneClick: true } }
         : {}),
-    });
+    };
+    const conversation = [first];
+    for (const [i, extra] of (spec.extra ?? []).entries()) {
+      conversation.push({
+        ...first,
+        id: `${spec.id}-m${i + 2}`,
+        internalDate: spec.lastMessageAt + (i + 1) * 60_000,
+        from: extra.from,
+        isUnread: extra.unread,
+        isStarred: false,
+        isDraft: false,
+        isSentByMe: false,
+        labelIds: [...extra.labelIds],
+        hasAttachments: false,
+        attachments: [],
+        html: `<p>${spec.subject} — later message.</p>`,
+        text: `${spec.subject} — later message`,
+        listUnsubscribe: undefined,
+      });
+    }
+    messages.push(...conversation);
+    // Participants are the senders in date order, as the Rust aggregate builds
+    // them — so a conversation with a reply names the reply's sender too.
+    const participants: Address[] = [];
+    for (const m of conversation) {
+      if (!participants.some((p) => p.e === m.from.e)) participants.push(m.from);
+    }
     threads.push({
       accountId: spec.accountId,
       id: spec.id,
       subject: spec.subject,
       snippet: spec.snippet,
-      participants: [addr(spec.from, spec.fromName)],
-      lastMessageAt: spec.lastMessageAt,
-      messageCount: 1,
-      unreadCount: spec.unread ? 1 : 0,
+      participants,
+      lastMessageAt: conversation[conversation.length - 1].internalDate,
+      messageCount: conversation.length,
+      unreadCount: conversation.filter((m) => m.isUnread).length,
       isStarred: !!spec.starred,
       hasAttachments: attachments.length > 0,
-      labelIds: [...spec.labelIds],
+      labelIds: [...new Set(conversation.flatMap((m) => m.labelIds))],
       ...(spec.id === 'snoozed-0' ? { snoozedUntil: FIXED_NOW + 86_400_000 } : {}),
-      searchText: `${spec.subject} ${spec.snippet} ${spec.from} ${spec.fromName}`.toLowerCase(),
+      searchText: `${spec.subject} ${spec.snippet} ${conversation
+        .map((m) => `${m.from.e} ${m.from.n ?? ''}`)
+        .join(' ')}`.toLowerCase(),
     });
   }
 

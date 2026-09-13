@@ -17,7 +17,7 @@ import {
   type ListPickerKind,
   type MailCommand,
 } from '../thread-list/listCommands';
-import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Paperclip, Tag, Download } from 'lucide-react';
+import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Tag } from 'lucide-react';
 import { IconButton } from '../../ui/IconButton';
 import { Popover } from '../../ui/Popover';
 import { Menu } from '../../ui/Menu';
@@ -26,8 +26,9 @@ import { LabelPicker } from '../actions/LabelPicker';
 import { on } from '../../app/ipc/events';
 import type { Label } from '../../app/ipc/types';
 import { Button } from '../../ui/Button';
+import { AttachmentStrip } from './AttachmentStrip';
 import { decodeRfc2047 } from '../../lib/rfc2047';
-import { toast } from 'sonner';
+import { labelKey, useLabels } from '../../stores/labelsStore';
 
 const bodyCache = new Map<string, MessageBody>();
 // Cache keys are the account-qualified pair (P4.2); a provider message id
@@ -90,6 +91,9 @@ export function ThreadView({
   const [focusMsg, setFocusMsg] = useState(0);
   const settings = useSettings((s) => s.settings);
   const markAsRead = settings.markAsRead;
+  // Label names are indexed per account (P3.6); HeaderActions indexes the open
+  // conversation's account as soon as its label list arrives.
+  const labelNames = useLabels((s) => s.names);
 
   // Generation guards every async result for the open key (P3.2): a response
   // for an older click can never overwrite the current one.
@@ -411,7 +415,7 @@ export function ThreadView({
           {detail.labelIds
             .filter((l) => !['INBOX', 'UNREAD'].includes(l))
             .map((l) => (
-              <Chip key={l} label={l} />
+              <Chip key={l} label={labelNames[labelKey(detail.accountId, l)] ?? l} />
             ))}
         </div>
       </div>
@@ -622,7 +626,10 @@ function HeaderActions({ detail, onReply }: { detail: ThreadDetail; onReply: (mo
   useEffect(() => {
     api
       .labels_list(accountId)
-      .then(setLabels)
+      .then((ls) => {
+        setLabels(ls);
+        useLabels.getState().apply(accountId, ls);
+      })
       .catch(() => {});
   }, [accountId]);
   // Bridge for thread-scope keyboard (h/l/v) handled in ThreadView.
@@ -850,124 +857,6 @@ function MessageMetaBar({
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-function AttachmentStrip({
-  accountId,
-  messageId,
-  attachments,
-}: {
-  accountId: string;
-  messageId: string;
-  attachments: { id: string; filename?: string | null; mime: string; size: number }[];
-}) {
-  const files = attachments.filter((a) => a.filename);
-  const [busy, setBusy] = useState<string | null>(null);
-  if (!files.length) return null;
-
-  const errorText = (e: unknown): string => {
-    if (typeof e === 'string') return e;
-    const msg = (e as { message?: string })?.message;
-    return msg && msg.length < 200
-      ? msg
-      : 'Could not fetch this attachment. Check your connection and try again.';
-  };
-
-  const open = async (id: string) => {
-    setBusy(id);
-    try {
-      await api.attachments_open({ accountId, attachmentId: id });
-    } catch (e) {
-      toast.error(errorText(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const save = async (id: string, filename: string) => {
-    setBusy(id);
-    try {
-      const r = await api.attachments_save_as({ accountId, attachmentId: id });
-      if (r?.path) toast.success(`Saved ${filename}`);
-    } catch (e) {
-      // A cancelled save dialog is not an error.
-      const text = errorText(e);
-      if (!/cancel/i.test(text)) toast.error(text);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  return (
-    <div style={{ display: 'flex', gap: 8, margin: '8px 0', flexWrap: 'wrap' }}>
-      {files.map((a) => (
-        <div
-          key={a.id}
-          style={{
-            display: 'flex',
-            alignItems: 'stretch',
-            height: 56,
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            background: 'var(--n1)',
-            overflow: 'hidden',
-          }}
-        >
-          <button
-            onClick={() => void open(a.id)}
-            disabled={busy === a.id}
-            title={`Open ${a.filename}`}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '0 12px',
-              border: 'none',
-              background: 'none',
-              color: 'var(--fg)',
-              cursor: 'pointer',
-              fontSize: 12,
-              maxWidth: 280,
-            }}
-          >
-            {busy === a.id ? (
-              <Spinner size={16} />
-            ) : a.mime.startsWith('image/') ? (
-              <img
-                src={`sift-att://${accountId}/${messageId}/${a.id}`}
-                alt=""
-                style={{ width: 32, height: 32, objectFit: 'cover', borderRadius: 4 }}
-              />
-            ) : (
-              <Paperclip size={16} />
-            )}
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {a.filename} <span style={{ color: 'var(--fg-3)' }}>{(a.size / 1024).toFixed(0)}KB</span>
-            </span>
-          </button>
-          <button
-            onClick={() => void save(a.id, a.filename ?? 'attachment')}
-            disabled={busy === a.id}
-            title="Save to disk"
-            aria-label={`Save ${a.filename}`}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 40,
-              border: 'none',
-              borderLeft: '1px solid var(--border)',
-              background: 'none',
-              color: 'var(--fg-2)',
-              cursor: 'pointer',
-            }}
-          >
-            <Download size={15} />
-          </button>
-        </div>
-      ))}
     </div>
   );
 }

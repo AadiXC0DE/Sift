@@ -96,9 +96,13 @@ export function StepConnecting({ onDone }: { onDone: () => void }) {
         const promise = api.accounts_add_app_password(email, appPassword, (p) => inflight?.listener(p));
         req = { key, promise, listener: onProgress };
         inflight = req;
-        promise.finally(() => {
+        // Release the shared in-flight entry on both outcomes. `finally()` would
+        // hand back a derived promise whose rejection nobody handles, so a
+        // rejected app password surfaced as an unhandled rejection (P4.4).
+        const release = () => {
           if (inflight === req) inflight = null;
-        });
+        };
+        void promise.then(release, release);
       } else {
         req.listener = onProgress;
       }

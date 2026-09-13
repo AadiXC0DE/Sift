@@ -34,16 +34,12 @@ test('UI-03 new mail at the head keeps the loaded 400-row window', async ({ page
 });
 
 /**
- * UI-03 (P3.4/P3.5) — expected failure. When a refresh changes the focused
- * row's index, or removes the focused row entirely, the "keep focused visible"
- * effect calls `virtual.scrollToIndex(focusedIndex)`. With a new head row the
- * focused index shifts by one and with an archived focused row it falls back to
- * 0, so the viewport jumps to the top instead of preserving the anchor the
- * refresh logic computes. Remove `test.fail()` when the focus-follow effect
- * stops overriding the anchor restore.
+ * UI-03 (P3.4/P3.5) — the viewport anchor survives a refresh that shifts the
+ * focused row's index and one that removes the focused row. The focus-follow
+ * effect no longer overrides the anchor the refresh logic computes: keyboard
+ * navigation scrolls the focused row into view itself.
  */
 test('UI-03 a head refresh and archiving keep the scroll anchor', async ({ page, app }) => {
-  test.fail();
   await app.gotoApp();
   await app.ready();
   for (let i = 0; i < 5; i++) await scrollListTo(page, 1);

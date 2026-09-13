@@ -25,6 +25,10 @@
   --fg-1: var(--n9);
   --fg-2: var(--n7);
   --fg-3: var(--n6);
+  /* Row metadata (snippet, date, overflow count) sits on the tinted
+     hover/focus/selected row surfaces, where --fg-3 drops below the 4.5:1
+     AA ratio. It keeps its de-emphasised weight via --n7 instead. */
+  --fg-row-meta: var(--n7);
   --fg-disabled: var(--n5);
   --fg-on-accent: #fff;
   --accent: #2f6df6;

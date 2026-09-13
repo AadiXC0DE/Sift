@@ -43,7 +43,7 @@ function errorMessage(e: unknown): string {
  */
 export function useThreadsWindow(
   view: View,
-  opts?: { unreadOnly?: boolean; hasAttachment?: boolean },
+  opts?: { unreadOnly?: boolean; hasAttachment?: boolean; paused?: boolean },
 ): ThreadsWindowResult {
   const scope = useView((s) => s.accountScope);
   const accounts = useAccounts((s) => s.accounts);
@@ -56,6 +56,9 @@ export function useThreadsWindow(
 
   const unreadOnly = !!opts?.unreadOnly;
   const hasAttachment = !!opts?.hasAttachment;
+  // Paused while another result source (a completed Gmail search) owns the
+  // list: the window neither fetches nor refreshes underneath it (P7.2).
+  const paused = !!opts?.paused;
   // Sort mode is part of the query key; `threads_query` currently always sorts
   // by last message, so it is carried through the key only.
   const sortMode = 'lastMessageAt';
@@ -175,8 +178,9 @@ export function useThreadsWindow(
       queryGeneration: generation,
       refreshRevision: 0,
     });
+    if (paused) return;
     void fetchPage(undefined, 'initial', generation);
-  }, [queryKey, reloadNonce, fetchPage]);
+  }, [queryKey, reloadNonce, fetchPage, paused]);
 
   /**
    * Refresh without collapsing the window: query the same number of rows we
@@ -187,7 +191,7 @@ export function useThreadsWindow(
   const refreshWindow = useCallback(async () => {
     const generation = genRef.current;
     const key = keyRef.current;
-    if (!accountIdsRef.current.length) return;
+    if (paused || !accountIdsRef.current.length) return;
     const loaded = stateRef.current.rows;
     const limit = Math.min(MAX_WINDOW, Math.max(PAGE_SIZE, Math.ceil(loaded.length / PAGE_SIZE) * PAGE_SIZE));
     try {
@@ -206,7 +210,7 @@ export function useThreadsWindow(
       if (genRef.current !== generation) return;
       setState((s) => ({ ...s, error: errorMessage(e) }));
     }
-  }, [buildQuery]);
+  }, [buildQuery, paused]);
 
   // Store events: filtered by account, coalesced, and handled from a stable
   // callback that reads live refs so equal-length replacements cannot leave

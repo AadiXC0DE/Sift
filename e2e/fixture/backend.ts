@@ -19,10 +19,13 @@
 import type {
   Account,
   AttachmentRef,
+  AttachmentRefKey,
+  ConnectivityState,
   Draft,
   Label,
   MessageBody,
   MessageMeta,
+  SaveAllResult,
   Settings,
   StorageUsage,
   ThreadAction,
@@ -72,10 +75,66 @@ let undoGroups: Record<string, UndoSnapshot> = {};
 const callLog: { cmd: string; at: number; args?: Args }[] = [];
 const unimplemented: string[] = [];
 const saveAsCalls: { attachmentId: string; filename: string }[] = [];
+/** Destination paths the fixture has written, so collisions are observable. */
+const savedPaths: string[] = [];
+/** Attachment ids that Save All is asked to fail, to exercise the retry path. */
+const saveAllFailures = new Set<string>();
 const openCalls: string[] = [];
 const openUrlCalls: string[] = [];
 const delays: Record<string, (args: Args) => number> = {};
 let failAppPassword = false;
+
+/**
+ * Connectivity (P4.6), mirroring `connectivity.rs`: the host hint is only a
+ * hint, and each account keeps its own evidence until an operation succeeds.
+ */
+interface AccountHealth {
+  failure: 'connectivity' | 'auth' | null;
+  lastOkAt: number | null;
+  lastError: string | null;
+  since: number;
+}
+let network = true;
+let health: Record<string, AccountHealth> = {};
+
+function healthOf(accountId: string): AccountHealth {
+  return (health[accountId] ??= {
+    failure: null,
+    lastOkAt: database().accounts.find((a) => a.id === accountId)?.last_sync_at ?? null,
+    lastError: null,
+    since: FIXED_NOW,
+  });
+}
+
+function connectivityRow(accountId: string): ConnectivityState {
+  const h = healthOf(accountId);
+  const state: ConnectivityState['state'] = !network
+    ? 'offline'
+    : h.failure === 'auth'
+      ? 'reauth_required'
+      : h.failure === 'connectivity'
+        ? 'offline'
+        : 'online';
+  return {
+    accountId,
+    state,
+    lastOkAt: h.lastOkAt,
+    lastError: h.failure ? h.lastError : null,
+    since: h.since,
+  };
+}
+
+function emitConnectivity(accountId: string): void {
+  emit('connectivity:state', connectivityRow(accountId));
+}
+
+function failAccount(accountId: string, failure: 'connectivity' | 'auth', message: string): void {
+  const h = healthOf(accountId);
+  h.failure = failure;
+  h.lastError = message;
+  h.since = FIXED_NOW;
+  emitConnectivity(accountId);
+}
 
 function scenarioFromLocation(): Scenario {
   try {
@@ -128,6 +187,11 @@ function sleep(ms: number): Promise<void> {
 
 function viewMatches(t: FixtureThread, view: View): boolean {
   const has = (l: string) => t.labelIds.includes(l);
+  // Trash and Junk are decided over every message of the conversation (the Rust
+  // view reads `t.in_trash`/`t.in_spam`), so a conversation with one trashed
+  // message and one inbox message is *not* in Trash — it is in All Mail.
+  const msgs = messagesOf(t.accountId, t.id);
+  const all = (l: string) => msgs.length > 0 && msgs.every((m) => m.labelIds.includes(l));
   switch (view.kind) {
     case 'inbox':
       return has('INBOX');
@@ -141,10 +205,16 @@ function viewMatches(t: FixtureThread, view: View): boolean {
       return has('DRAFT');
     case 'archive':
       return !has('INBOX') && !has('TRASH') && !has('SPAM') && !has('DRAFT') && !has('SENT');
+    case 'all_mail':
+      // P3.6: membership is per message, exactly like
+      // `db/threads.rs::view_where` — a thread is in All Mail when at least one
+      // of its messages carries neither TRASH nor SPAM. It is a mailbox, never
+      // the account scope: `accountIds` still filters the rows.
+      return msgs.some((m) => !m.labelIds.includes('TRASH') && !m.labelIds.includes('SPAM'));
     case 'spam':
-      return has('SPAM');
+      return all('SPAM');
     case 'trash':
-      return has('TRASH');
+      return all('TRASH');
     case 'label':
       return has(view.labelId);
     case 'search': {
@@ -436,6 +506,28 @@ function attachmentMeta(
   return { filename: a.filename, mime: a.mime, size: a.size };
 }
 
+/** Mirrors `attachments::naming::basename` for the types the seed uses. */
+function attachmentBasename(a: { filename?: string | null; mime: string; id: string }): string {
+  const named = a.filename?.trim();
+  if (named) return named;
+  const short = a.id.replace(/[^A-Za-z0-9]/g, '').slice(0, 8) || '0';
+  return `attachment-${short}.bin`;
+}
+
+/** `name (2).ext` collision handling, mirroring `naming::unique_destination`. */
+function uniqueDestination(name: string): string {
+  const taken = new Set(savedPaths);
+  if (!taken.has(name)) return name;
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  for (let n = 2; n < 10_000; n++) {
+    const candidate = `${stem} (${n})${ext}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return name;
+}
+
 function threadDetail(accountId: string, threadId: string): ThreadDetail {
   const t = findThread(accountId, threadId);
   if (!t) throw new Error('thread_not_found');
@@ -545,13 +637,35 @@ const handlers: Record<string, (args: Args) => unknown> = {
     db.threads = db.threads.filter((t) => t.accountId !== id);
     db.messages = db.messages.filter((m) => m.accountId !== id);
     db.labels = db.labels.filter((l) => l.account_id !== id);
+    delete health[id];
     persist();
     emit('store:threads', { account_id: id, thread_ids: [] });
     emit('store:labels', { account_id: id });
     return null;
   },
   system_info: () => ({ version: 'e2e-fixture', oauth_available: false, demo: false }),
-  sync_now: () => null,
+  sync_now: (args) => {
+    const accountId = typeof args.accountId === 'string' ? args.accountId : undefined;
+    if (!accountId) return null;
+    const h = healthOf(accountId);
+    if (network) {
+      // A successful provider operation clears THIS account's error only.
+      h.failure = null;
+      h.lastError = null;
+      h.lastOkAt = FIXED_NOW;
+    } else {
+      h.failure = 'connectivity';
+      h.lastError = 'No network connection';
+    }
+    emitConnectivity(accountId);
+    return null;
+  },
+  connectivity_state: () => database().accounts.map((a) => connectivityRow(a.id)),
+  app_network_hint: (args) => {
+    network = args.online !== false;
+    for (const a of database().accounts) emitConnectivity(a.id);
+    return null;
+  },
   sync_status: () => database().sync,
   labels_list: (args) => database().labels.filter((l) => l.account_id === args.accountId),
   labels_create: (args) => {
@@ -781,9 +895,36 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const m = database().messages.find((x) => x.attachments.some((a) => a.id === id));
     if (!m) throw new Error('attachment_part_missing');
     const meta = attachmentMeta(m, id);
-    saveAsCalls.push({ attachmentId: id, filename: meta.filename ?? 'attachment' });
-    return { path: `/tmp/sift-e2e/${meta.filename ?? 'attachment'}` };
+    const name = attachmentBasename({ ...meta, id });
+    saveAsCalls.push({ attachmentId: id, filename: meta.filename ?? name });
+    const path = uniqueDestination(name);
+    savedPaths.push(path);
+    return { path: `/tmp/sift-e2e/${path}` };
   },
+  /** Save All (P2.6): one folder, every non-inline part, no clobbering. */
+  attachments_save_all: (args) => {
+    const accountId = String(args.accountId);
+    const m = database().messages.find(
+      (x) => x.accountId === accountId && x.id === String(args.messageId),
+    );
+    if (!m) throw new Error('message_not_found');
+    const files = m.attachments.filter((a) => !a.isInline);
+    if (files.length < 2) throw new Error('attachment_save_all_not_applicable');
+    let saved = 0;
+    const failed: AttachmentRefKey[] = [];
+    for (const a of files) {
+      if (saveAllFailures.has(a.id)) {
+        failed.push({ accountId, attachmentId: a.id });
+        continue;
+      }
+      const name = attachmentBasename(a);
+      saveAsCalls.push({ attachmentId: a.id, filename: a.filename ?? name });
+      savedPaths.push(uniqueDestination(name));
+      saved += 1;
+    }
+    return { saved, failed } satisfies SaveAllResult;
+  },
+  attachments_cancel: () => null,
   attachments_add_from_paths: (args) => {
     const paths = (args.paths as string[]) ?? [];
     return paths.map((p): AttachmentRef => ({
@@ -869,6 +1010,13 @@ export interface FixtureControl {
     outbox: () => { op_id: number; state: string; subject: string }[];
     threads: (accountId?: string) => ThreadRow[];
     savedAs: () => { attachmentId: string; filename: string }[];
+    /** Destination paths the fixture wrote, in order — collisions are visible. */
+    savedPaths: () => string[];
+    /** Make Save All fail for one attachment, to exercise the retry path. */
+    failSaveAll: (attachmentId: string | null) => void;
+    /** One account's provider operation starts failing (P4.6). */
+    failAccount: (accountId: string, failure: 'connectivity' | 'auth', message: string) => void;
+    connectivity: () => ConnectivityState[];
     opened: () => string[];
     openedUrls: () => string[];
     unimplemented: () => string[];
@@ -907,6 +1055,13 @@ export function installControl(): void {
           .filter((t) => !accountId || t.accountId === accountId)
           .map((t) => ({ ...t })),
       savedAs: () => [...saveAsCalls],
+      savedPaths: () => [...savedPaths],
+      failSaveAll: (attachmentId) => {
+        saveAllFailures.clear();
+        if (attachmentId) saveAllFailures.add(attachmentId);
+      },
+      failAccount: (accountId, failure, message) => failAccount(accountId, failure, message),
+      connectivity: () => database().accounts.map((a) => connectivityRow(a.id)),
       opened: () => [...openCalls],
       openedUrls: () => [...openUrlCalls],
       unimplemented: () => [...unimplemented],
@@ -963,9 +1118,13 @@ export function installControl(): void {
         callLog.length = 0;
         unimplemented.length = 0;
         saveAsCalls.length = 0;
+        savedPaths.length = 0;
+        saveAllFailures.clear();
         openCalls.length = 0;
         openUrlCalls.length = 0;
         undoGroups = {};
+        network = true;
+        health = {};
         try {
           window.localStorage.removeItem(FIXTURE_DB_KEY);
         } catch {

@@ -9,12 +9,9 @@ const axePath = createRequire(import.meta.url).resolve('axe-core/axe.min.js');
  * the seeded shell instead of asserting that `#root` exists.
  */
 test('a11y: the seeded inbox has no serious or critical axe-core violations', async ({ page, app }) => {
-  // Known P9.5 defects this gate records (remove `test.fail()` once fixed):
-  //  - aria-allowed-attr + aria-required-children: AccountSwitcher puts
-  //    aria-selected on plain buttons inside a role=tablist.
-  //  - color-contrast: account avatars, the sidebar count, row subjects/dates.
-  //  - scrollable-region-focusable: the thread listbox has no tab stop.
-  test.fail();
+  // The seeded shell must clear WCAG A/AA: the account switcher is a real
+  // tablist, avatar/palette surfaces keep 4.5:1 contrast, and the virtualized
+  // listbox owns a tab stop with an account-qualified active row.
   await app.gotoApp();
   await app.ready();
   await page.addScriptTag({ path: path.resolve(axePath) });

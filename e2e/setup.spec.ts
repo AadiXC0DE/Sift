@@ -10,16 +10,11 @@ async function toAppPasswordStep(page: Page): Promise<void> {
 
 /**
  * P4.4/P2: a rejected app password must return the wizard to a corrective step
- * and must not create an account.
+ * and must not create an account. The in-flight sign-in promise releases its
+ * shared slot on both outcomes, so a rejection never surfaces as an unhandled
+ * rejection and the corrective step renders.
  */
 test('setup: a rejected app password shows a guided fix and creates no account', async ({ page, app }) => {
-  // Known P4.4 defect: `StepConnecting` attaches `.catch` to the request but
-  // calls `promise.finally(...)` without handling the derived rejection, so a
-  // failed sign-in always emits an unhandled rejection. The corrective step
-  // below does render; the unexpected-error guard fails the test on the
-  // rejection, so this is recorded as an expected failure until that promise
-  // chain is fixed. Remove `test.fail()` when it is.
-  test.fail();
   await app.gotoApp({ scenario: 'empty' });
   await page.evaluate(() => window.__siftFixture!.control.failAppPasswordFlow(true));
 

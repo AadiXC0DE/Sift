@@ -17,6 +17,24 @@ export function participantsLabel(parts: Address[], count: number): string {
   return count > 1 ? `${names.join(', ')} ${count}` : names.join(', ');
 }
 
+/**
+ * Headline for a conversation the reader sent (P3.6).
+ *
+ * A sent row's `participants` are the people in the conversation, and the first
+ * of them is the account that sent it — the reader themselves, which says
+ * nothing about who received it. Addresses belonging to `selfEmails` are
+ * dropped so the row names the recipients instead. Returns `null` when the
+ * conversation holds nobody else (a note to self), and the caller falls back to
+ * the ordinary participant label rather than inventing a recipient.
+ */
+export function recipientsLabel(parts: Address[], selfEmails: string[]): string | null {
+  const self = new Set(selfEmails.filter(Boolean).map((e) => e.toLowerCase()));
+  const to = parts.filter((p) => !self.has(p.e.toLowerCase()));
+  if (to.length === 0) return null;
+  const names = to.slice(0, 6).map(firstName);
+  return `To ${names.join(', ')}${to.length > 6 ? '…' : ''}`;
+}
+
 export function initials(email: string, name?: string | null): string {
   if (name) {
     const ps = name.split(' ').filter(Boolean);

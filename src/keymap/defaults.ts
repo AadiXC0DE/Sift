@@ -46,6 +46,7 @@ export const defaultBindings: Binding[] = [
   { key: 'g t', scope: 'global', action: 'goSent' },
   { key: 'g d', scope: 'global', action: 'goDrafts' },
   { key: 'g a', scope: 'global', action: 'goArchive' },
+  { key: 'g m', scope: 'global', action: 'goAllMail' },
   { key: '⌘1', scope: 'global', action: 'account1' },
   { key: '⌘2', scope: 'global', action: 'account2' },
   { key: '⌘0', scope: 'global', action: 'accountAll' },

@@ -9,7 +9,8 @@ import { useAccounts } from '../stores/accountsStore';
 import { api } from './ipc/commands';
 import { on } from './ipc/events';
 import { useSync } from '../stores/syncStore';
-import type { SyncStatus, ThreadRef } from './ipc/types';
+import { ConnectivityStrip } from '../features/sync/ConnectivityStrip';
+import type { ConnectivityState, SyncStatus, ThreadRef } from './ipc/types';
 import { engine } from '../keymap/engine';
 import { activeKeyScopes } from '../keymap/scopes';
 import { undoLast } from '../features/actions/dispatch';
@@ -46,8 +47,9 @@ export function App() {
   const [settingsMounted, setSettingsMounted] = useState(false);
   const [helpMounted, setHelpMounted] = useState(false);
   const prefetchedComposer = useRef(false);
-  const online = useSync((s) => s.online);
   const accountsReady = useAccounts((s) => s.accounts.length > 0);
+  const accounts = useAccounts((s) => s.accounts);
+  const scope = useView((s) => s.accountScope);
 
   const refreshAccounts = useAccounts((s) => s.refresh);
   const setOpenThread = useView((s) => s.setOpenThread);
@@ -84,6 +86,7 @@ export function App() {
       else if (action === 'goSent') v.setView({ kind: 'sent' });
       else if (action === 'goDrafts') v.setView({ kind: 'drafts' });
       else if (action === 'goArchive') v.setView({ kind: 'archive' });
+      else if (action === 'goAllMail') v.setView({ kind: 'all_mail' });
       else if (action === 'undo') void undoLast();
     };
   }, []);
@@ -262,14 +265,31 @@ export function App() {
     )
       .then((u) => unsubs.push(u))
       .catch(() => {});
-    const setOnline = () => useSync.getState().setOnline(navigator.onLine);
-    setOnline();
-    window.addEventListener('online', setOnline);
-    window.addEventListener('offline', setOnline);
+    // Per-account connectivity (P4.6). The startup snapshot is authoritative:
+    // the backend's evidence outlives the window, and `navigator.onLine` only
+    // says the host has a network, not that Gmail is reachable.
+    on<ConnectivityState>('connectivity:state', (s) => {
+      useSync.getState().setConnectivity(s);
+    })
+      .then((u) => unsubs.push(u))
+      .catch(() => {});
+    api
+      .connectivity_state()
+      .then((list) => useSync.getState().setConnectivityAll(list))
+      .catch(() => {});
+    // One hint per transition, plus the value at startup. Recovery itself is
+    // the backend's: a successful provider operation clears that account only,
+    // so nothing here retries on a timer.
+    const networkHint = () => {
+      void api.app_network_hint(navigator.onLine).catch(() => {});
+    };
+    networkHint();
+    window.addEventListener('online', networkHint);
+    window.addEventListener('offline', networkHint);
     return () => {
       unsubs.forEach((u) => u());
-      window.removeEventListener('online', setOnline);
-      window.removeEventListener('offline', setOnline);
+      window.removeEventListener('online', networkHint);
+      window.removeEventListener('offline', networkHint);
     };
   }, []);
 
@@ -334,22 +354,13 @@ export function App() {
                   overflow: 'hidden',
                 }}
               >
-                {!online && (
-                  <div
-                    style={{
-                      height: 24,
-                      background: 'color-mix(in oklab, var(--warning) 14%, transparent)',
-                      color: 'var(--warning)',
-                      fontSize: 12,
-                      display: 'flex',
-                      alignItems: 'center',
-                      padding: '0 12px',
-                      flexShrink: 0,
-                    }}
-                  >
-                    Offline · changes will sync when you&apos;re back
-                  </div>
-                )}
+                <ConnectivityStrip
+                  accountIds={scope === 'all' ? accounts.map((a) => a.id) : [scope]}
+                  onReconnect={() => {
+                    setSettingsMounted(true);
+                    setSettingsOpen(true);
+                  }}
+                />
                 <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
               </div>
             )}

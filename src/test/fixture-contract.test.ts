@@ -111,6 +111,16 @@ describe('fixture backend IPC contract', () => {
       'contacts_suggest',
     );
     expectEachShape((await invokeFixture('sync_status')) as unknown[], 'SyncStatus', 'sync_status');
+    expectEachShape(
+      (await invokeFixture('connectivity_state')) as unknown[],
+      'ConnectivityState',
+      'connectivity_state',
+    );
+    expectShape(
+      await invokeFixture('attachments_save_all', { accountId: 'acc-a', messageId: 'blue-00-m1' }),
+      'SaveAllResult',
+      'attachments_save_all',
+    );
   });
 
   it('applies action transitions to the stored thread and only returns declared fields', async () => {

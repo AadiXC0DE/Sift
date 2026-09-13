@@ -77,16 +77,11 @@ test('search: Escape clears the query and stops reporting a pending search', asy
 });
 
 /**
- * SEARCH-04 (P7.2) — expected failure. Clearing the field while a search is
- * pending must restore the previous scope/anchor and must not apply the cleared
- * query. `SearchInput` keeps its stash in a local ref and never calls the view
- * store's `stashForSearch`, so `restore()` is a no-op: the list stays on the
- * search view, and the debounce scheduled by the last keystroke still switches
- * the view to the cleared query. Remove `test.fail()` when the search state
- * moves into the store as P7.2 requires.
+ * SEARCH-04 (P7.2) — clearing the field while a search is pending restores the
+ * previous scope/anchor and never applies the cleared query: the query lives in
+ * the search store, and the debounce is cancelled by the clear.
  */
 test('SEARCH-04 clearing during a pending search restores the previous view', async ({ page, app }) => {
-  test.fail();
   await app.gotoApp();
   await app.ready();
 
