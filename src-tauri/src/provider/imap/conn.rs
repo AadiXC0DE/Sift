@@ -4,6 +4,14 @@
 //! and the idle slot owned by `idle.rs`. TLS via the platform verifier
 //! (macOS keychain); plaintext TCP to loopback is test-only.
 //!
+//! P4.3 makes the worker a *lease*: the slot is held from the moment a caller
+//! checks it out (including the initial connect, so ten simultaneous checkouts
+//! open one connection) until the whole selected-mailbox batch is done. Callers
+//! that need a mailbox use [`ImapPool::with_selected_worker`], which SELECTs
+//! inside the lease so no other task can reselect between a SELECT and its
+//! FETCH. A command whose future is dropped mid-response (cancellation) leaves
+//! the connection poisoned, never reusable.
+//!
 //! Retry policy lives INSIDE [`Conn`]: every command runs once, and on a
 //! connection-level failure the connection rebuilds (login included, with the
 //! 1/2/5/15/60 s backoff) and the command retries exactly once. Callers only
@@ -15,10 +23,12 @@ use super::{
 };
 use crate::errors::SiftError;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex as TokioMutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 const BACKOFFS: [u64; 5] = [1, 2, 5, 15, 60];
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -58,7 +68,7 @@ pub struct Caps {
     pub appendlimit: Option<u64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SelectInfo {
     pub exists: u32,
     pub uidvalidity: u32,
@@ -264,14 +274,6 @@ impl FetchItems {
         self
     }
 
-    /// Wrap a caller-supplied, already-balanced item list (legacy path).
-    #[must_use]
-    pub fn verbatim(list: &str) -> Self {
-        Self {
-            items: vec![FetchItem::Raw(list.to_string())],
-        }
-    }
-
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -380,6 +382,67 @@ impl std::ops::DerefMut for WorkerGuard {
     }
 }
 
+/// A worker connection leased to one selected-mailbox batch (P4.3).
+///
+/// The lease is taken *before* the SELECT and released only when the caller
+/// drops it, so a background tick, a foreground read and a drain-triggered sync
+/// can never interleave a SELECT and the FETCHes that depend on it.
+pub struct SelectedWorker {
+    guard: WorkerGuard,
+    folder: String,
+    readonly: bool,
+    info: SelectInfo,
+}
+
+impl SelectedWorker {
+    /// The leased connection, already selected onto `folder`.
+    pub fn conn(&mut self) -> &mut Conn {
+        self.guard.as_mut().expect("leased worker is connected")
+    }
+
+    /// Values reported by the SELECT that opened this lease.
+    pub fn info(&self) -> &SelectInfo {
+        &self.info
+    }
+
+    /// Re-SELECT the leased mailbox and refresh [`Self::info`] (used for the
+    /// end-of-pass checkpoint read).
+    pub async fn reselect(&mut self) -> Result<&SelectInfo, SiftError> {
+        let (folder, readonly) = (self.folder.clone(), self.readonly);
+        let info = self.conn().select(&folder, readonly).await?;
+        self.info = info;
+        Ok(&self.info)
+    }
+}
+
+/// Marks a connection that a command may have left mid-response when the
+/// command's future is dropped (caller cancellation or timeout). The flag is
+/// shared with the [`Conn`], which invalidates itself before its next command,
+/// so another task can never read a half-consumed response (P4.3).
+struct PoisonOnDrop {
+    flag: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl PoisonOnDrop {
+    fn new(flag: Arc<AtomicBool>) -> Self {
+        Self { flag, armed: true }
+    }
+
+    /// The command completed normally: the stream is framed correctly.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PoisonOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 pub struct Conn {
     io: BufReader<Box<dyn ImapStream>>,
     inner: Arc<PoolInner>,
@@ -390,6 +453,9 @@ pub struct Conn {
     /// A failed literal read leaves the stream framed wrong; the connection
     /// must be rebuilt before any reuse (P1.3).
     poisoned: bool,
+    /// Set by a dropped (cancelled) command future; folded into `poisoned`
+    /// before the next command runs (P4.3).
+    poison_flag: Arc<AtomicBool>,
     /// While set, a response literal larger than this many bytes is refused
     /// (P2.4). [`Conn::uid_fetch_partial`] sets it to the requested byte
     /// count plus bounded framing; `None` means a whole-message/header read,
@@ -433,32 +499,78 @@ impl ImapPool {
     }
 
     /// Check out the worker, connecting (with backoff) and NOOP-keepalive
-    /// as needed. The lock is never held across network I/O here.
+    /// as needed. Uncancelable; cancellation-aware callers use
+    /// [`ImapPool::worker_cancellable`].
     pub async fn worker(&self) -> Result<WorkerGuard, SiftError> {
-        loop {
-            let mut guard = self.worker.clone().lock_owned().await;
-            let have_conn = guard.is_some();
-            if have_conn {
-                let idle_for = self.inner.last_used.lock().unwrap().elapsed();
-                if idle_for <= KEEPALIVE_IDLE {
-                    return Ok(WorkerGuard { guard });
-                }
-                // NOOP keep-alive when the connection sat idle (spec task 4).
-                // A failed keepalive drops the connection; loop reconnects.
-                let alive = match guard.as_mut() {
-                    Some(conn) => conn.noop().await.is_ok(),
-                    None => false,
-                };
-                if alive {
-                    *self.inner.last_used.lock().unwrap() = Instant::now();
-                    return Ok(WorkerGuard { guard });
-                }
-                *guard = None;
+        self.worker_cancellable(&CancellationToken::new()).await
+    }
+
+    /// Check out the worker **holding the connection slot across the
+    /// connect** (P4.3): ten simultaneous checkouts therefore open one
+    /// connection, and a later caller waits instead of dialing its own.
+    ///
+    /// Cancellable while waiting for the slot, while connecting, and during
+    /// the reconnect backoff; a cancelled connect never installs a connection
+    /// for the generation that cancelled it.
+    pub async fn worker_cancellable(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<WorkerGuard, SiftError> {
+        let mut guard = tokio::select! {
+            guard = self.worker.clone().lock_owned() => guard,
+            _ = cancel.cancelled() => return Err(cancelled_worker()),
+        };
+        if guard.is_some() {
+            let idle_for = self.inner.last_used.lock().unwrap().elapsed();
+            if idle_for <= KEEPALIVE_IDLE {
+                return Ok(WorkerGuard { guard });
             }
-            drop(guard);
-            let conn = self.connect_loop().await?;
-            *self.worker.lock().await = Some(conn);
+            // NOOP keep-alive when the connection sat idle (spec task 4).
+            // A failed keepalive drops the connection and reconnects.
+            let alive = match guard.as_mut() {
+                Some(conn) => conn.noop().await.is_ok(),
+                None => false,
+            };
+            if alive {
+                *self.inner.last_used.lock().unwrap() = Instant::now();
+                return Ok(WorkerGuard { guard });
+            }
+            *guard = None;
         }
+        // Connected under the same slot: no competing connection can be
+        // opened while this one is being established.
+        let conn = tokio::select! {
+            conn = self.connect_loop() => conn?,
+            _ = cancel.cancelled() => return Err(cancelled_worker()),
+        };
+        *guard = Some(conn);
+        Ok(WorkerGuard { guard })
+    }
+
+    /// Lease the worker with `folder` selected and hold it across the whole
+    /// dependent command batch (P4.3).
+    ///
+    /// This is the ONLY way a selected-mailbox batch runs: the SELECT and the
+    /// FETCH/STORE commands that depend on it share one exclusive lease, so a
+    /// concurrent Trash sync cannot re-SELECT the mailbox under a read.
+    pub async fn with_selected_worker(
+        &self,
+        folder: &str,
+        readonly: bool,
+        cancel: &CancellationToken,
+    ) -> Result<SelectedWorker, SiftError> {
+        let mut guard = self.worker_cancellable(cancel).await?;
+        let info = guard
+            .as_mut()
+            .expect("worker checkout connects")
+            .select(folder, readonly)
+            .await?;
+        Ok(SelectedWorker {
+            guard,
+            folder: folder.to_string(),
+            readonly,
+            info,
+        })
     }
 
     /// Take the idle slot connection (idle.rs owns its lifecycle).
@@ -559,6 +671,15 @@ impl ImapPool {
     }
 }
 
+/// A checkout cancelled while waiting for (or establishing) the worker.
+fn cancelled_worker() -> SiftError {
+    SiftError::app(
+        "cancelled",
+        "Cancelled while waiting for the account's IMAP connection.",
+        true,
+    )
+}
+
 /// Errors that must NOT be retried by connect_loop (auth/config, not network).
 fn is_terminal(e: &SiftError) -> bool {
     match e {
@@ -585,6 +706,7 @@ impl Conn {
             tag: 0,
             selected: None,
             poisoned: false,
+            poison_flag: Arc::new(AtomicBool::new(false)),
             pending_literal_cap: None,
         }
     }
@@ -596,6 +718,7 @@ impl Conn {
             tag: 0,
             selected: None,
             poisoned: false,
+            poison_flag: Arc::new(AtomicBool::new(false)),
             pending_literal_cap: None,
         }
     }
@@ -623,6 +746,9 @@ impl Conn {
     async fn reconnect(&mut self) -> Result<(), SiftError> {
         self.selected = None;
         self.poisoned = false;
+        // A fresh stream is framed correctly by definition: a poison flag set
+        // for the *old* socket must not invalidate this one.
+        self.poison_flag.store(false, Ordering::SeqCst);
         // Fresh inner (new caps/backoff): sharing `self.inner` here would
         // deadlock copying caps (write + read on the same RwLock).
         let fresh_inner = std::sync::Arc::new(PoolInner {
@@ -875,6 +1001,18 @@ impl Conn {
     }
 
     async fn cmd_once(&mut self, body: &str) -> Result<CommandResult, SiftError> {
+        // A cancelled command leaves the stream mid-response; the flag makes
+        // sure no other task can ever reuse that connection (P4.3).
+        let guard = PoisonOnDrop::new(self.poison_flag.clone());
+        let out = self.cmd_once_inner(body).await;
+        guard.disarm();
+        out
+    }
+
+    async fn cmd_once_inner(&mut self, body: &str) -> Result<CommandResult, SiftError> {
+        if self.poison_flag.swap(false, Ordering::SeqCst) {
+            self.invalidate();
+        }
         if self.poisoned {
             return Err(SiftError::app(
                 "imap_transient",
@@ -955,6 +1093,23 @@ impl Conn {
     /// Begin IDLE: sends a tagged IDLE and consumes the `+` continuation.
     /// Returns the tag so the caller can match the terminating completion.
     pub async fn start_idle(&mut self) -> Result<String, SiftError> {
+        let guard = PoisonOnDrop::new(self.poison_flag.clone());
+        let out = self.start_idle_inner().await;
+        guard.disarm();
+        out
+    }
+
+    async fn start_idle_inner(&mut self) -> Result<String, SiftError> {
+        if self.poison_flag.swap(false, Ordering::SeqCst) {
+            self.invalidate();
+        }
+        if self.poisoned {
+            return Err(SiftError::app(
+                "imap_transient",
+                "Stale connection; reconnecting.",
+                true,
+            ));
+        }
         let tag = self.next_tag();
         self.write_raw(format!("{tag} IDLE\r\n").as_bytes()).await?;
         match self.read_response().await? {
@@ -1121,34 +1276,6 @@ impl Conn {
         Ok(out)
     }
 
-    /// Raw UID FETCH for Gmail items; callers decode via proto. Returns
-    /// (sequence, attributes) in server order.
-    ///
-    /// Legacy string entry point for call sites that migrate in P4.3; new
-    /// code uses [`Conn::uid_fetch_items`].
-    pub async fn uid_fetch(
-        &mut self,
-        uid_set: &str,
-        items: &str,
-    ) -> Result<Vec<(u32, Vec<super::proto::FetchAttr>)>, SiftError> {
-        match self.uid_fetch_typed(uid_set, &FetchItems::verbatim(items)).await {
-            Ok(rows) => Ok(rows),
-            Err(TaggedFailure::Tagged {
-                completion,
-                code,
-                text,
-            }) => {
-                let ctx = errors::OpCtx {
-                    command: "UID FETCH",
-                    stage: "fetch",
-                    correlation: "-",
-                };
-                Err(errors::map_tagged(&ctx, completion, code.as_ref(), &text))
-            }
-            Err(TaggedFailure::Conn(e)) => Err(e),
-        }
-    }
-
     /// Typed UID FETCH (P1.1). The item list is built by [`FetchItems`], so a
     /// multi-item command is always parenthesized.
     pub async fn uid_fetch_items(
@@ -1230,6 +1357,39 @@ impl Conn {
             }
         }
         out.sort_unstable();
+        Ok(out)
+    }
+
+    /// UIDs in the selected folder at or above `from` (optionally bound by
+    /// `to`), ascending — the *actual* UIDs, not the numbers in between.
+    ///
+    /// P4.5: a partial sync must never materialize `uidnext - prev_uidnext`
+    /// UIDs; a UIDNEXT jump of a billion with two new messages is one SEARCH
+    /// and two rows here.
+    pub async fn uid_search_range(
+        &mut self,
+        from: u32,
+        to: Option<u32>,
+    ) -> Result<Vec<u32>, SiftError> {
+        let range = match to {
+            Some(to) => format!("{from}:{to}"),
+            None => format!("{from}:*"),
+        };
+        let r = self.read_cmd(&format!("UID SEARCH UID {range}")).await?;
+        if !r.tagged.ok {
+            super::errors::map_response("UID SEARCH", &r.tagged.text)?;
+        }
+        let mut out = vec![];
+        for u in r.untagged {
+            if let Response::Untagged(Untagged::Search(uids)) = u {
+                out.extend(uids);
+            }
+        }
+        // A conforming server returns only UIDs in the requested interval;
+        // enforcing it here keeps a sloppy server from widening the scan.
+        out.retain(|u| *u >= from && to.map(|t| *u <= t).unwrap_or(true));
+        out.sort_unstable();
+        out.dedup();
         Ok(out)
     }
 
@@ -1383,6 +1543,28 @@ impl Conn {
         flags: &[String],
         bytes: &[u8],
     ) -> Result<(u32, u32), SiftError> {
+        let guard = PoisonOnDrop::new(self.poison_flag.clone());
+        let out = self.append_inner(folder, flags, bytes).await;
+        guard.disarm();
+        out
+    }
+
+    async fn append_inner(
+        &mut self,
+        folder: &str,
+        flags: &[String],
+        bytes: &[u8],
+    ) -> Result<(u32, u32), SiftError> {
+        if self.poison_flag.swap(false, Ordering::SeqCst) {
+            self.invalidate();
+        }
+        if self.poisoned {
+            return Err(SiftError::app(
+                "imap_transient",
+                "Stale connection; reconnecting.",
+                true,
+            ));
+        }
         let flag_str = if flags.is_empty() {
             String::new()
         } else {

@@ -7,7 +7,7 @@ use rusqlite::params;
 /// written before this version are `unverified` and confirmed on first read.
 pub const CACHE_VERSION: i64 = 1;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AttPut {
     pub id: String,
     pub account_id: String,
@@ -81,6 +81,65 @@ fn finish(raw: RawRec) -> AttachmentRecord {
     rec
 }
 
+/// One attachment upsert on an existing connection/transaction (P4.5). Shares
+/// the exact conflict handling of [`Db::attachments_put`]: richer metadata
+/// fills gaps and never erases a valid local cache file.
+pub(crate) fn attachments_put_conn(c: &rusqlite::Connection, a: &AttPut) -> Result<()> {
+    let (dz, decoded) = match a.data.as_ref() {
+        Some(d) => (
+            Some(zstd::encode_all(d.as_slice(), 3).context("compress attachment")?),
+            Some(d.len() as i64),
+        ),
+        None => (None, None),
+    };
+    let state = if dz.is_some() {
+        CacheState::Unverified
+    } else {
+        CacheState::Missing
+    };
+    c.execute(
+        "INSERT INTO attachments
+           (id,account_id,message_id,gmail_att_id,part_id,filename,mime,size,content_id,
+            is_inline,data_z,cache_state,decoded_size,last_accessed_at,cache_version)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL,?14)
+         ON CONFLICT(account_id,message_id,part_id) DO UPDATE SET
+           gmail_att_id = COALESCE(NULLIF(attachments.gmail_att_id,''), NULLIF(excluded.gmail_att_id,'')),
+           filename     = COALESCE(NULLIF(attachments.filename,''), NULLIF(excluded.filename,'')),
+           content_id   = COALESCE(NULLIF(attachments.content_id,''), NULLIF(excluded.content_id,'')),
+           mime         = COALESCE(NULLIF(attachments.mime,''), NULLIF(excluded.mime,''), attachments.mime),
+           size         = MAX(attachments.size, excluded.size),
+           is_inline    = MAX(attachments.is_inline, excluded.is_inline),
+           data_z       = COALESCE(attachments.data_z, excluded.data_z),
+           decoded_size = CASE WHEN attachments.data_z IS NULL
+                               THEN COALESCE(excluded.decoded_size, attachments.decoded_size)
+                               ELSE attachments.decoded_size END,
+           cache_state  = CASE
+                            WHEN IFNULL(attachments.local_path,'') <> '' THEN attachments.cache_state
+                            WHEN attachments.data_z IS NOT NULL THEN attachments.cache_state
+                            WHEN excluded.data_z IS NOT NULL THEN excluded.cache_state
+                            ELSE attachments.cache_state END
+           -- local_path is deliberately not assigned: an incoming
+           -- metadata-only row must never erase a valid cache file.",
+        params![
+            a.id,
+            a.account_id,
+            a.message_id,
+            a.gmail_att_id,
+            a.part_id,
+            a.filename,
+            a.mime,
+            a.size,
+            a.content_id,
+            a.is_inline as i32,
+            dz,
+            state.as_str(),
+            decoded,
+            CACHE_VERSION,
+        ],
+    )?;
+    Ok(())
+}
+
 impl Db {
     /// Upsert one attachment. `(message_id, part_id)` is the natural key: a
     /// metadata-only row is enriched by a later full-body parse, and a row
@@ -88,62 +147,7 @@ impl Db {
     /// (P2.2). Compression errors propagate; a failed encode never leaves an
     /// empty payload behind a successful insert.
     pub async fn attachments_put(&self, a: AttPut) -> Result<()> {
-        let (dz, decoded) = match a.data.as_ref() {
-            Some(d) => (
-                Some(zstd::encode_all(d.as_slice(), 3).context("compress attachment")?),
-                Some(d.len() as i64),
-            ),
-            None => (None, None),
-        };
-        let state = if dz.is_some() {
-            CacheState::Unverified
-        } else {
-            CacheState::Missing
-        };
-        self.write(move |c| {
-            c.execute(
-                "INSERT INTO attachments
-                   (id,account_id,message_id,gmail_att_id,part_id,filename,mime,size,content_id,
-                    is_inline,data_z,cache_state,decoded_size,last_accessed_at,cache_version)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL,?14)
-                 ON CONFLICT(account_id,message_id,part_id) DO UPDATE SET
-                   gmail_att_id = COALESCE(NULLIF(attachments.gmail_att_id,''), NULLIF(excluded.gmail_att_id,'')),
-                   filename     = COALESCE(NULLIF(attachments.filename,''), NULLIF(excluded.filename,'')),
-                   content_id   = COALESCE(NULLIF(attachments.content_id,''), NULLIF(excluded.content_id,'')),
-                   mime         = COALESCE(NULLIF(attachments.mime,''), NULLIF(excluded.mime,''), attachments.mime),
-                   size         = MAX(attachments.size, excluded.size),
-                   is_inline    = MAX(attachments.is_inline, excluded.is_inline),
-                   data_z       = COALESCE(attachments.data_z, excluded.data_z),
-                   decoded_size = CASE WHEN attachments.data_z IS NULL
-                                       THEN COALESCE(excluded.decoded_size, attachments.decoded_size)
-                                       ELSE attachments.decoded_size END,
-                   cache_state  = CASE
-                                    WHEN IFNULL(attachments.local_path,'') <> '' THEN attachments.cache_state
-                                    WHEN attachments.data_z IS NOT NULL THEN attachments.cache_state
-                                    WHEN excluded.data_z IS NOT NULL THEN excluded.cache_state
-                                    ELSE attachments.cache_state END
-                   -- local_path is deliberately not assigned: an incoming
-                   -- metadata-only row must never erase a valid cache file.",
-                params![
-                    a.id,
-                    a.account_id,
-                    a.message_id,
-                    a.gmail_att_id,
-                    a.part_id,
-                    a.filename,
-                    a.mime,
-                    a.size,
-                    a.content_id,
-                    a.is_inline as i32,
-                    dz,
-                    state.as_str(),
-                    decoded,
-                    CACHE_VERSION,
-                ],
-            )?;
-            Ok(())
-        })
-        .await
+        self.write(move |c| attachments_put_conn(c, &a)).await
     }
 
     pub async fn attachments_for_message(&self, r: &MessageRef) -> Result<Vec<AttachmentMeta>> {

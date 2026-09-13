@@ -63,33 +63,46 @@ impl Default for MsgUpsert {
     }
 }
 
+/// One message upsert on an existing connection/transaction (P4.5), so a
+/// partial-sync batch can write every row and its checkpoint atomically.
+/// The thread row is NOT recomputed here: the batch recomputes each affected
+/// thread once, inside the same transaction (`recompute_thread_conn`).
+pub(crate) fn messages_upsert_conn(c: &rusqlite::Connection, m: &MsgUpsert) -> Result<()> {
+    let labels_json = serde_json::to_string(&m.label_ids)?;
+    c.execute("INSERT INTO messages (id,account_id,thread_id,history_id,internal_date,from_name,from_email,to_json,cc_json,bcc_json,reply_to,subject,snippet,rfc_message_id,in_reply_to,references_json,list_unsubscribe,list_unsubscribe_post,size_estimate,has_attachments,is_unread,is_starred,is_draft,is_sent_by_me,label_ids,body_state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,COALESCE((SELECT body_state FROM messages WHERE account_id=? AND id=?),'none'))
+        ON CONFLICT(account_id,id) DO UPDATE SET account_id=excluded.account_id, thread_id=excluded.thread_id, history_id=excluded.history_id, internal_date=excluded.internal_date, from_name=excluded.from_name, from_email=excluded.from_email, to_json=excluded.to_json, cc_json=excluded.cc_json, bcc_json=excluded.bcc_json, reply_to=excluded.reply_to, subject=excluded.subject, snippet=excluded.snippet, label_ids=excluded.label_ids, is_unread=excluded.is_unread, is_starred=excluded.is_starred, is_draft=excluded.is_draft, has_attachments=MAX(messages.has_attachments, excluded.has_attachments)",
+        params![m.id,m.account_id,m.thread_id,m.history_id,m.internal_date,m.from_name,m.from_email,m.to_json,m.cc_json,m.bcc_json,m.reply_to,m.subject,m.snippet,m.rfc_message_id,m.in_reply_to,m.references_json,m.list_unsubscribe,m.list_unsubscribe_post as i32,m.size_estimate,m.has_attachments as i32,m.is_unread as i32,m.is_starred as i32,m.is_draft as i32,m.is_sent_by_me as i32,labels_json,m.account_id,m.id])?;
+    c.execute(
+        "DELETE FROM message_labels WHERE account_id=? AND message_id=?",
+        params![m.account_id, m.id],
+    )?;
+    for l in &m.label_ids {
+        c.execute("INSERT OR IGNORE INTO message_labels (account_id,message_id,label_id) VALUES (?,?,?)", params![m.account_id, m.id, l])?;
+    }
+    // FTS subject/from/to. The row is keyed by (account_id, message_id);
+    // an existing row keeps its indexed body, a new one starts empty and is
+    // filled in by bodies_put.
+    let from_t = format!(
+        "{} {}",
+        m.from_name.clone().unwrap_or_default(),
+        m.from_email.clone().unwrap_or_default()
+    );
+    let updated = c.execute("UPDATE messages_fts SET subject=?3, from_text=?4, to_text=?5 WHERE account_id=?1 AND message_id=?2",
+        params![m.account_id, m.id, m.subject, from_t, m.to_json])?;
+    if updated == 0 {
+        c.execute("INSERT INTO messages_fts (message_id,account_id,subject,from_text,to_text,body) VALUES (?,?,?,?,?,'')",
+          params![m.id, m.account_id, m.subject, from_t, m.to_json])?;
+    }
+    Ok(())
+}
+
 impl Db {
     /// Upsert one message keyed by its full identity `(account_id, id)`. The
     /// provider id alone is not unique across accounts (DB-02).
     pub async fn messages_upsert(&self, m: MsgUpsert) -> Result<()> {
         let account_id = m.account_id.clone();
         let thread_id = m.thread_id.clone();
-        self.write(move |c| {
-      let labels_json = serde_json::to_string(&m.label_ids)?;
-      c.execute("INSERT INTO messages (id,account_id,thread_id,history_id,internal_date,from_name,from_email,to_json,cc_json,bcc_json,reply_to,subject,snippet,rfc_message_id,in_reply_to,references_json,list_unsubscribe,list_unsubscribe_post,size_estimate,has_attachments,is_unread,is_starred,is_draft,is_sent_by_me,label_ids,body_state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,COALESCE((SELECT body_state FROM messages WHERE account_id=? AND id=?),'none'))
-        ON CONFLICT(account_id,id) DO UPDATE SET account_id=excluded.account_id, thread_id=excluded.thread_id, history_id=excluded.history_id, internal_date=excluded.internal_date, from_name=excluded.from_name, from_email=excluded.from_email, to_json=excluded.to_json, cc_json=excluded.cc_json, bcc_json=excluded.bcc_json, reply_to=excluded.reply_to, subject=excluded.subject, snippet=excluded.snippet, label_ids=excluded.label_ids, is_unread=excluded.is_unread, is_starred=excluded.is_starred, is_draft=excluded.is_draft, has_attachments=MAX(messages.has_attachments, excluded.has_attachments)",
-        params![m.id,m.account_id,m.thread_id,m.history_id,m.internal_date,m.from_name,m.from_email,m.to_json,m.cc_json,m.bcc_json,m.reply_to,m.subject,m.snippet,m.rfc_message_id,m.in_reply_to,m.references_json,m.list_unsubscribe,m.list_unsubscribe_post as i32,m.size_estimate,m.has_attachments as i32,m.is_unread as i32,m.is_starred as i32,m.is_draft as i32,m.is_sent_by_me as i32,labels_json,m.account_id,m.id])?;
-      c.execute("DELETE FROM message_labels WHERE account_id=? AND message_id=?", params![m.account_id, m.id])?;
-      for l in &m.label_ids {
-        c.execute("INSERT OR IGNORE INTO message_labels (account_id,message_id,label_id) VALUES (?,?,?)", params![m.account_id, m.id, l])?;
-      }
-      // FTS subject/from/to. The row is keyed by (account_id, message_id);
-      // an existing row keeps its indexed body, a new one starts empty and is
-      // filled in by bodies_put.
-      let from_t = format!("{} {}", m.from_name.clone().unwrap_or_default(), m.from_email.clone().unwrap_or_default());
-      let updated = c.execute("UPDATE messages_fts SET subject=?3, from_text=?4, to_text=?5 WHERE account_id=?1 AND message_id=?2",
-        params![m.account_id, m.id, m.subject, from_t, m.to_json])?;
-      if updated == 0 {
-        c.execute("INSERT INTO messages_fts (message_id,account_id,subject,from_text,to_text,body) VALUES (?,?,?,?,?,'')",
-          params![m.id, m.account_id, m.subject, from_t, m.to_json])?;
-      }
-      Ok(())
-    }).await?;
+        self.write(move |c| messages_upsert_conn(c, &m)).await?;
         self.recompute_thread(&account_id, &thread_id).await
     }
 

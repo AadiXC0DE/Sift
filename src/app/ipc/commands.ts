@@ -4,6 +4,7 @@ import type {
   Account,
   AttachmentRef,
   AttachmentRefKey,
+  ConnectivityState,
   Contact,
   Draft,
   Label,
@@ -66,6 +67,15 @@ export const api = {
   system_info: () => call<{ version: string; oauth_available: boolean; demo: boolean }>('system_info'),
   sync_now: (account_id?: string) => call<void>('sync_now', { accountId: account_id }),
   sync_status: () => call<SyncStatus[]>('sync_status'),
+  /** Native per-account connectivity (P4.6). */
+  connectivity_state: () => call<ConnectivityState[]>('connectivity_state'),
+  /**
+   * Host reachability hint (P4.6). The frontend bridges `navigator.onLine`
+   * (plus the `online`/`offline` events) here; a hint alone never proves the
+   * provider is reachable, so coming back online re-runs one sync tick per
+   * account instead of trusting it.
+   */
+  app_network_hint: (online: boolean) => call<void>('app_network_hint', { online }),
   labels_list: (account_id: string) => call<Label[]>('labels_list', { accountId: account_id }),
   labels_create: (account_id: string, name: string) =>
     call<Label>('labels_create', { accountId: account_id, name }),

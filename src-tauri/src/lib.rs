@@ -1,6 +1,7 @@
 pub mod app_state;
 pub mod attachments;
 pub mod commands;
+pub mod connectivity;
 pub mod db;
 pub mod demo;
 pub mod dto;
@@ -144,6 +145,9 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
                 eprintln!("demo seed: {e}");
             }
             let state = AppState::new(db, data_dir);
+            // Account-level events (auth:expired, connectivity:state) have no
+            // runtime host; they need the window handle (P4.6).
+            state.set_emitter(app.app_handle().clone());
             app.manage(state);
             // Background engine: per-account poll/drain/backfill + snooze watcher.
             crate::runtime::spawn_supervisor(app.app_handle().clone());
@@ -228,6 +232,8 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::system::sync_now,
             commands::system::system_info,
             commands::system::sync_status,
+            commands::system::connectivity_state,
+            commands::system::app_network_hint,
             commands::system::labels_list,
             commands::system::app_set_badge,
             commands::system::app_open_url,

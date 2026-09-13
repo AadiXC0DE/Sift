@@ -5,7 +5,7 @@
 use super::{
     conn::ImapPool,
     folders::FolderMap,
-    message::{self, fetch_snippet_groups, section_is_html, MetaItem, SnipTarget},
+    message::{self, section_is_html, MetaItem, SnipTarget},
 };
 use crate::db::imap::FolderCursor;
 use crate::dto::Label;
@@ -47,6 +47,7 @@ pub async fn run_full_sync(
         phase: "listing".into(),
         done: 0,
         total: 0,
+        total_known: false,
         last_error: None,
     });
 
@@ -91,10 +92,12 @@ async fn sync_folder(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<FolderCursor, SiftError> {
     // EXAMINE is read-only; label/flag writes use their own SELECT in ops.
-    let info = {
-        let mut guard = pool.worker().await?;
-        let conn = guard.as_mut().expect("connected");
-        conn.select(folder, true).await?
+    // The lease covers the SELECT and the commands that depend on it (P4.3).
+    let (info, all_uids) = {
+        let mut w = pool.with_selected_worker(folder, true, cancel).await?;
+        let info = w.info().clone();
+        let uids = w.conn().uid_search_all().await?;
+        (info, uids)
     };
     let mut cur = FolderCursor {
         role: role.into(),
@@ -105,21 +108,12 @@ async fn sync_folder(
         exists_count: info.exists as i64,
         last_full_scan: Some(crate::db::now_ms()),
     };
-    sink.imap_set_folder(account_id, &cur)
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-
-    // Full UID list, newest first.
-    let all_uids: Vec<u32> = {
-        let mut guard = pool.worker().await?;
-        let conn = guard.as_mut().expect("connected");
-        conn.uid_search_all().await?
-    };
     sink.progress(crate::dto::SyncStatus {
         account_id: account_id.into(),
         phase: "listing".into(),
         done: 0,
         total: all_uids.len() as i64,
+        total_known: true,
         last_error: None,
     });
     // Resume: skip UIDs already stored.
@@ -135,6 +129,18 @@ async fn sync_folder(
         .filter(|u| !stored.contains(&(*u as i64)))
         .collect();
     missing.sort_unstable_by(|a, b| b.cmp(a));
+    // The checkpoint is the LOWEST UID not yet fetched, never the server's
+    // UIDNEXT: chunks commit newest-first, so a checkpoint taken from the
+    // server would let a later partial tick skip everything this interrupted
+    // pass left behind (P4.5).
+    let mut frontier = missing
+        .last()
+        .map(|u| *u as i64)
+        .unwrap_or(info.uidnext as i64);
+    cur.uidnext = frontier;
+    sink.imap_set_folder(account_id, &cur)
+        .await
+        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
     let total = missing.len() as i64;
     let mut done = 0i64;
     let mut snippeted = 0usize;
@@ -144,9 +150,8 @@ async fn sync_folder(
             return Err(SiftError::app("cancelled", "full sync cancelled", false));
         }
         let items: Vec<MetaItem> = {
-            let mut guard = pool.worker().await?;
-            let conn = guard.as_mut().expect("connected");
-            message::fetch_meta(conn, chunk).await?
+            let mut w = pool.with_selected_worker(folder, true, cancel).await?;
+            message::fetch_meta(w.conn(), chunk).await?
         };
         let mut thread_ids = vec![];
         let mut uid_rows = vec![];
@@ -198,26 +203,46 @@ async fn sync_folder(
         sink.imap_put_uids(account_id, role, &uid_rows)
             .await
             .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-        fetch_snippet_groups(pool, account_id, sink, &snip_targets, cancel).await;
+        message::fetch_snippet_groups(pool, folder, account_id, sink, &snip_targets, cancel).await;
         done += chunk.len() as i64;
+        // Advance the frontier only over rows that are now stored: a UID whose
+        // upsert failed stays in `missing` and is retried, never skipped.
+        let stored_now: HashSet<i64> = sink
+            .imap_uid_map(account_id, role)
+            .await
+            .map_err(|e| SiftError::app("db", e.to_string(), false))?
+            .into_iter()
+            .map(|(u, _)| u)
+            .collect();
+        frontier = missing
+            .iter()
+            .map(|u| *u as i64)
+            .filter(|u| !stored_now.contains(u))
+            .min()
+            .unwrap_or(info.uidnext as i64);
+        cur.uidnext = frontier;
+        sink.imap_set_folder(account_id, &cur)
+            .await
+            .map_err(|e| SiftError::app("db", e.to_string(), false))?;
         sink.progress(crate::dto::SyncStatus {
             account_id: account_id.into(),
             phase: "metadata".into(),
             done,
             total,
+            total_known: true,
             last_error: None,
         });
         sink.threads_changed(account_id, &thread_ids);
     }
-    // Refresh cursor post-scan (UIDNEXT may have moved).
-    let info = {
-        let mut guard = pool.worker().await?;
-        let conn = guard.as_mut().expect("connected");
-        conn.select(folder, true).await?
+    // Refresh cursor post-scan (UIDNEXT may have moved). Every UID this pass
+    // saw is stored, so the checkpoint may finally be the server's value.
+    let end = {
+        let w = pool.with_selected_worker(folder, true, cancel).await?;
+        w.info().clone()
     };
-    cur.uidnext = info.uidnext as i64;
-    cur.highestmodseq = info.highestmodseq.map(|v| v as i64);
-    cur.exists_count = info.exists as i64;
+    cur.uidnext = end.uidnext as i64;
+    cur.highestmodseq = end.highestmodseq.map(|v| v as i64);
+    cur.exists_count = end.exists as i64;
     cur.last_full_scan = Some(crate::db::now_ms());
     sink.imap_set_folder(account_id, &cur)
         .await

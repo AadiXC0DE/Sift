@@ -4,7 +4,7 @@ use crate::provider::gmail::{api::GmailApiProvider, client::GmailClient};
 use crate::provider::Provider;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize};
+use std::sync::atomic::{AtomicI64, AtomicUsize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -59,7 +59,6 @@ pub struct AppState {
     /// In-memory copy of app passwords. Avoids re-reading the Keychain (and
     /// re-prompting) when a provider is rebuilt during a session.
     pub app_passwords: RwLock<HashMap<String, String>>,
-    pub online: AtomicBool,
     pub foreground_inflight: Arc<AtomicUsize>,
     pub gate: crate::sync::backfill::BackfillGate,
     pub first_paint_at: AtomicI64,
@@ -67,8 +66,14 @@ pub struct AppState {
     pub emit: Mutex<Option<tauri::AppHandle>>,
     /// Per-account background generations (P4.4).
     pub account_runtimes: Mutex<HashMap<String, AccountRuntime>>,
+    /// Per-account sync coordinator (P4.3): one tick at a time, one
+    /// coalesced follow-up, cancellable with the account's generation.
+    pub sync_coordinators: Mutex<HashMap<String, Arc<crate::sync::coordinator::SyncCoordinator>>>,
     /// The wizard's current sign-in, if any.
     pub setup_runtime: Mutex<Option<SetupRuntime>>,
+    /// Native connectivity state per account (P4.6). The network hint is a
+    /// hint; successful/failed provider operations are the evidence.
+    pub connectivity: crate::connectivity::Connectivity,
 }
 
 impl AppState {
@@ -86,14 +91,15 @@ impl AppState {
             refresh_lock: Mutex::new(Default::default()),
             provider_lock: Mutex::new(Default::default()),
             app_passwords: RwLock::new(Default::default()),
-            online: AtomicBool::new(true),
             foreground_inflight: Arc::new(AtomicUsize::new(0)),
             gate: crate::sync::backfill::BackfillGate::new(),
             first_paint_at: AtomicI64::new(0),
             data_dir,
             emit: Mutex::new(None),
             account_runtimes: Mutex::new(Default::default()),
+            sync_coordinators: Mutex::new(Default::default()),
             setup_runtime: Mutex::new(None),
+            connectivity: crate::connectivity::Connectivity::new(),
         }
     }
 
@@ -104,6 +110,9 @@ impl AppState {
     /// caller can safely swap credentials afterwards.
     pub async fn begin_generation(&self, account_id: &str) -> (u64, CancellationToken) {
         let cancel = CancellationToken::new();
+        // A new generation invalidates the old tick coordinator: its token
+        // must not stay bound to the previous credentials (P4.3/P4.4).
+        self.retire_coordinator(account_id).await;
         let (generation, previous) = {
             let mut runtimes = self.account_runtimes.lock().await;
             let generation = runtimes.get(account_id).map_or(1, |rt| rt.generation + 1);
@@ -181,6 +190,8 @@ impl AppState {
     /// awaited (bounded), then every cached provider, credential and lock for
     /// the account is dropped. Secrets and rows are the caller's next step.
     pub async fn cancel_account(&self, account_id: &str) {
+        self.retire_coordinator(account_id).await;
+        self.connectivity.forget(account_id);
         let email = self
             .db
             .accounts_get(account_id)
@@ -316,11 +327,15 @@ impl AppState {
                 Some(password) => password,
                 None => {
                     let _ = self.db.accounts_set_state(account_id, "reauth").await;
-                    return Err(SiftError::app(
+                    let error = SiftError::app(
                         "imap_needs_app_password",
                         "Reconnect this account with a Google app password.",
                         false,
-                    ));
+                    );
+                    if self.record_provider_error(account_id, &error) {
+                        self.emit_connectivity(account_id);
+                    }
+                    return Err(error);
                 }
             };
             let pool = crate::provider::imap::conn::ImapPool::gmail(acc.email.clone(), pw);
@@ -405,9 +420,27 @@ impl AppState {
         self.app_passwords.write().await.remove(email);
     }
 
+    /// Drop every cached provider for the account so the next call rebuilds it
+    /// from the fresh token (P4.6).
+    ///
+    /// One provider instance serves body reads, attachment fetches, server
+    /// search and the outbox drain, and all of them resolve it through
+    /// `provider_for`, so removing the entry invalidates every lane at once -
+    /// there is no second cache that could keep serving a stale token.
     pub async fn invalidate_oauth_provider(&self, account_id: &str) {
         self.providers.write().await.remove(account_id);
         self.tokens.write().await.remove(account_id);
+    }
+
+    /// Refresh the account's token if needed and rebuild its provider, as one
+    /// single-flight operation (P4.6). Concurrent callers share one refresh;
+    /// a token that goes stale mid-flight is invalidated for every lane.
+    pub async fn refresh_provider(
+        &self,
+        account_id: &str,
+    ) -> Result<std::sync::Arc<dyn Provider>, SiftError> {
+        self.invalidate_oauth_provider(account_id).await;
+        self.provider_for(account_id).await
     }
 
     /// Back-compat shim used while call sites migrate to [`Self::provider_for`].
@@ -447,6 +480,7 @@ impl AppState {
                     "auth:expired",
                     serde_json::json!({ "account_id": account_id }),
                 );
+                self.require_reauth(account_id);
                 return Err(SiftError::reauth("Reconnect this Google account."));
             }
         };
@@ -475,28 +509,135 @@ impl AppState {
                     "auth:expired",
                     serde_json::json!({ "account_id": account_id }),
                 );
+                self.require_reauth(account_id);
                 Err(SiftError::reauth("refresh rejected"))
             }
             Err(e) => Err(e),
         }
     }
 
-    pub fn emit_event(&self, _event: &str, _payload: serde_json::Value) {
-        // Real emit happens in commands via AppHandle; this is a fallback log hook.
-        // Tests assert state transitions, not Tauri events.
+    pub fn emit_event(&self, event: &str, payload: serde_json::Value) {
+        // Progress and store events go out through the runtime host; the
+        // account-level events (auth:expired, connectivity:state) have no host
+        // in the token path, so they use the handle registered at startup.
+        if let Ok(guard) = self.emit.try_lock() {
+            if let Some(app) = guard.as_ref() {
+                use tauri::Emitter;
+                let _ = app.emit(event, payload);
+                return;
+            }
+        }
+        log::debug!(target: "sift::events", "no emitter for {event}");
     }
 
-    pub fn set_online(&self, v: bool) {
-        self.online.store(v, std::sync::atomic::Ordering::SeqCst);
+    /// Register the window handle so account-level events reach the frontend.
+    /// Without this an `auth:expired` had nowhere to go (P4.6).
+    pub fn set_emitter(&self, app: tauri::AppHandle) {
+        if let Ok(mut guard) = self.emit.try_lock() {
+            *guard = Some(app);
+        }
     }
+
+    // -- connectivity (P4.6) -------------------------------------------------
+
+    /// The host's reachability hint (frontend online/offline events).
+    pub fn set_network_reachable(&self, reachable: bool) -> bool {
+        self.connectivity.set_network_reachable(reachable)
+    }
+
+    pub fn network_reachable(&self) -> bool {
+        self.connectivity.network_reachable()
+    }
+
+    /// Back-compat alias: `online` now means "the host network is reachable".
+    pub fn set_online(&self, v: bool) {
+        self.set_network_reachable(v);
+    }
+
     pub fn is_online(&self) -> bool {
-        self.online.load(std::sync::atomic::Ordering::SeqCst)
+        self.network_reachable()
+    }
+
+    /// Background network work for this account should pause.
+    pub fn network_paused(&self, account_id: &str) -> bool {
+        self.connectivity.background_paused(account_id)
+    }
+
+    /// Record a successful provider operation for one account.
+    pub fn record_provider_ok(&self, account_id: &str) -> bool {
+        self.connectivity.record_ok(account_id, crate::db::now_ms())
+    }
+
+    /// Record a provider failure, and tell the UI the account's state changed.
+    pub fn record_provider_error(&self, account_id: &str, error: &SiftError) -> bool {
+        let changed = self
+            .connectivity
+            .record_failure(account_id, error, crate::db::now_ms());
+        if changed {
+            self.emit_connectivity(account_id);
+        }
+        changed
+    }
+
+    /// The account must be reconnected; sticky until an operation succeeds.
+    pub fn require_reauth(&self, account_id: &str) -> bool {
+        let changed = self
+            .connectivity
+            .require_reauth(account_id, crate::db::now_ms());
+        if changed {
+            self.emit_connectivity(account_id);
+        }
+        changed
+    }
+
+    /// Emit this account's connectivity row (state, last success, last error).
+    pub fn emit_connectivity(&self, account_id: &str) {
+        let row = self.connectivity.state_for(account_id, crate::db::now_ms());
+        if let Ok(v) = serde_json::to_value(&row) {
+            self.emit_event("connectivity:state", v);
+        }
+    }
+
+    // -- sync coordination (P4.3) -------------------------------------------
+
+    /// The account's sync coordinator, created on demand and tied to the
+    /// account's live generation token so a removal/reauth cancels it too.
+    pub async fn coordinator_for(
+        &self,
+        account_id: &str,
+    ) -> Arc<crate::sync::coordinator::SyncCoordinator> {
+        let mut coordinators = self.sync_coordinators.lock().await;
+        if let Some(existing) = coordinators.get(account_id) {
+            return existing.clone();
+        }
+        let token = {
+            // Lock order: account_runtimes is taken and released before the
+            // coordinator map is written (never the other way round).
+            let runtimes = self.account_runtimes.lock().await;
+            runtimes
+                .get(account_id)
+                .map(|rt| rt.cancel.child_token())
+                .unwrap_or_default()
+        };
+        let coordinator = Arc::new(crate::sync::coordinator::SyncCoordinator::new(token));
+        coordinators.insert(account_id.to_string(), coordinator.clone());
+        coordinator
+    }
+
+    /// Drop an account's coordinator (removal, or a new generation) so its
+    /// ticks stop and a fresh one binds to the new generation's token.
+    async fn retire_coordinator(&self, account_id: &str) {
+        let previous = self.sync_coordinators.lock().await.remove(account_id);
+        if let Some(previous) = previous {
+            previous.cancel_token().cancel();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
     /// `SIFT_TOKEN_URL` is process-global: these tests must not run
     /// concurrently or one's mock server answers another's refresh.
     static TOKEN_ENV_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();

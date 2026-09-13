@@ -142,6 +142,24 @@ pub enum WatchEvent {
 
 pub type BoxStream<'a, T> = Pin<Box<dyn futures::Stream<Item = T> + Send + 'a>>;
 
+/// One completed partial-sync metadata batch (P4.5).
+///
+/// The message rows, their attachment metadata, the folder's UID map and the
+/// folder checkpoint commit in ONE transaction. A failure therefore writes
+/// none of them: the checkpoint stays *before* the batch, the failed row is
+/// retried on the next tick, and no message can be skipped by a cursor that
+/// advanced past a write that never landed.
+#[derive(Debug, Clone)]
+pub struct MetadataBatch {
+    pub account_id: String,
+    /// Checkpoint after this batch: the first UID not yet committed.
+    pub cursor: FolderCursor,
+    pub messages: Vec<MsgUpsert>,
+    pub attachments: Vec<AttPut>,
+    /// `(uid, message hex)` rows for this folder's UID map.
+    pub uid_pairs: Vec<(i64, String)>,
+}
+
 /// Everything a sync or mutation path needs from the local store. The only
 /// implementation is [`DbSink`] over [`Db`]; providers never touch SQLite
 /// directly, which keeps both transports testable against temp DBs.
@@ -151,6 +169,22 @@ pub trait SyncSink: Send + Sync {
     async fn upsert_labels(&self, labels: &[Label]) -> Result<()>;
     async fn insert_stub(&self, id: &str, account: &str, thread: &str) -> Result<()>;
     async fn upsert_message(&self, m: MsgUpsert) -> Result<()>;
+    /// Commit one metadata batch together with its folder checkpoint (P4.5).
+    ///
+    /// `Ok` means every row and the checkpoint are durable together; `Err`
+    /// means the batch wrote nothing, so the caller must keep the previous
+    /// checkpoint and record a recoverable sync error.
+    async fn commit_metadata_batch(&self, batch: &MetadataBatch) -> Result<()>;
+    /// Pending local label intents for a message, oldest first (P4.5): the
+    /// `(add, remove)` pairs the outbox still owes the server for it. Sync
+    /// re-applies them over the server snapshot, in queue order, until the op
+    /// is acknowledged; an old server snapshot can therefore never undo a
+    /// local change that is still queued.
+    async fn label_intents(
+        &self,
+        account: &str,
+        message_id: &str,
+    ) -> Result<Vec<(Vec<String>, Vec<String>)>>;
     async fn delete_message(&self, r: &MessageRef, thread: &str) -> Result<()>;
     async fn message_labels(&self, r: &MessageRef) -> Result<Vec<String>>;
     async fn apply_label_change(
@@ -259,6 +293,38 @@ impl SyncSink for DbSink {
     }
     async fn upsert_message(&self, m: MsgUpsert) -> Result<()> {
         self.db.messages_upsert(m).await
+    }
+    async fn commit_metadata_batch(&self, batch: &MetadataBatch) -> Result<()> {
+        let b = batch.clone();
+        self.db
+            .write_tx(move |tx| {
+                for m in &b.messages {
+                    crate::db::messages::messages_upsert_conn(tx, m)?;
+                }
+                for a in &b.attachments {
+                    crate::db::attachments::attachments_put_conn(tx, a)?;
+                }
+                crate::db::imap::imap_put_uids_conn(tx, &b.account_id, &b.cursor.role, &b.uid_pairs)?;
+                crate::db::imap::imap_set_folder_conn(tx, &b.account_id, &b.cursor)?;
+                // One recompute per affected thread, inside the same commit:
+                // the list refresh sees either the whole batch or none of it.
+                let mut seen: std::collections::HashSet<(&str, &str)> =
+                    std::collections::HashSet::new();
+                for m in &b.messages {
+                    if seen.insert((m.account_id.as_str(), m.thread_id.as_str())) {
+                        crate::db::threads::recompute_thread_conn(tx, &m.account_id, &m.thread_id)?;
+                    }
+                }
+                Ok(())
+            })
+            .await
+    }
+    async fn label_intents(
+        &self,
+        account: &str,
+        message_id: &str,
+    ) -> Result<Vec<(Vec<String>, Vec<String>)>> {
+        self.db.outbox_label_intents(account, message_id).await
     }
     async fn delete_message(&self, r: &MessageRef, thread: &str) -> Result<()> {
         self.db.messages_delete(r, thread).await

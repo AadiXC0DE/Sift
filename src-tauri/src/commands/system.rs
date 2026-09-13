@@ -37,98 +37,157 @@ pub async fn sync_now(
             Some((_, cancel)) => cancel,
             None => tokio_util::sync::CancellationToken::new(),
         };
+        // A manual refresh is one trigger on the account's coordinator (P4.3):
+        // if a sync tick is already running this request is coalesced into its
+        // single follow-up pass instead of starting a second concurrent run.
+        let coordinator = state.coordinator_for(&aid).await;
         let db = state.db.clone();
         let aid2 = aid.clone();
         let app2 = app.clone();
         tokio::spawn(async move {
-            use crate::provider::{Cursor, PartialOutcome};
-            let raw: Option<String> = db
-                .accounts_get(&aid2)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|a| a.history_id);
-            let cursor = Cursor::parse(raw.as_deref().unwrap_or(""));
-            let sink = crate::provider::DbSink::with_progress(db.clone(), {
-                let app = app2.clone();
-                move |s| {
-                    let _ = app.emit("sync:state", &s);
-                }
-            });
-            let outcome = tokio::select! {
-                _ = cancel.cancelled() => return,
-                outcome = provider.partial_sync(&cursor, &sink) => outcome,
-            };
-            // Manual sync recovers like the poll loop (reconcile REST,
-            // rebuild IMAP) instead of surfacing cursor internals.
-            let outcome = match outcome {
-                Ok(PartialOutcome::NeedsFull) => {
-                    if provider.kind() == crate::provider::ProviderKind::GmailImap {
-                        match tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            synced = provider.full_sync(&sink, cancel.clone()) => synced,
-                        } {
-                            Ok(c) => {
-                                let _ = db
-                                    .accounts_set_history(&aid2, &c.render(), crate::db::now_ms())
-                                    .await;
-                                Ok(PartialOutcome::Synced {
-                                    changed_threads: vec![],
-                                    new_inbox: vec![],
-                                })
-                            }
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        // REST providers reconcile internally on an empty
-                        // cursor, then continue from the fresh history id.
-                        let empty = Cursor::Gmail {
-                            history_id: String::new(),
-                        };
-                        tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            reconciled = provider.partial_sync(&empty, &sink) => reconciled,
-                        }
-                    }
-                }
-                other => other,
-            };
-            if cancel.is_cancelled() {
-                return;
-            }
-            match outcome {
-                Ok(PartialOutcome::Synced {
-                    changed_threads, ..
-                }) => {
-                    let _ = db.accounts_set_state(&aid2, "partial").await;
-                    let tids: Vec<String> = changed_threads
-                        .iter()
-                        .filter(|(a, _)| a == &aid2)
-                        .map(|(_, t)| t.clone())
-                        .collect();
-                    if !tids.is_empty() {
-                        let _ = app2.emit(
-                            "store:threads",
-                            serde_json::json!({ "account_id": aid2, "thread_ids": tids }),
-                        );
-                    }
-                    let _ = app2.emit("store:labels", serde_json::json!({ "account_id": aid2 }));
-                    let _ = app2.emit(
-                        "sync:state",
-                        serde_json::json!({ "account_id": aid2, "phase": "done", "done": 0, "total": 0, "last_error": null }),
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    let _ = app2.emit(
-                        "sync:state",
-                        serde_json::json!({ "account_id": aid2, "phase": "error", "done": 0, "total": 0, "last_error": e.to_string() }),
-                    );
-                }
-            }
+            coordinator
+                .tick_now(|| manual_refresh(db.clone(), app2.clone(), aid2.clone(), provider.clone(), cancel.clone()))
+                .await;
         });
     }
     Ok(())
+}
+
+/// The refresh one manual trigger performs; identical to a runtime tick's
+/// partial pass, including NeedsFull recovery.
+async fn manual_refresh(
+    db: crate::db::Db,
+    app: AppHandle,
+    aid: String,
+    provider: std::sync::Arc<dyn crate::provider::Provider>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    use crate::provider::{Cursor, PartialOutcome};
+    let aid2 = aid.clone();
+    let raw: Option<String> = db
+        .accounts_get(&aid)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|a| a.history_id);
+    let cursor = Cursor::parse(raw.as_deref().unwrap_or(""));
+    let sink = crate::provider::DbSink::with_progress(db.clone(), {
+        let app = app.clone();
+        move |s| {
+            let _ = app.emit("sync:state", &s);
+        }
+    });
+    let outcome = tokio::select! {
+        _ = cancel.cancelled() => return,
+        outcome = provider.partial_sync(&cursor, &sink) => outcome,
+    };
+    // Manual sync recovers like the poll loop (reconcile REST,
+    // rebuild IMAP) instead of surfacing cursor internals.
+    let outcome = match outcome {
+        Ok(PartialOutcome::NeedsFull) => {
+            if provider.kind() == crate::provider::ProviderKind::GmailImap {
+                match tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    synced = provider.full_sync(&sink, cancel.clone()) => synced,
+                } {
+                    Ok(c) => {
+                        let _ = db
+                            .accounts_set_history(&aid2, &c.render(), crate::db::now_ms())
+                            .await;
+                        Ok(PartialOutcome::Synced {
+                            changed_threads: vec![],
+                            new_inbox: vec![],
+                        })
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                // REST providers reconcile internally on an empty
+                // cursor, then continue from the fresh history id.
+                let empty = Cursor::Gmail {
+                    history_id: String::new(),
+                };
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    reconciled = provider.partial_sync(&empty, &sink) => reconciled,
+                }
+            }
+        }
+        other => other,
+    };
+    if cancel.is_cancelled() {
+        return;
+    }
+    match outcome {
+        Ok(PartialOutcome::Synced {
+            changed_threads, ..
+        }) => {
+            let _ = db.accounts_set_state(&aid2, "partial").await;
+            let tids: Vec<String> = changed_threads
+                .iter()
+                .filter(|(a, _)| a == &aid2)
+                .map(|(_, t)| t.clone())
+                .collect();
+            if !tids.is_empty() {
+                let _ = app.emit(
+                    "store:threads",
+                    serde_json::json!({ "account_id": aid2, "thread_ids": tids }),
+                );
+            }
+            let _ = app.emit("store:labels", serde_json::json!({ "account_id": aid2 }));
+            let _ = app.emit(
+                "sync:state",
+                serde_json::json!({ "account_id": aid2, "phase": "done", "done": 0, "total": 0, "total_known": false, "last_error": null }),
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            let _ = app.emit(
+                "sync:state",
+                serde_json::json!({ "account_id": aid2, "phase": "error", "done": 0, "total": 0, "total_known": false, "last_error": e.to_string() }),
+            );
+        }
+    }
+}
+
+/// The host's reachability hint (P4.6): the frontend bridges
+/// `navigator.onLine`/`online`/`offline` here, and startup reports its
+/// current value. A hint alone never proves Gmail is reachable, so recovery
+/// re-runs one real sync tick per account instead of trusting it.
+#[tauri::command]
+pub async fn app_network_hint(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    online: bool,
+) -> Result<(), SiftError> {
+    let changed = state.connectivity.set_network_reachable(online);
+    if let Ok(list) = state.db.accounts_list().await {
+        for a in &list {
+            state.emit_connectivity(&a.id);
+        }
+    }
+    if online && changed {
+        crate::runtime::resume_after_reconnect(app);
+    }
+    Ok(())
+}
+
+/// Per-account connectivity (state, last successful sync, last error).
+#[tauri::command]
+pub async fn connectivity_state(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::connectivity::ConnectivityState>, SiftError> {
+    let ids: Vec<String> = state
+        .db
+        .accounts_list()
+        .await
+        .map_err(|e| SiftError::app("db", e.to_string(), false))?
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+    Ok(state
+        .connectivity
+        .snapshot(&ids, crate::db::now_ms()))
 }
 
 #[tauri::command]
@@ -145,6 +204,8 @@ pub async fn sync_status(state: State<'_, AppState>) -> Result<Vec<SyncStatus>, 
             phase: a.sync_state,
             done: 0,
             total: 0,
+            // The stored state is a phase, not a count: never claim a total.
+            total_known: false,
             last_error: None,
         })
         .collect())

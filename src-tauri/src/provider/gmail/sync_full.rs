@@ -28,16 +28,19 @@ pub async fn run_full_sync(
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let start_hid = profile.history_id.clone();
-    let progress = |phase: &str, done: i64, total: i64| {
+    let progress = |phase: &str, done: i64, total: i64, total_known: bool| {
         sink.progress(crate::dto::SyncStatus {
             account_id: account_id.into(),
             phase: phase.into(),
             done,
             total,
+            total_known,
             last_error: None,
         })
     };
-    progress("profile", 0, 0);
+    // No count yet: the listing phase must read as indeterminate, not empty
+    // (P4.6).
+    progress("profile", 0, 0, false);
     // 2. labels
     let labels = client
         .list_labels()
@@ -77,7 +80,7 @@ pub async fn run_full_sync(
         }
         // insert stubs progressively
         page = resp.next_page_token;
-        progress("listing", ids.len() as i64, ids.len() as i64);
+        progress("listing", ids.len() as i64, ids.len() as i64, true);
         if page.is_none() {
             break;
         }
@@ -161,7 +164,7 @@ pub async fn run_full_sync(
             }
         }
         done += chunk.len() as i64;
-        progress("metadata", done, total);
+        progress("metadata", done, total, true);
     }
     sink.set_history_id(account_id, &start_hid).await?;
     sink.set_sync_state(account_id, "partial").await?;

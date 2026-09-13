@@ -47,10 +47,6 @@ pub struct Behavior {
     pub no_idle: bool,
 
     // -- P1.2 strictness and failure injection -------------------------------
-    /// LEGACY mode (explicitly named, pre-existing non-attachment tests only):
-    /// an unselected session silently defaults to the `all` folder. Strict is
-    /// the default: selected-state commands before SELECT/EXAMINE are BAD.
-    pub legacy_unselected_defaults: bool,
     /// Split every response into this many TCP writes (literal fragmentation).
     pub fragmented_literals: usize,
     /// Delay the tagged completion by this many milliseconds.
@@ -80,17 +76,6 @@ pub struct Behavior {
     pub large_full_message_bytes: Option<usize>,
 }
 
-impl Behavior {
-    /// Explicit legacy opt-in. Only pre-existing non-attachment tests whose
-    /// selected-mailbox fixes land in P4.3 may use this.
-    pub fn legacy() -> Self {
-        Self {
-            legacy_unselected_defaults: true,
-            ..Default::default()
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct State {
     pub msgs: HashMap<u64, FMsg>,
@@ -101,6 +86,14 @@ pub struct State {
     pub behavior: Behavior,
     /// Sanitized command structures (`VERB rest`); credentials never appear.
     pub commands_seen: Vec<String>,
+    /// Every UID FETCH in arrival order as `(selected mailbox, uid set)`, so a
+    /// test can prove each command ran against its intended folder (P4.3).
+    pub fetches: Vec<(String, String)>,
+    /// Post-SELECT pause barrier (P4.3): the handler parks on `pause_rx` after
+    /// answering a SELECT, and notifies `paused`.
+    pub pause_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    pub pause_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub paused: Arc<tokio::sync::Notify>,
     pub idle_txs: Vec<mpsc::UnboundedSender<String>>,
     pub cmd_count: usize,
     /// Byte-exact section payloads for attachment protocol tests, keyed by
@@ -219,6 +212,35 @@ impl FakeGmail {
     /// Sanitized command log (credentials are never recorded).
     pub fn commands(&self) -> Vec<String> {
         self.state.lock().unwrap().commands_seen.clone()
+    }
+
+    /// `(selected mailbox, uid set)` for every UID FETCH so far (P4.3).
+    pub fn fetches(&self) -> Vec<(String, String)> {
+        self.state.lock().unwrap().fetches.clone()
+    }
+
+    /// Suspend the connection right after it answers a SELECT/EXAMINE, until
+    /// [`FakeGmail::release_paused`] runs: a deterministic barrier for the
+    /// P4.3 interleave test.
+    pub fn pause_after_select(&self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut st = self.state.lock().unwrap();
+        st.pause_tx = Some(tx);
+        st.pause_rx = Some(rx);
+    }
+
+    /// Wait until the paused SELECT has been answered and the server parked.
+    pub async fn wait_paused(&self) {
+        let notify = self.state.lock().unwrap().paused.clone();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), notify.notified()).await;
+    }
+
+    /// Answer a SELECT paused by [`FakeGmail::pause_after_select`].
+    pub fn release_paused(&self) {
+        let tx = self.state.lock().unwrap().pause_tx.take();
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
     }
 
     /// Commands matching a prefix, in arrival order.
@@ -400,7 +422,23 @@ fn header_block(m: &FMsg) -> String {
     h
 }
 
-fn parse_uid_set(set: &str, max: u32) -> Vec<u32> {
+/// Resolve a UID set against the folder's ACTUAL UIDs. Ranges are matched by
+/// membership, never expanded: `1:*` against a UIDNEXT of a billion must not
+/// materialize a billion entries (the P4.5 sparse-scan test depends on the
+/// fake behaving like a real server here).
+fn parse_uid_set(set: &str, uids: &[u32]) -> Vec<u32> {
+    let mut out: Vec<u32> = uids
+        .iter()
+        .copied()
+        .filter(|u| uid_in_set(*u, set))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+#[allow(dead_code)]
+fn parse_uid_set_unbounded(set: &str, max: u32) -> Vec<u32> {
     let mut out = HashSet::new();
     for part in set.split(',') {
         let part = part.trim();
@@ -634,6 +672,13 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                     d
                 };
                 write_out(&mut w, out.as_bytes(), &state).await;
+                // Deterministic barrier (P4.3): the SELECT is answered and the
+                // connection parks before it reads the next command.
+                let rx = state.lock().unwrap().pause_rx.take();
+                if let Some(rx) = rx {
+                    state.lock().unwrap().paused.notify_one();
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(30), rx).await;
+                }
                 if drop_now {
                     // Selected state is established, then the socket dies
                     // before the next command (P1.3 recovery test).
@@ -676,12 +721,11 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                 let subverb = sub.next().unwrap_or("").to_ascii_uppercase();
                 let subrest = sub.next().unwrap_or("").to_string();
                 // P1.2: selected-state operations before SELECT/EXAMINE are a
-                // protocol error. Legacy mode (explicit opt-in) keeps the old
-                // `all` default for pre-existing non-attachment tests.
-                let legacy = state.lock().unwrap().behavior.legacy_unselected_defaults;
+                // protocol error. There is no lenient mode any more: a test
+                // that forgets to select must fail here (P4.3 migrated the
+                // last callers).
                 let sel = match selected.clone() {
                     Some(s) => s,
-                    None if legacy => "all".to_string(),
                     None => {
                         write_out(
                             &mut w,
@@ -726,6 +770,13 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                                 continue;
                             }
                         };
+                        // Which mailbox this FETCH actually ran against
+                        // (P4.3 interleave tests).
+                        state
+                            .lock()
+                            .unwrap()
+                            .fetches
+                            .push((sel.clone(), set.clone()));
                         let (bad, transient) = {
                             let mut st = state.lock().unwrap();
                             let bad = st.behavior.fetch_bad;
@@ -1277,6 +1328,20 @@ fn uid_search(state: &Arc<Mutex<State>>, folder: &str, query: &str) -> Vec<u32> 
         v.sort_unstable();
         return v;
     }
+    // `UID <set>`: the actual UIDs inside the requested interval (P4.5). The
+    // bounded partial-sync scan depends on this returning only real UIDs.
+    if let Some(rest) = q.strip_prefix("UID ") {
+        let mut v: Vec<u32> = st
+            .msgs
+            .values()
+            .filter(|m| m.folders.contains_key(folder))
+            .filter_map(|m| m.folders.get(folder).copied())
+            .filter(|u| uid_in_set(*u, rest.trim()))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        return v;
+    }
     // ALL (ignore other criteria for the fake)
     let mut v: Vec<u32> = st
         .msgs
@@ -1285,6 +1350,38 @@ fn uid_search(state: &Arc<Mutex<State>>, folder: &str, query: &str) -> Vec<u32> 
         .collect();
     v.sort_unstable();
     v
+}
+
+/// `UID 12:34,56,*`-style set membership for the fake server.
+fn uid_in_set(uid: u32, set: &str) -> bool {
+    for part in set.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        match part.split_once(':') {
+            Some((lo, hi)) => {
+                let lo = lo.trim().parse::<u32>().unwrap_or(1);
+                let hi = if hi.trim() == "*" {
+                    u32::MAX
+                } else {
+                    hi.trim().parse::<u32>().unwrap_or(u32::MAX)
+                };
+                if uid >= lo && uid <= hi {
+                    return true;
+                }
+            }
+            None => {
+                if part == "*" {
+                    return true;
+                }
+                if part.trim().parse::<u32>() == Ok(uid) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Write a response, optionally fragmented across several TCP writes and/or
@@ -1390,13 +1487,12 @@ fn uid_fetch(
     since: Option<u64>,
 ) -> Vec<u8> {
     let st = state.lock().unwrap();
-    let max_uid = st
+    let folder_uids: Vec<u32> = st
         .msgs
         .values()
         .filter_map(|m| m.folders.get(folder).copied())
-        .max()
-        .unwrap_or(1);
-    let want: HashSet<u32> = parse_uid_set(set, max_uid).into_iter().collect();
+        .collect();
+    let want: HashSet<u32> = parse_uid_set(set, &folder_uids).into_iter().collect();
     let wrong = st.behavior.wrong_uid_response;
     let omit = st.behavior.omit_section_data;
     let mut seq = 0u32;
@@ -1695,13 +1791,12 @@ fn uid_store(state: &Arc<Mutex<State>>, folder: &str, args: &str) -> (usize, Vec
         })
         .unwrap_or_default();
     let mut st = state.lock().unwrap();
-    let max_uid = st
+    let folder_uids: Vec<u32> = st
         .msgs
         .values()
         .filter_map(|m| m.folders.get(folder).copied())
-        .max()
-        .unwrap_or(1);
-    let want = parse_uid_set(set, max_uid);
+        .collect();
+    let want = parse_uid_set(set, &folder_uids);
     st.modseq += 1;
     let ms = st.modseq;
     let mut n = 0;
@@ -1782,13 +1877,12 @@ fn uid_store(state: &Arc<Mutex<State>>, folder: &str, args: &str) -> (usize, Vec
 
 fn uid_move(state: &Arc<Mutex<State>>, src: &str, dest_role: &str, set: &str) {
     let mut st = state.lock().unwrap();
-    let max_uid = st
+    let folder_uids: Vec<u32> = st
         .msgs
         .values()
         .filter_map(|m| m.folders.get(src).copied())
-        .max()
-        .unwrap_or(1);
-    let want = parse_uid_set(set, max_uid);
+        .collect();
+    let want = parse_uid_set(set, &folder_uids);
     st.modseq += 1;
     let ms = st.modseq;
     // resolve dest folder name presence (CREATE may have added user folders)
@@ -1819,13 +1913,12 @@ fn uid_move(state: &Arc<Mutex<State>>, src: &str, dest_role: &str, set: &str) {
 
 fn uid_copy(state: &Arc<Mutex<State>>, src: &str, dest_role: &str, set: &str) {
     let mut st = state.lock().unwrap();
-    let max_uid = st
+    let folder_uids: Vec<u32> = st
         .msgs
         .values()
         .filter_map(|m| m.folders.get(src).copied())
-        .max()
-        .unwrap_or(1);
-    let want = parse_uid_set(set, max_uid);
+        .collect();
+    let want = parse_uid_set(set, &folder_uids);
     st.modseq += 1;
     let ms = st.modseq;
     let next = *st.next_uid.get(dest_role).unwrap_or(&1);
@@ -1874,13 +1967,12 @@ fn uid_expunge_deleted(state: &Arc<Mutex<State>>, folder: &str) {
 
 fn uid_expunge_set(state: &Arc<Mutex<State>>, folder: &str, set: &str) {
     let mut st = state.lock().unwrap();
-    let max_uid = st
+    let folder_uids: Vec<u32> = st
         .msgs
         .values()
         .filter_map(|m| m.folders.get(folder).copied())
-        .max()
-        .unwrap_or(1);
-    let want = parse_uid_set(set, max_uid);
+        .collect();
+    let want = parse_uid_set(set, &folder_uids);
     let dead: Vec<u64> = st
         .msgs
         .iter()

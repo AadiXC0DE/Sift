@@ -415,8 +415,7 @@ pub async fn message_body(
         .as_ref()
         .is_err_and(|error| should_refresh_body_provider(error, provider.kind()))
     {
-        state.invalidate_oauth_provider(&message.account_id).await;
-        match state.provider_for(&message.account_id).await {
+        match state.refresh_provider(&message.account_id).await {
             Ok(refreshed) => {
                 provider = refreshed;
                 fetched = provider.fetch_body(&message.message_id).await;

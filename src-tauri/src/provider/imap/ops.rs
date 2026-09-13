@@ -80,10 +80,10 @@ pub async fn locate(
             continue;
         };
         let found = {
-            let mut guard = pool.worker().await?;
-            let conn = guard.as_mut().expect("connected");
-            conn.select(name, true).await?;
-            conn.uid_search_gmmsgid(dec).await?
+            // The SELECT and the SEARCH that depends on it share one lease
+            // (P4.3).
+            let mut w = pool.with_selected_worker(name, true, &no_cancel()).await?;
+            w.conn().uid_search_gmmsgid(dec).await?
         };
         if let Some(uid) = found.into_iter().next() {
             let _ = db
@@ -95,14 +95,10 @@ pub async fn locate(
     Ok(None)
 }
 
-async fn select(pool: &ImapPool, folder: &str, readonly: bool) -> Result<(), SiftError> {
-    let mut guard = pool.worker().await?;
-    guard
-        .as_mut()
-        .expect("connected")
-        .select(folder, readonly)
-        .await?;
-    Ok(())
+/// Ops run under the account generation's own cancellation (the runtime drops
+/// the whole future); the mailbox lease itself needs no second token.
+fn no_cancel() -> tokio_util::sync::CancellationToken {
+    tokio_util::sync::CancellationToken::new()
 }
 
 async fn store(
@@ -116,10 +112,10 @@ async fn store(
         return Ok(true);
     }
     let set = super::message::uid_set(uids, uids.len());
-    let mut guard = pool.worker().await?;
-    let conn = guard.as_mut().expect("connected");
-    conn.select(folder, false).await?;
-    match conn.uid_store(&set, mode, values).await {
+    let mut w = pool
+        .with_selected_worker(folder, false, &no_cancel())
+        .await?;
+    match w.conn().uid_store(&set, mode, values).await {
         Ok(()) => Ok(true),
         Err(SiftError::App { message, .. }) if already_applied(&message) => Ok(false),
         Err(e) => Err(e),
@@ -145,9 +141,10 @@ async fn move_to(
     };
     let set = super::message::uid_set(uids, uids.len());
     let caps = pool.caps().await;
-    let mut guard = pool.worker().await?;
-    let conn = guard.as_mut().expect("connected");
-    conn.select(from_folder, false).await?;
+    let mut w = pool
+        .with_selected_worker(from_folder, false, &no_cancel())
+        .await?;
+    let conn = w.conn();
     if caps.mov {
         match conn.uid_move(&set, dest).await {
             Ok(()) => return Ok(true),
@@ -177,6 +174,7 @@ async fn ensure_label(pool: &ImapPool, name: &str) -> Result<(), SiftError> {
     ) {
         return Ok(());
     }
+    // CREATE is not selected-state: hold the plain worker lease.
     let mut guard = pool.worker().await?;
     let conn = guard.as_mut().expect("connected");
     match conn.create(name).await {
@@ -231,13 +229,12 @@ pub async fn apply_modify_labels(
             }
             any = true;
             if want_trash {
-                // From \All (or wherever it lives) to Trash.
-                let _ = select(pool, &folder, false).await;
+                // From \All (or wherever it lives) to Trash; `move_to` leases
+                // the connection and SELECTs the source inside the lease.
                 move_to(pool, folders, &folder, "trash", &[uid]).await?;
                 moved_any = true;
                 let _ = db.imap_delete_uids(account_id, &role, &[uid as i64]).await;
             } else if want_spam {
-                let _ = select(pool, &folder, false).await;
                 move_to(pool, folders, &folder, "junk", &[uid]).await?;
                 moved_any = true;
                 let _ = db.imap_delete_uids(account_id, &role, &[uid as i64]).await;
@@ -508,10 +505,9 @@ pub async fn apply_delete_threads(
                             continue;
                         };
                         let uids = {
-                            let mut guard = pool.worker().await?;
-                            let conn = guard.as_mut().expect("connected");
-                            conn.select(name, true).await?;
-                            conn.uid_search_gmmsgid(dec).await.unwrap_or_default()
+                            let mut w =
+                                pool.with_selected_worker(name, true, &no_cancel()).await?;
+                            w.conn().uid_search_gmmsgid(dec).await.unwrap_or_default()
                         };
                         if let Some(u) = uids.into_iter().next() {
                             found = Some((r.to_string(), u as i64));
@@ -526,9 +522,12 @@ pub async fn apply_delete_threads(
                 .name_for_role(&role)
                 .unwrap_or(&folders.trash)
                 .to_string();
-            let mut guard = pool.worker().await?;
-            let conn = guard.as_mut().expect("connected");
-            conn.select(&folder, false).await?;
+            // Flag + targeted EXPUNGE share one lease with the SELECT that
+            // opened the mailbox (P4.3).
+            let mut w = pool
+                .with_selected_worker(&folder, false, &no_cancel())
+                .await?;
+            let conn = w.conn();
             let set = super::message::uid_set(&[uid as u32], 1);
             let _ = conn
                 .uid_store(&set, "+FLAGS", &["\\Deleted".to_string()])
@@ -565,12 +564,12 @@ pub async fn draft_upsert(
             .await?
     };
     let _ = uidvalidity;
-    // Resolve the new UID to its Gmail msgid.
+    // Resolve the new UID to its Gmail msgid; the SELECT and the FETCH that
+    // depends on it share one lease (P4.3).
     let msgid = {
-        let mut guard = pool.worker().await?;
-        let conn = guard.as_mut().expect("connected");
-        conn.select(&drafts, true).await?;
-        let fetched = conn
+        let mut w = pool.with_selected_worker(&drafts, true, &no_cancel()).await?;
+        let fetched = w
+            .conn()
             .uid_fetch_items(&uid.to_string(), &super::conn::FetchItems::new().gmail_msgid())
             .await?;
         fetched
@@ -623,10 +622,8 @@ pub async fn draft_delete(
             let Some(dec) = ids::from_hex(remote_id) else {
                 return Ok(());
             };
-            let mut guard = pool.worker().await?;
-            let conn = guard.as_mut().expect("connected");
-            conn.select(&drafts, false).await?;
-            match conn.uid_search_gmmsgid(dec).await {
+            let mut w = pool.with_selected_worker(&drafts, false, &no_cancel()).await?;
+            match w.conn().uid_search_gmmsgid(dec).await {
                 Ok(v) => v.into_iter().next().unwrap_or(0),
                 Err(_) => return Ok(()),
             }
@@ -635,9 +632,8 @@ pub async fn draft_delete(
     if uid == 0 {
         return Ok(());
     }
-    let mut guard = pool.worker().await?;
-    let conn = guard.as_mut().expect("connected");
-    conn.select(&drafts, false).await?;
+    let mut w = pool.with_selected_worker(&drafts, false, &no_cancel()).await?;
+    let conn = w.conn();
     let set = super::message::uid_set(&[uid], 1);
     let _ = conn
         .uid_store(&set, "+FLAGS", &["\\Deleted".to_string()])

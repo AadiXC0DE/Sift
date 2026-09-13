@@ -24,6 +24,13 @@ pub struct SyncStatus {
     pub phase: String,
     pub done: i64,
     pub total: i64,
+    /// Whether `total` is a real message count (P4.6).
+    ///
+    /// `false` means the mailbox is still being listed: the UI must show
+    /// indeterminate progress, never "mailbox empty" — an unknown total is not
+    /// a zero-message account.
+    #[serde(rename = "totalKnown")]
+    pub total_known: bool,
     pub last_error: Option<String>,
 }
 
@@ -53,6 +60,14 @@ pub enum View {
     Archive,
     Spam,
     Trash,
+    /// Every thread with at least one message outside Trash/Junk (P3.6).
+    ///
+    /// This is a MAILBOX scope, not an account scope: it never maps onto the
+    /// unified "all accounts" selection. Inbox and Sent qualify; Archive stays
+    /// non-Inbox, non-Trash/Junk, non-draft. Membership is decided per message,
+    /// so a mixed thread (one archived message plus one inbox message) appears.
+    #[serde(rename = "all_mail")]
+    AllMail,
     #[serde(rename = "label")]
     Label {
         #[serde(rename = "labelId")]

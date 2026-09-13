@@ -61,6 +61,12 @@ fn attr_msgid(attrs: &[FetchAttr]) -> Option<u64> {
     })
 }
 
+/// Selected-mailbox batches opened without a caller cancellation token (the
+/// account generation's own token cancels the whole loop instead).
+fn no_cancel_token() -> tokio_util::sync::CancellationToken {
+    tokio_util::sync::CancellationToken::new()
+}
+
 /// Transfer encoding of one section, from a BODYSTRUCTURE we already hold.
 ///
 /// `None` means the section is not an addressable single part of this
@@ -241,13 +247,16 @@ impl FetchCtx {
         })
     }
 
-    /// Folder map, discovering on the worker connection when not cached.
-    async fn folder_map(&self) -> Result<FolderMap, SiftError> {
+    /// Folder map, discovering on the caller's connection when not cached.
+    ///
+    /// Taking the worker here would deadlock callers that already hold the
+    /// lease (a body read resolving its locator holds it), so discovery runs
+    /// on the connection the caller is using (P4.3).
+    async fn folder_map(&self, conn: &mut Conn) -> Result<FolderMap, SiftError> {
         if let Some(map) = self.folders.lock().await.clone() {
             return Ok(map);
         }
-        let mut guard = self.pool.worker().await?;
-        let map = folders::discover(guard.as_mut().expect("connected")).await?;
+        let map = folders::discover(conn).await?;
         *self.folders.lock().await = Some(map.clone());
         Ok(map)
     }
@@ -323,7 +332,7 @@ impl FetchCtx {
                 "message-id at resolve (code=- ref {corr})"
             ))
         })?;
-        let mut map = self.folder_map().await?;
+        let mut map = self.folder_map(conn).await?;
         if PREFERRED_ROLES.iter().any(|r| map.name_for_role(r).is_none()) {
             if let Ok(fresh) = self.refresh_folder_map(conn).await {
                 map = fresh;
@@ -1223,11 +1232,15 @@ impl Provider for GmailImapProvider {
         let name = folders
             .name_for_role("all")
             .ok_or_else(|| SiftError::app("imap_protocol", "no All folder", false))?;
+        // The raw search, and every metadata FETCH that follows it, run in
+        // \All: the lease is re-taken per chunk so the mailbox is always the
+        // one this search was issued against (P4.3).
         let uids = {
-            let mut guard = self.pool.worker().await?;
-            let conn = guard.as_mut().expect("connected");
-            conn.select(name, true).await?;
-            conn.uid_search_raw(q).await?
+            let mut w = self
+                .pool
+                .with_selected_worker(name, true, &no_cancel_token())
+                .await?;
+            w.conn().uid_search_raw(q).await?
         };
         let mut out = vec![];
         let mut count = 0u32;
@@ -1236,9 +1249,11 @@ impl Provider for GmailImapProvider {
                 break;
             }
             let items = {
-                let mut guard = self.pool.worker().await?;
-                let conn = guard.as_mut().expect("connected");
-                message::fetch_meta(conn, chunk).await?
+                let mut w = self
+                    .pool
+                    .with_selected_worker(name, true, &no_cancel_token())
+                    .await?;
+                message::fetch_meta(w.conn(), chunk).await?
             };
             for item in &items {
                 if count >= limit {

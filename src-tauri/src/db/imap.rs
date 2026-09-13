@@ -16,18 +16,40 @@ pub struct FolderCursor {
     pub last_full_scan: Option<i64>,
 }
 
+/// Folder checkpoint write on an existing connection/transaction (P4.5), so a
+/// partial-sync batch can persist its UID map and checkpoint in one commit.
+pub(crate) fn imap_set_folder_conn(
+    c: &rusqlite::Connection,
+    account_id: &str,
+    cur: &FolderCursor,
+) -> Result<()> {
+    c.execute(
+        "INSERT INTO imap_folders (account_id,role,name,uidvalidity,uidnext,highestmodseq,exists_count,last_full_scan) VALUES (?,?,?,?,?,?,?,?) \
+         ON CONFLICT(account_id,role) DO UPDATE SET name=excluded.name, uidvalidity=excluded.uidvalidity, uidnext=excluded.uidnext, highestmodseq=excluded.highestmodseq, exists_count=excluded.exists_count, last_full_scan=excluded.last_full_scan",
+        params![account_id, cur.role, cur.name, cur.uidvalidity, cur.uidnext, cur.highestmodseq, cur.exists_count, cur.last_full_scan],
+    )?;
+    Ok(())
+}
+
+/// UID→message rows on an existing connection/transaction (P4.5).
+pub(crate) fn imap_put_uids_conn(
+    c: &rusqlite::Connection,
+    account_id: &str,
+    role: &str,
+    pairs: &[(i64, String)],
+) -> Result<()> {
+    let mut s = c
+        .prepare("INSERT OR REPLACE INTO imap_uids (account_id,role,uid,message_id) VALUES (?,?,?,?)")?;
+    for (uid, mid) in pairs {
+        s.execute(params![account_id, role, uid, mid])?;
+    }
+    Ok(())
+}
+
 impl Db {
     pub async fn imap_set_folder(&self, account_id: &str, cur: &FolderCursor) -> Result<()> {
         let (a, c) = (account_id.to_string(), cur.clone());
-        self.write(move |db| {
-            db.execute(
-                "INSERT INTO imap_folders (account_id,role,name,uidvalidity,uidnext,highestmodseq,exists_count,last_full_scan) VALUES (?,?,?,?,?,?,?,?) \
-                 ON CONFLICT(account_id,role) DO UPDATE SET name=excluded.name, uidvalidity=excluded.uidvalidity, uidnext=excluded.uidnext, highestmodseq=excluded.highestmodseq, exists_count=excluded.exists_count, last_full_scan=excluded.last_full_scan",
-                params![a, c.role, c.name, c.uidvalidity, c.uidnext, c.highestmodseq, c.exists_count, c.last_full_scan],
-            )?;
-            Ok(())
-        })
-        .await
+        self.write(move |db| imap_set_folder_conn(db, &a, &c)).await
     }
 
     pub async fn imap_get_folder(
@@ -77,16 +99,7 @@ impl Db {
     ) -> Result<()> {
         let (a, r, ps) = (account_id.to_string(), role.to_string(), pairs.to_vec());
         // Serialized by the write lane; UID diffs self-heal on the next sync.
-        self.write(move |db| {
-            let mut s = db.prepare(
-                "INSERT OR REPLACE INTO imap_uids (account_id,role,uid,message_id) VALUES (?,?,?,?)",
-            )?;
-            for (uid, mid) in &ps {
-                s.execute(params![a, r, uid, mid])?;
-            }
-            Ok(())
-        })
-        .await
+        self.write(move |db| imap_put_uids_conn(db, &a, &r, &ps)).await
     }
 
     pub async fn imap_delete_uids(&self, account_id: &str, role: &str, uids: &[i64]) -> Result<()> {

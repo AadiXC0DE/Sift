@@ -19,7 +19,28 @@ export interface SyncStatus {
   phase: string;
   done: number;
   total: number;
+  /**
+   * Whether `total` is a real message count (P4.6). `false`/absent means the
+   * mailbox is still being listed: show indeterminate progress, never
+   * "mailbox empty". The backend always sends it; it is optional here so
+   * test fixtures that predate it read as "unknown" instead of lying.
+   */
+  totalKnown?: boolean;
   last_error?: string | null;
+}
+
+/**
+ * Native connectivity for one account (P4.6). The host reachability hint is
+ * only a hint; `state` is backed by the outcome of real provider operations.
+ */
+export interface ConnectivityState {
+  accountId: string;
+  state: 'online' | 'offline' | 'degraded' | 'reauth_required';
+  /** Unix ms of the last successful provider operation, if any. */
+  lastOkAt?: number | null;
+  lastError?: string | null;
+  /** Unix ms when the account entered this state. */
+  since: number;
 }
 export interface Label {
   account_id: string;
@@ -40,6 +61,12 @@ export type View =
   | { kind: 'sent' }
   | { kind: 'drafts' }
   | { kind: 'archive' }
+  /**
+   * All Mail (P3.6): every thread with at least one message outside
+   * Trash/Junk. A MAILBOX scope, not an account scope — it never maps onto
+   * the unified "all accounts" selection; `accountIds` still filters rows.
+   */
+  | { kind: 'all_mail' }
   | { kind: 'spam' }
   | { kind: 'trash' }
   | { kind: 'label'; labelId: string }

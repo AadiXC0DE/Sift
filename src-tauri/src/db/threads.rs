@@ -7,10 +7,10 @@ fn parse_addrs(json: &str) -> Vec<Address> {
     serde_json::from_str(json).unwrap_or_default()
 }
 
-impl Db {
-    pub async fn recompute_thread(&self, account_id: &str, thread_id: &str) -> Result<()> {
-        let (a, t) = (account_id.to_string(), thread_id.to_string());
-        self.write(move |c| {
+/// Recompute one thread's aggregate row on an existing connection/transaction,
+/// so a partial-sync batch can write its messages and their thread rows in one
+/// commit (P4.5).
+pub(crate) fn recompute_thread_conn(c: &rusqlite::Connection, a: &str, t: &str) -> Result<()> {
       // 8 aggregate columns in one row scan; tuple keeps it in one query (perf hot path).
       #[allow(clippy::type_complexity)]
       let (mc, uc, starred, has_att, min_d, max_d, subj, snip): (i64,i64,i64,i64,Option<i64>,Option<i64>,Option<String>,Option<String>) =
@@ -45,7 +45,12 @@ impl Db {
         ON CONFLICT(account_id,id) DO UPDATE SET subject=excluded.subject, snippet=excluded.snippet, last_message_at=excluded.last_message_at, first_message_at=excluded.first_message_at, message_count=excluded.message_count, unread_count=excluded.unread_count, is_starred=excluded.is_starred, has_attachments=excluded.has_attachments, participants=excluded.participants, label_ids=excluded.label_ids, in_inbox=excluded.in_inbox, in_trash=excluded.in_trash, in_spam=excluded.in_spam, is_draft_only=excluded.is_draft_only",
         params![a,t,subject,snippet,max_d.unwrap_or(0),min_d.unwrap_or(0),mc,uc,starred,has_att,parts_json,labels_json,in_inbox,all_trash,all_spam,is_draft_only])?;
       Ok(())
-    }).await
+}
+
+impl Db {
+    pub async fn recompute_thread(&self, account_id: &str, thread_id: &str) -> Result<()> {
+        let (a, t) = (account_id.to_string(), thread_id.to_string());
+        self.write(move |c| recompute_thread_conn(c, &a, &t)).await
     }
 
     fn view_where(view: &View) -> (&'static str, Vec<String>) {
@@ -56,6 +61,10 @@ impl Db {
       View::Sent => ("EXISTS (SELECT 1 FROM messages m JOIN message_labels ml ON ml.message_id=m.id WHERE m.thread_id=t.id AND m.account_id=t.account_id AND ml.label_id='SENT')", vec![]),
       View::Drafts => ("EXISTS (SELECT 1 FROM messages m JOIN message_labels ml ON ml.message_id=m.id WHERE m.thread_id=t.id AND m.account_id=t.account_id AND ml.label_id='DRAFT')", vec![]),
       View::Archive => ("t.in_inbox=0 AND t.in_trash=0 AND t.in_spam=0 AND t.is_draft_only=0", vec![]),
+      // P3.6: All Mail is message-level membership - a thread appears when at
+      // least one of its messages carries neither TRASH nor SPAM. It is NOT
+      // the unified account scope: `accountIds` still filters rows.
+      View::AllMail => ("EXISTS (SELECT 1 FROM messages m WHERE m.account_id=t.account_id AND m.thread_id=t.id AND NOT EXISTS (SELECT 1 FROM message_labels ml WHERE ml.account_id=m.account_id AND ml.message_id=m.id AND ml.label_id IN ('TRASH','SPAM')))", vec![]),
       View::Spam => ("t.in_spam=1", vec![]),
       View::Trash => ("t.in_trash=1", vec![]),
       View::Label { label_id } => ("EXISTS (SELECT 1 FROM json_each(t.label_ids) WHERE value=?) AND t.in_trash=0 AND t.in_spam=0", vec![label_id.clone()]),

@@ -14,6 +14,7 @@ export const SiftEvents = [
   'sync:state',
   'outbox:state',
   'auth:expired',
+  'connectivity:state',
   'notify:new-mail',
   'snooze:woke',
   'update:available',

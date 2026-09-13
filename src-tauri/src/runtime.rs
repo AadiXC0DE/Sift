@@ -177,9 +177,17 @@ async fn poll_loop(
         } else {
             settings.poll_background.max(15) as u64
         };
-        if state.is_online() && !crate::demo::is_demo() {
+        // While the account is offline (or awaiting reauth) repeated network
+        // work pauses; the resume path and the user's Retry run a tick
+        // directly instead of waiting for this cadence (P4.6).
+        if !crate::demo::is_demo() && !state.network_paused(account_id) {
             if let Some(provider) = provider(state, account_id, cancel).await {
-                partial_tick(state, account_id, generation, cancel, &*provider, host).await;
+                let coordinator = state.coordinator_for(account_id).await;
+                coordinator
+                    .tick_now(|| {
+                        partial_tick(state, account_id, generation, cancel, &*provider, host)
+                    })
+                    .await;
             }
         }
         if !sleep_or_cancel(cancel, wait).await {
@@ -197,9 +205,8 @@ async fn drain_loop(
     host: &RuntimeHost,
 ) {
     loop {
-        let online = state.is_online();
         let mut worked = false;
-        if online && !crate::demo::is_demo() {
+        if !crate::demo::is_demo() && !state.network_paused(account_id) {
             if let Some(provider) = provider(state, account_id, cancel).await {
                 let drained = tokio::select! {
                     _ = cancel.cancelled() => return,
@@ -211,32 +218,33 @@ async fn drain_loop(
                         if !state.is_current(account_id, generation).await {
                             return;
                         }
-                        // Fresh server state after every mutation.
-                        let cursor = read_cursor(&state.db, account_id).await;
-                        let sink = db_sink(&state.db);
-                        let synced = tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            synced = provider.partial_sync(&cursor, &sink) => synced,
-                        };
-                        if !state.is_current(account_id, generation).await {
-                            return;
-                        }
-                        if let Ok(crate::provider::PartialOutcome::Synced {
-                            changed_threads,
-                            ..
-                        }) = synced
-                        {
-                            emit_store(host, account_id, &changed_threads).await;
-                        }
+                        // Fresh server state after every mutation: one
+                        // coordinated tick, coalesced with any sync that is
+                        // already running (P4.3).
+                        let coordinator = state.coordinator_for(account_id).await;
+                        coordinator
+                            .tick_now(|| {
+                                refresh_after_outbox(
+                                    state, account_id, generation, cancel, &*provider, host,
+                                )
+                            })
+                            .await;
                     }
                     Ok(false) => {}
-                    Err(_) => {
-                        // Failed ops revert + toast at the action layer via outbox:state.
+                    Err(e) => {
+                        // Failed ops revert + toast at the action layer via
+                        // outbox:state; connectivity records the evidence.
+                        state.record_provider_error(account_id, &e);
                     }
                 }
             }
         }
         if let Ok(n) = state.db.outbox_pending_count(account_id).await {
+            let failed = state
+                .db
+                .outbox_failed_count(account_id)
+                .await
+                .unwrap_or(0);
             let summary = state
                 .db
                 .outbox_summary(account_id)
@@ -247,13 +255,26 @@ async fn drain_loop(
                 .collect::<Vec<_>>();
             (host.emit)(
                 "outbox:state",
-                serde_json::json!({"account_id": account_id, "pending": n, "failed": 0, "summary": summary}),
+                serde_json::json!({"account_id": account_id, "pending": n, "failed": failed, "summary": summary}),
             );
         }
         if !sleep_or_cancel(cancel, if worked { 1 } else { 5 }).await {
             return;
         }
     }
+}
+
+/// Post-outbox refresh: the same partial tick the poll loop runs, sharing the
+/// account's coordinator so a mutation never races a full sync (P4.3).
+async fn refresh_after_outbox(
+    state: &AppState,
+    account_id: &str,
+    generation: u64,
+    cancel: &CancellationToken,
+    provider: &dyn crate::provider::Provider,
+    host: &RuntimeHost,
+) {
+    partial_tick(state, account_id, generation, cancel, provider, host).await;
 }
 
 /// Body backfill loop (low priority, yields to foreground fetches).
@@ -265,7 +286,7 @@ async fn backfill_loop(
     _host: &RuntimeHost,
 ) {
     loop {
-        if state.is_online() && !crate::demo::is_demo() {
+        if !crate::demo::is_demo() && !state.network_paused(account_id) {
             if let Some(provider) = provider(state, account_id, cancel).await {
                 let settings = state.db.settings_get().await.unwrap_or_default();
                 let horizon_days = match settings.offline_body_cache.as_str() {
@@ -337,9 +358,14 @@ async fn idle_loop(
                     return;
                 }
             }
-            if state.is_online() && !crate::demo::is_demo() {
+            if !crate::demo::is_demo() && !state.network_paused(account_id) {
                 if let Some(provider) = provider(state, account_id, cancel).await {
-                    partial_tick(state, account_id, generation, cancel, &*provider, host).await;
+                    let coordinator = state.coordinator_for(account_id).await;
+                    coordinator
+                        .tick_now(|| {
+                            partial_tick(state, account_id, generation, cancel, &*provider, host)
+                        })
+                        .await;
                 }
             }
         }
@@ -351,9 +377,10 @@ async fn idle_loop(
     }
 }
 
-/// One partial tick shared by the poll loop and the IDLE consumer. Network
-/// results that land after the account's generation ended are dropped, never
-/// written or emitted (P4.4).
+/// One partial tick shared by the poll loop, the IDLE consumer and the
+/// post-outbox refresh. Network results that land after the account's
+/// generation ended are dropped, never written or emitted (P4.4). Every
+/// outcome is also evidence for the account's connectivity state (P4.6).
 async fn partial_tick(
     state: &AppState,
     account_id: &str,
@@ -377,19 +404,70 @@ async fn partial_tick(
             changed_threads,
             new_inbox,
         }) => {
+            state.record_provider_ok(account_id);
             emit_store(host, account_id, &changed_threads).await;
             notify_new(&state.db, host, &new_inbox).await;
         }
         Ok(PartialOutcome::NeedsFull) => {
+            state.record_provider_ok(account_id);
             recover_full(state, account_id, generation, cancel, provider, host).await;
         }
         Err(e) => {
+            state.record_provider_error(account_id, &e);
             (host.emit)(
                 "sync:state",
-                serde_json::json!({"account_id": account_id, "phase": "error", "done": 0, "total": 0, "last_error": e.to_string()}),
+                serde_json::json!({"account_id": account_id, "phase": "error", "done": 0, "total": 0, "total_known": false, "last_error": e.to_string()}),
             );
         }
     }
+}
+
+/// Resume every account's background work after the host reports the network
+/// came back (P4.6).
+///
+/// One coordinator trigger per account, jittered so a fleet of accounts does
+/// not stampede the provider at the same instant, and never a second tick when
+/// one is already running (the coordinator coalesces it).
+pub fn resume_after_reconnect(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let accounts: Vec<String> = app
+            .state::<AppState>()
+            .db
+            .accounts_list()
+            .await
+            .map(|v| v.into_iter().map(|a| a.id).collect())
+            .unwrap_or_default();
+        for (i, account_id) in accounts.into_iter().enumerate() {
+            let app = app.clone();
+            tokio::spawn(async move {
+                // Deterministic-to-the-millisecond jitter: 0-800 ms, spread by
+                // account index, so recovery is immediate but not synchronized.
+                let jitter_ms = 80 * i as u64 + (crate::db::now_ms() as u64 % 80);
+                tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+                resume_account(&app, &account_id).await;
+            });
+        }
+    });
+}
+
+/// One account's recovery tick: the same partial tick the poll loop runs.
+pub async fn resume_account(app: &AppHandle, account_id: &str) {
+    let state = app.state::<AppState>();
+    let Some((generation, cancel)) = state.runtime_state(account_id).await else {
+        return;
+    };
+    if cancel.is_cancelled() {
+        return;
+    }
+    let Some(provider) = provider(&state, account_id, &cancel).await else {
+        return;
+    };
+    let host = RuntimeHost::for_app(app);
+    let coordinator = state.coordinator_for(account_id).await;
+    coordinator
+        .tick_now(|| partial_tick(&state, account_id, generation, &cancel, &*provider, &host))
+        .await;
+    state.emit_connectivity(account_id);
 }
 
 fn db_sink(db: &Db) -> crate::provider::DbSink {
@@ -452,6 +530,7 @@ async fn recover_full(
             }
             match rebuilt {
                 Ok(cursor) => {
+                    state.record_provider_ok(account_id);
                     let _ = state
                         .db
                         .accounts_set_history(account_id, &cursor.render(), crate::db::now_ms())
@@ -462,13 +541,14 @@ async fn recover_full(
                     );
                     (host.emit)(
                         "sync:state",
-                        serde_json::json!({"account_id": account_id, "phase": "done", "done": 0, "total": 0, "last_error": null}),
+                        serde_json::json!({"account_id": account_id, "phase": "done", "done": 0, "total": 0, "total_known": false, "last_error": null}),
                     );
                 }
                 Err(e) => {
+                    state.record_provider_error(account_id, &e);
                     (host.emit)(
                         "sync:state",
-                        serde_json::json!({"account_id": account_id, "phase": "error", "done": 0, "total": 0, "last_error": e.to_string()}),
+                        serde_json::json!({"account_id": account_id, "phase": "error", "done": 0, "total": 0, "total_known": false, "last_error": e.to_string()}),
                     );
                 }
             }

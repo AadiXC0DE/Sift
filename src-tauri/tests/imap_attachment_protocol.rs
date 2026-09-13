@@ -430,7 +430,13 @@ async fn p1_t03_epoch_change_on_reconnect_fetches_nothing() {
         let mut st = ctx.fake.state.lock().unwrap();
         st.behavior.drop_after_n = Some(st.cmd_count + 1);
     }
-    let e = conn.uid_fetch(&uid.to_string(), "(UID)").await.unwrap_err();
+    let e = conn
+        .uid_fetch_items(
+            &uid.to_string(),
+            &sift::provider::imap::conn::FetchItems::new().uid(),
+        )
+        .await
+        .unwrap_err();
     assert_eq!(
         err_code(&e),
         "imap_uidvalidity_changed",

@@ -90,6 +90,55 @@ impl Db {
         self.read(move |c| Ok(c.query_row("SELECT count(*) FROM outbox_ops WHERE account_id=? AND state IN ('pending','inflight')", params![a], |r| r.get(0))?)).await
     }
 
+    /// Ops the user must see as failed (P4.6): terminal failures plus sends
+    /// whose acceptance is still unknown. This is the real count; the runtime
+    /// must never emit a hardcoded zero.
+    pub async fn outbox_failed_count(&self, account_id: &str) -> Result<i64> {
+        let a = account_id.to_string();
+        self.read(move |c| Ok(c.query_row("SELECT count(*) FROM outbox_ops WHERE account_id=? AND state IN ('failed','uncertain')", params![a], |r| r.get(0))?)).await
+    }
+
+    /// Unacknowledged local label intents for one message, oldest first
+    /// (P4.5): the `(add, remove)` pairs of every `modify_labels` op that is
+    /// still queued or in flight. Sync re-applies them over the server
+    /// snapshot as an overlay; an op leaves the overlay only when it reaches a
+    /// terminal state (done, cancelled) or is reconciled as already applied.
+    pub async fn outbox_label_intents(
+        &self,
+        account_id: &str,
+        message_id: &str,
+    ) -> Result<Vec<(Vec<String>, Vec<String>)>> {
+        let (a, m) = (account_id.to_string(), message_id.to_string());
+        self.read(move |c| {
+            let mut s = c.prepare(
+                "SELECT payload FROM outbox_ops \
+                 WHERE account_id=?1 AND kind='modify_labels' AND state IN ('pending','inflight') \
+                   AND EXISTS (SELECT 1 FROM json_each(json_extract(payload,'$.ids')) WHERE value=?2) \
+                 ORDER BY id",
+            )?;
+            let payloads: Vec<String> = s
+                .query_map(params![a, m], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            let mut out = vec![];
+            for p in payloads {
+                let v: serde_json::Value = serde_json::from_str(&p).unwrap_or_default();
+                let list = |k: &str| -> Vec<String> {
+                    v.get(k)
+                        .and_then(|x| x.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                out.push((list("add"), list("remove")));
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     /// Pending ops grouped into human labels, so the UI can say what is still
     /// being sent instead of a bare number.
     pub async fn outbox_summary(&self, account_id: &str) -> Result<Vec<(String, i64)>> {

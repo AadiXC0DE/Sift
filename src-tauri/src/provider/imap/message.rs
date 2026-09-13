@@ -655,8 +655,13 @@ pub(crate) fn section_is_html(bs: &BodyStruct, section: &str) -> bool {
 
 /// Snippet pass: group targets by (section, encoding) so messages sharing a
 /// section shape need one partial FETCH each.
+///
+/// The folder is explicit (P4.3): every partial FETCH runs inside a lease that
+/// SELECTs `folder` first, so a snippet read can never execute against a
+/// mailbox another task selected in the meantime.
 pub(crate) async fn fetch_snippet_groups(
     pool: &super::conn::ImapPool,
+    folder: &str,
     account_id: &str,
     sink: &dyn super::super::SyncSink,
     targets: &[SnipTarget],
@@ -674,29 +679,25 @@ pub(crate) async fn fetch_snippet_groups(
             return;
         }
         let uids: Vec<u32> = members.iter().map(|m| m.uid).collect();
+        let Some(section) = ImapSection::parse(section) else {
+            log::warn!(
+                target: "sift::imap",
+                "skipping snippet fetch for invalid section locator"
+            );
+            return;
+        };
         let fetched = {
-            let mut guard = match pool.worker().await {
-                Ok(g) => g,
+            let mut w = match pool.with_selected_worker(folder, true, cancel).await {
+                Ok(w) => w,
                 Err(_) => return,
             };
-            let conn = match guard.as_mut() {
-                Some(c) => c,
-                None => return,
-            };
             // Typed item list (P1.1): the partial section read is one item,
-            // and a multi-item FETCH is always parenthesized. Sections are
-            // always numbered now (walk_parts gives a single-part root "1").
-            let Some(section) = ImapSection::parse(section) else {
-                log::warn!(
-                    target: "sift::imap",
-                    "skipping snippet fetch for invalid section locator"
-                );
-                return;
-            };
+            // and a multi-item FETCH is always parenthesized.
             let items = FetchItems::new()
                 .uid()
                 .peek_partial(Some(section), 0, Some(2048));
-            match conn
+            match w
+                .conn()
                 .uid_fetch_items(&uid_set(&uids, uids.len()), &items)
                 .await
             {
