@@ -2,7 +2,7 @@
 
 Fast, quiet email for Gmail on macOS. Website: <https://usesift.xyz>.
 
-Sift is a keyboard-first Gmail client built as a native Mac app. A Rust core mirrors your whole mailbox into a local SQLite database, so every read comes off your disk instead of the network. It starts in about a third of a second, idles around 35 MB, and ships as a 9.8 MB download with no bundled browser.
+Sift is a keyboard-first Gmail client built as a native Mac app. A Rust core mirrors your whole mailbox into a local SQLite database, so lists, search and thread metadata come off your disk instead of the network. The shell is a thin native window around WKWebView with no bundled browser engine. What the build actually costs is gated, not guessed: the eager JavaScript budget is 250 KiB gzip, and the current build measures **187.7 KiB** (gzip, `node scripts/eager-js.mjs --dist dist`, Apple M1, 2026-09-14). Launch time, idle memory and the download size of a signed build are not published as measured numbers — see [`docs/acceptance-dossier.md`](docs/acceptance-dossier.md) for what is measured and what is still pending.
 
 Native to the metal. No Electron.
 
@@ -11,10 +11,10 @@ Native to the metal. No Electron.
 Get the latest build from the [releases page](https://github.com/AadiXC0DE/Sift/releases):
 
 - macOS 13 Ventura or newer
-- Apple Silicon and Intel (universal)
+- Apple Silicon and Intel — the release pipeline builds a universal binary and `scripts/verify-release.sh` fails a build that is not universal
 - Free while in beta
 
-## Connect in about two minutes
+## Connect with an app password
 
 Sift signs in with a Google app password, so there is nothing to configure and no Google Cloud project to create.
 
@@ -22,19 +22,19 @@ Sift signs in with a Google app password, so there is nothing to configure and n
 2. Create an app password named **Sift** at <https://myaccount.google.com/apppasswords>. Google shows a 16 letter password once. Copy it.
 3. Open Sift, choose **Connect your Gmail**, enter your address, paste the password, and press **Connect**.
 
-You are reading your inbox in under two minutes. Refresh tokens and app passwords live only in the macOS Keychain. Your mail never passes through a Sift server, because there is no Sift server.
+That is the whole setup: no Google Cloud project, no OAuth consent screen, no server in the middle. Refresh tokens and app passwords live only in the macOS Keychain. Your mail never passes through a Sift server, because there is no Sift server.
 
 If you want the "Sign in with Google" button instead, see [`docs/oauth.md`](docs/oauth.md) for the optional one time Google Cloud setup.
 
 ## Why people keep it open
 
-- **Speed as a feature.** Navigation, search, and triage target under 50 ms. Opening a thread targets under 100 ms, with metadata first and the body streaming in behind it.
+- **Speed as a feature.** Lists, search and thread metadata are served from local SQLite, and a thread opens with its metadata first while the body streams in behind it. No latency figure is published yet: the release budget rows (launch, list focus, body open, archive, search) are measured on device and are listed as pending in [`docs/acceptance-dossier.md`](docs/acceptance-dossier.md).
 - **Keyboard first, mouse complete.** `j`/`k`, `e`, `#`, `s`, `h`, and a `⌘K` command palette. Every action also has a button.
-- **Reads everything offline.** The full mailbox is mirrored locally with SQLite FTS5. Search is a query, not a round trip. Airplane mode is a normal state.
+- **Reads offline.** Message metadata, labels and the full-text search index are mirrored locally with SQLite FTS5, and bodies are cached as you read them, so search is a query rather than a round trip. Opening a message whose body has never been fetched still needs the network, and upgrading across a rendering migration re-fetches cached bodies.
 - **Multiple accounts as a core feature.** Personal, work, and client inboxes sync independently and show up in one unified inbox with `⌘0`.
 - **Mail renders like mail.** HTML messages are sanitized once at ingest and rendered in a sandboxed frame with authored CSS, tables, and layout preserved. Plain text keeps its whitespace, and quoted replies collapse.
-- **Mistakes are cheap.** Archive and send are optimistic with an undo window, and snooze is built in.
-- **Quiet by default.** No telemetry, no trackers, no ads. Tokens live in the Keychain and nothing phones home.
+- **Mistakes are cheap, within limits.** Archive and other label actions apply locally straight away and can be undone while the operation is still queued, and a queued send can be cancelled before its deadline. Undo reverses the change it queued rather than restoring a recorded previous state; a permanent delete is not undoable, and cancelling a queued send does not reopen the draft. Snooze is built in.
+- **Quiet by default.** No telemetry, no trackers, no ads, and no Sift server. Credentials live in the Keychain. One thing does reach out on your behalf: HTML mail renders with remote images loaded by default, so a message can fetch images from its sender's servers unless you block them in Settings → Privacy. Nothing else in the app contacts a host you did not configure.
 
 ## Shortcuts
 
@@ -44,12 +44,12 @@ Every binding is listed in the app under Settings and can be remapped.
 
 ## How it works
 
-- **Rust core** (`src-tauri/`): sync engine, MIME parsing, HTML sanitizing, FTS indexing, and the outbox. Async tokio tasks per account.
-- **Tauri 2 shell**: a 9.8 MB binary around the macOS WebView. Signing, updates, Keychain, notifications, and single instance handling.
-- **Local first SQLite**: WAL mode with FTS5. One writer, pooled readers, keyset pagination. The UI reads from here and never waits on the network.
+- **Rust core** (`src-tauri/`): sync engine, MIME parsing, HTML sanitizing, FTS indexing, and the outbox. Async tokio tasks per account, cancelled and awaited when an account is removed.
+- **Tauri 2 shell**: a thin native shell around the macOS WebView, with no bundled browser engine. Signing, updates, Keychain, notifications, and single instance handling.
+- **Local first SQLite**: WAL mode with FTS5. One write lane, pooled readers, keyset pagination. The UI reads from here and never waits on the network.
 - **React 19 frontend** (`src/`): rendered in WKWebView. Small IPC payloads, virtualized lists, and sandboxed iframes for HTML mail.
 
-The transport is Gmail over IMAP for app password accounts and the Gmail REST API for OAuth accounts. Both write the same local rows, so the rest of the app does not care which one is in use.
+The transport is Gmail over IMAP for app password accounts and the Gmail REST API for OAuth accounts. Both write the same local rows, so the rest of the app does not care which one is in use. Each signed-in account holds at most three IMAP connections: the sync worker, the IDLE slot, and one bounded foreground lease that user-initiated fetches borrow and release.
 
 More detail in [`docs/architecture.md`](docs/architecture.md).
 
@@ -78,7 +78,7 @@ To run the offline demo mailbox without connecting an account, start the app wit
 
 ## Privacy
 
-Sift talks directly to Google over TLS. No analytics, no crash reporting, no third party endpoints. Credentials are stored in the macOS Keychain, and the local database never contains tokens. See <https://usesift.xyz/privacy> for the full statement.
+Sift talks directly to Google over TLS. No analytics, no crash reporting, no Sift server, no third party endpoints you did not configure. Credentials are stored in the macOS Keychain, and the local database never contains tokens. The one exception is message content: HTML mail loads remote images by default, so images come from the sender's servers until you turn them off in Settings → Privacy. See <https://usesift.xyz/privacy> for the full statement.
 
 ## Contributing
 

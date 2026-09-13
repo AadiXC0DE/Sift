@@ -68,6 +68,15 @@ then un-drafted (`gh release edit --draft=false`). The updater endpoint
 (`releases/latest/download/latest.json`) therefore keeps serving the previous
 good release until every gate has passed. The site rebuild runs last.
 
+`scripts/eager-js.mjs` measures gzip level 9 of every chunk reachable from the
+entry through `dist/.vite/manifest.json` static `imports` (dynamic imports are
+excluded by construction) and fails above the 250 KiB ceiling. Last measured on
+this branch: **192,165 B (187.7 KiB)** against the 256,000 B ceiling, from
+`node scripts/eager-js.mjs --dist dist --max-js-kib 250` on an Apple M1,
+2026-09-14. The DMG half of the budget only runs when a release build exists
+(`--require-artifacts`); CI's debug job runs the script without that flag, so on
+pull requests only the JS ceiling is enforced.
+
 ## Generated metadata
 
 `release-assets/` is the exact upload set; `release-assets/*` is what the
@@ -120,22 +129,33 @@ for inspecting an unsigned debug build and is never used by the workflow.
 
 An app must refuse to open a database written by a newer app instead of
 migrating or writing through it. `src-tauri/src/db/mod.rs` does not guard this
-today: `run_migrations` silently applies no migrations when
-`schema_version` is higher than the newest known migration, then continues.
+today. `Db::open` reads `schema_version` and only calls `run_migrations` when the
+stored version is lower than `MIGRATIONS.len()`; a database from a newer app is
+left alone and the pool is opened against it, so the app runs with missing
+tables instead of refusing.
+
+The rest of the upgrade path is in place: migrations run on a dedicated
+bootstrap connection before the pool exists, each one inside `BEGIN IMMEDIATE`
+with the version update in the same transaction (rollback on failure, foreign
+keys disabled around the rebuild), a `foreign_key_check` runs once the sequence
+finishes so a migration that strands a child row aborts the open, and any upgrade
+from an existing database takes a `VACUUM INTO` snapshot under
+`<data dir>/backups/` before the first migration, pruning to the newest three.
 
 Required change (Rust side, owned by the DB workstream):
 
-1. Add `pub const SCHEMA_VERSION: i64 = 6;` next to `MIGRATIONS` and bump it in
-   the same commit as any new migration.
-2. In `Db::open`, before `apply_pragmas`/the pooled connection (setting
-   `journal_mode=WAL` itself writes to the file), probe the existing file with a
-   read-only connection and, when `schema_version > SCHEMA_VERSION`, return
+1. Add `pub const SCHEMA_VERSION: i64 = 8;` next to `MIGRATIONS` — the list
+   currently ends at `0008_account_scoping` — and bump it in the same commit as
+   any new migration, or derive it from `MIGRATIONS.len()` so it cannot drift.
+2. In `Db::open`, on the bootstrap connection, when the stored
+   `schema_version` is greater than `SCHEMA_VERSION`, return
    `SiftError::App { code: "db_schema_too_new", retryable: false }` with a message
-   that names both versions and says the database was left untouched.
-3. Repeat the same check inside `run_migrations` after reading `v` (defense in
-   depth) and copy `sift.db` to `sift.db.pre-v{old}.bak` before applying any
-   migration, so a user can roll back by reinstalling the older DMG and restoring
-   that file.
+   that names both versions and says the database was left untouched. Do this
+   before the pool is created (opening the write path at all touches the file).
+3. Repeat the same check inside `apply_migrations` after reading the current
+   version (defense in depth). The pre-migration snapshot already exists
+   (`backup_before_migration`), so this only needs the guard, not a second copy
+   of the database.
 4. Add a regression test: create a fixture database with
    `INSERT INTO schema_version VALUES (999)`, assert `Db::open` fails with the
    "newer version" message, and assert the file bytes are unchanged.
