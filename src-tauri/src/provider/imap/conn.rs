@@ -23,6 +23,8 @@ use tokio::sync::{Mutex as TokioMutex, RwLock};
 const BACKOFFS: [u64; 5] = [1, 2, 5, 15, 60];
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const KEEPALIVE_IDLE: Duration = Duration::from_secs(5 * 60);
+/// Foreground connections idle longer than this are dropped (P1.5).
+pub const FOREGROUND_IDLE: Duration = Duration::from_secs(60);
 
 /// Anything we can read IMAP responses from and write commands to.
 trait ImapStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -52,10 +54,275 @@ pub struct SelectInfo {
     pub readonly: bool,
 }
 
+/// The mailbox a connection is currently selected onto (P1.3). `Conn` keeps
+/// this so a reconnect can restore the selection and compare epochs before
+/// any UID is reused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedMailbox {
+    pub name: String,
+    pub readonly: bool,
+    pub uidvalidity: u32,
+}
+
+impl SelectedMailbox {
+    pub fn new(name: impl Into<String>, readonly: bool, uidvalidity: u32) -> Self {
+        Self {
+            name: name.into(),
+            readonly,
+            uidvalidity,
+        }
+    }
+}
+
+/// One FETCH data item (P1.1). Multiple items must render as a parenthesized
+/// list; a single item may travel bare.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FetchItem {
+    Uid,
+    Flags,
+    InternalDate,
+    Rfc822Size,
+    ModSeq,
+    GmailMsgId,
+    GmailThrId,
+    GmailLabels,
+    BodyStructure,
+    /// `BODY.PEEK[<section>]` — never sets `\Seen`.
+    PeekSection(super::ids::ImapSection),
+    /// `BODY.PEEK[]` — whole message, never sets `\Seen`.
+    PeekAll,
+    /// `BODY.PEEK[<section>]<origin[.len]>` — partial section read. `None`
+    /// section means the whole-message partial (`BODY.PEEK[]<origin.len>`).
+    PeekPartial {
+        section: Option<super::ids::ImapSection>,
+        origin: u32,
+        len: Option<u32>,
+    },
+    /// Already-formed item text (legacy callers migrating in P4.3).
+    Raw(String),
+}
+
+impl FetchItem {
+    fn write(&self, out: &mut String) {
+        match self {
+            FetchItem::Uid => out.push_str("UID"),
+            FetchItem::Flags => out.push_str("FLAGS"),
+            FetchItem::InternalDate => out.push_str("INTERNALDATE"),
+            FetchItem::Rfc822Size => out.push_str("RFC822.SIZE"),
+            FetchItem::ModSeq => out.push_str("MODSEQ"),
+            FetchItem::GmailMsgId => out.push_str("X-GM-MSGID"),
+            FetchItem::GmailThrId => out.push_str("X-GM-THRID"),
+            FetchItem::GmailLabels => out.push_str("X-GM-LABELS"),
+            FetchItem::BodyStructure => out.push_str("BODYSTRUCTURE"),
+            FetchItem::PeekSection(s) => {
+                out.push_str("BODY.PEEK[");
+                s.write_wire(out);
+                out.push(']');
+            }
+            FetchItem::PeekAll => out.push_str("BODY.PEEK[]"),
+            FetchItem::PeekPartial {
+                section,
+                origin,
+                len,
+            } => {
+                out.push_str("BODY.PEEK[");
+                if let Some(s) = section {
+                    s.write_wire(out);
+                }
+                out.push(']');
+                use std::fmt::Write;
+                out.push('<');
+                let _ = write!(out, "{origin}");
+                if let Some(l) = len {
+                    let _ = write!(out, ".{l}");
+                }
+                out.push('>');
+            }
+            FetchItem::Raw(r) => out.push_str(r),
+        }
+    }
+}
+
+/// A balanced FETCH item list. This is the ONLY builder for the wire form;
+/// callers must not concatenate item text by hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchItems {
+    items: Vec<FetchItem>,
+}
+
+impl FetchItems {
+    pub fn new() -> Self {
+        Self { items: vec![] }
+    }
+
+    pub fn of(items: impl IntoIterator<Item = FetchItem>) -> Self {
+        Self {
+            items: items.into_iter().collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn uid(mut self) -> Self {
+        self.items.push(FetchItem::Uid);
+        self
+    }
+
+    #[must_use]
+    pub fn gmail_msgid(mut self) -> Self {
+        self.items.push(FetchItem::GmailMsgId);
+        self
+    }
+
+    #[must_use]
+    pub fn bodystructure(mut self) -> Self {
+        self.items.push(FetchItem::BodyStructure);
+        self
+    }
+
+    #[must_use]
+    pub fn peek_section(mut self, section: super::ids::ImapSection) -> Self {
+        self.items.push(FetchItem::PeekSection(section));
+        self
+    }
+
+    #[must_use]
+    pub fn peek_all(mut self) -> Self {
+        self.items.push(FetchItem::PeekAll);
+        self
+    }
+
+    #[must_use]
+    pub fn flags(mut self) -> Self {
+        self.items.push(FetchItem::Flags);
+        self
+    }
+
+    #[must_use]
+    pub fn internaldate(mut self) -> Self {
+        self.items.push(FetchItem::InternalDate);
+        self
+    }
+
+    #[must_use]
+    pub fn rfc822_size(mut self) -> Self {
+        self.items.push(FetchItem::Rfc822Size);
+        self
+    }
+
+    #[must_use]
+    pub fn modseq(mut self) -> Self {
+        self.items.push(FetchItem::ModSeq);
+        self
+    }
+
+    #[must_use]
+    pub fn gmail_thrid(mut self) -> Self {
+        self.items.push(FetchItem::GmailThrId);
+        self
+    }
+
+    #[must_use]
+    pub fn gmail_labels(mut self) -> Self {
+        self.items.push(FetchItem::GmailLabels);
+        self
+    }
+
+    /// Partial section read, e.g. `BODY.PEEK[1]<0.2048>` (P1.1).
+    #[must_use]
+    pub fn peek_partial(
+        mut self,
+        section: Option<super::ids::ImapSection>,
+        origin: u32,
+        len: Option<u32>,
+    ) -> Self {
+        self.items.push(FetchItem::PeekPartial {
+            section,
+            origin,
+            len,
+        });
+        self
+    }
+
+    /// Append one already-formed item atom (used for header-field sections
+    /// that have no dedicated variant). The result is still one item.
+    #[must_use]
+    pub fn raw(mut self, item: impl Into<String>) -> Self {
+        self.items.push(FetchItem::Raw(item.into()));
+        self
+    }
+
+    /// Wrap a caller-supplied, already-balanced item list (legacy path).
+    #[must_use]
+    pub fn verbatim(list: &str) -> Self {
+        Self {
+            items: vec![FetchItem::Raw(list.to_string())],
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Wire form: bare for a single item, parenthesized for two or more.
+    pub fn wire(&self) -> String {
+        let mut out = String::with_capacity(32);
+        if self.items.len() == 1 {
+            self.items[0].write(&mut out);
+        } else {
+            out.push('(');
+            for (i, it) in self.items.iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                it.write(&mut out);
+            }
+            out.push(')');
+        }
+        out
+    }
+}
+
+impl Default for FetchItems {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for FetchItems {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.wire())
+    }
+}
+
+/// A failed FETCH that preserved its tagged completion (P1.6): the
+/// attachment layer needs the kind and machine code, not just a string.
+#[derive(Debug)]
+pub enum TaggedFailure {
+    Tagged {
+        completion: errors::Completion,
+        code: Option<ResponseCode>,
+        text: String,
+    },
+    Conn(SiftError),
+}
+
 pub struct TaggedOutcome {
     pub ok: bool,
+    pub completion: errors::Completion,
     pub code: Option<ResponseCode>,
     pub text: String,
+}
+
+impl TaggedOutcome {
+    /// Completion kind of this tagged response (P1.6).
+    pub fn kind(&self) -> errors::Completion {
+        self.completion
+    }
+}
+
+/// Completion kind of a tagged outcome (OK wins over NO/BAD).
+pub fn completion_of(t: &TaggedOutcome) -> errors::Completion {
+    t.completion
 }
 
 pub struct CommandResult {
@@ -104,6 +371,12 @@ pub struct Conn {
     io: BufReader<Box<dyn ImapStream>>,
     inner: Arc<PoolInner>,
     tag: u32,
+    /// Selected mailbox, updated only after a successful SELECT/EXAMINE and
+    /// cleared before any reconnect or on a poisoned connection (P1.3).
+    selected: Option<SelectedMailbox>,
+    /// A failed literal read leaves the stream framed wrong; the connection
+    /// must be rebuilt before any reuse (P1.3).
+    poisoned: bool,
 }
 
 impl ImapPool {
@@ -292,6 +565,8 @@ impl Conn {
             io: BufReader::new(Box::new(stream)),
             inner,
             tag: 0,
+            selected: None,
+            poisoned: false,
         }
     }
 
@@ -300,7 +575,21 @@ impl Conn {
             io: BufReader::new(Box::new(stream)),
             inner,
             tag: 0,
+            selected: None,
+            poisoned: false,
         }
+    }
+
+    /// The mailbox this connection has selected, if any.
+    pub fn selected(&self) -> Option<&SelectedMailbox> {
+        self.selected.as_ref()
+    }
+
+    /// Mark the connection unusable before reuse (failed literal read, or a
+    /// cancellation/timeout mid-literal).
+    pub fn invalidate(&mut self) {
+        self.selected = None;
+        self.poisoned = true;
     }
 
     fn next_tag(&mut self) -> String {
@@ -308,8 +597,12 @@ impl Conn {
         format!("s{:04}", self.tag)
     }
 
-    /// Rebuild the transport + re-login, preserving the tag counter.
+    /// Rebuild the transport + re-login, preserving the tag counter. The
+    /// selected mailbox is cleared: it is only meaningful on the old socket
+    /// and must be restored explicitly by [`Conn::read_cmd`] (P1.3).
     async fn reconnect(&mut self) -> Result<(), SiftError> {
+        self.selected = None;
+        self.poisoned = false;
         // Fresh inner (new caps/backoff): sharing `self.inner` here would
         // deadlock copying caps (write + read on the same RwLock).
         let fresh_inner = std::sync::Arc::new(PoolInner {
@@ -338,8 +631,8 @@ impl Conn {
         let mut buf = vec![];
         loop {
             // Read one line (or fail on timeout/close).
-            let mut line = vec![];
             let read_line = async {
+                let mut line: Vec<u8> = vec![];
                 loop {
                     let b = self.io.read_u8().await?;
                     line.push(b);
@@ -353,22 +646,38 @@ impl Conn {
                         ));
                     }
                 }
-                Ok::<(), std::io::Error>(())
+                Ok::<Vec<u8>, std::io::Error>(line)
             };
-            tokio::time::timeout(CONNECT_TIMEOUT, read_line)
-                .await
-                .map_err(|_| SiftError::app("offline", "No connection to Gmail.", true))?
-                .map_err(errors::io_err)?;
+            let line = match tokio::time::timeout(CONNECT_TIMEOUT, read_line).await {
+                Ok(Ok(line)) => line,
+                Ok(Err(e)) => {
+                    self.invalidate();
+                    return Err(errors::io_err(e));
+                }
+                Err(_) => {
+                    self.invalidate();
+                    return Err(SiftError::app("offline", "No connection to Gmail.", true));
+                }
+            };
             buf.extend_from_slice(&line);
             // Splice `{n}` / `{n+}` literals inline so the parser sees whole responses.
             if let Some(n) = trailing_literal_len(&line) {
                 // NOTE: no CRLF follows literal bytes on the wire - the
                 // enclosing `)` (or the next response) comes immediately.
+                // A short/aborted literal leaves the stream mis-framed, so
+                // the connection is invalidated before any reuse (P1.3).
                 let mut data = vec![0u8; n];
-                tokio::time::timeout(CONNECT_TIMEOUT, self.io.read_exact(&mut data))
-                    .await
-                    .map_err(|_| SiftError::app("offline", "No connection to Gmail.", true))?
-                    .map_err(errors::io_err)?;
+                match tokio::time::timeout(CONNECT_TIMEOUT, self.io.read_exact(&mut data)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        self.invalidate();
+                        return Err(errors::io_err(e));
+                    }
+                    Err(_) => {
+                        self.invalidate();
+                        return Err(SiftError::app("offline", "No connection to Gmail.", true));
+                    }
+                }
                 buf.extend_from_slice(&data);
                 continue;
             }
@@ -390,15 +699,51 @@ impl Conn {
         }
     }
 
-    /// Send one command; gather untagged responses until the tagged completion.
-    /// On connection loss: rebuild once and retry the command once.
+    /// Send one command **without** any transparent recovery (P1.3).
+    ///
+    /// Mutations (APPEND/MOVE/STORE/EXPUNGE/COPY/CREATE) must never be
+    /// replayed blindly: the first attempt may already have been accepted.
+    /// Safe reads use [`Conn::read_cmd`], which restores the selected
+    /// mailbox and verifies its epoch before reissuing.
     pub async fn cmd(&mut self, body: &str) -> Result<CommandResult, SiftError> {
+        self.cmd_once(body).await
+    }
+
+    /// Read-operation wrapper (P1.3): reconnect once, restore the previously
+    /// selected mailbox, verify UIDVALIDITY, then reissue the read.
+    ///
+    /// Returns `imap_uidvalidity_changed` when the epoch moved, so the
+    /// locator resolver can invalidate the stale UID mapping instead of
+    /// fetching a UID that now names a different message.
+    pub async fn read_cmd(&mut self, body: &str) -> Result<CommandResult, SiftError> {
+        // Capture the selection BEFORE the read: a failed literal/stream
+        // invalidates it, but the recovery still has to restore the mailbox
+        // the caller was reading from.
+        let want = self.selected.clone();
         match self.cmd_once(body).await {
             Err(e) if is_conn_error(&e) => {
-                log::debug!(target: "sift::imap", "connection lost mid-command; reconnecting once");
+                log::debug!(
+                    target: "sift::imap",
+                    "connection lost on read; reconnecting and restoring selection"
+                );
                 // Boxed: reconnect() can reach connect_loop(), which reaches
                 // back here - boxing breaks the async type recursion.
                 Box::pin(self.reconnect()).await?;
+                if let Some(sel) = want {
+                    let info = Box::pin(self.select_once(&sel.name, sel.readonly)).await?;
+                    if info.uidvalidity != sel.uidvalidity {
+                        log::warn!(
+                            target: "sift::imap",
+                            "UIDVALIDITY changed on reconnect ({} -> {}); refusing to reuse UIDs",
+                            sel.uidvalidity,
+                            info.uidvalidity
+                        );
+                        return Err(errors::uidvalidity_changed(&format!(
+                            "EXAMINE at restore-epoch (code=- ref {})",
+                            errors::correlation_id("", &sel.name, "uidvalidity")
+                        )));
+                    }
+                }
                 self.cmd_once(body).await
             }
             other => other,
@@ -406,6 +751,13 @@ impl Conn {
     }
 
     async fn cmd_once(&mut self, body: &str) -> Result<CommandResult, SiftError> {
+        if self.poisoned {
+            return Err(SiftError::app(
+                "imap_transient",
+                "Stale connection; reconnecting.",
+                true,
+            ));
+        }
         let tag = self.next_tag();
         let line = format!("{tag} {body}\r\n");
         log::trace!(target: "sift::imap", "C: {}", errors::redact_cmd(&format!("{tag} {body}")));
@@ -421,6 +773,7 @@ impl Conn {
                     return Ok(CommandResult {
                         tagged: TaggedOutcome {
                             ok: true,
+                            completion: errors::Completion::Ok,
                             code,
                             text,
                         },
@@ -431,6 +784,7 @@ impl Conn {
                     return Ok(CommandResult {
                         tagged: TaggedOutcome {
                             ok: false,
+                            completion: errors::Completion::No,
                             code,
                             text,
                         },
@@ -441,6 +795,7 @@ impl Conn {
                     return Ok(CommandResult {
                         tagged: TaggedOutcome {
                             ok: false,
+                            completion: errors::Completion::Bad,
                             code,
                             text,
                         },
@@ -451,6 +806,7 @@ impl Conn {
                 Response::Cont(_) => {}
                 // Tagged completion for a *different* tag: protocol desync.
                 r => {
+                    self.invalidate();
                     return Err(SiftError::app(
                         "imap_protocol",
                         format!("Unexpected response: {r:?}"),
@@ -559,7 +915,7 @@ impl Conn {
     }
 
     pub async fn noop(&mut self) -> Result<(), SiftError> {
-        let r = self.cmd("NOOP").await?;
+        let r = self.read_cmd("NOOP").await?;
         if r.tagged.ok {
             *self.inner.last_used.lock().unwrap() = Instant::now();
             Ok(())
@@ -577,9 +933,27 @@ impl Conn {
     // -- mailbox commands -----------------------------------------------------
 
     pub async fn select(&mut self, folder: &str, readonly: bool) -> Result<SelectInfo, SiftError> {
+        match self.select_once(folder, readonly).await {
+            Err(e) if is_conn_error(&e) => {
+                Box::pin(self.reconnect()).await?;
+                self.select_once(folder, readonly).await
+            }
+            other => other,
+        }
+    }
+
+    /// One SELECT/EXAMINE. `selected` is cleared before the command and set
+    /// only on success, so a failed reselect can never leave a stale mailbox
+    /// epoch behind.
+    async fn select_once(
+        &mut self,
+        folder: &str,
+        readonly: bool,
+    ) -> Result<SelectInfo, SiftError> {
+        self.selected = None;
         let verb = if readonly { "EXAMINE" } else { "SELECT" };
         let r = self
-            .cmd(&format!("{verb} {}", quote_folder(folder)))
+            .cmd_once(&format!("{verb} {}", quote_folder(folder)))
             .await?;
         if !r.tagged.ok {
             errors::map_response(verb, &r.tagged.text)?;
@@ -601,6 +975,7 @@ impl Conn {
             }
         }
         *self.inner.last_used.lock().unwrap() = Instant::now();
+        self.selected = Some(SelectedMailbox::new(folder, readonly, info.uidvalidity));
         Ok(info)
     }
 
@@ -609,7 +984,7 @@ impl Conn {
     pub async fn list_special(
         &mut self,
     ) -> Result<Vec<(Vec<String>, Option<String>, String)>, SiftError> {
-        let r = self.cmd("LIST \"\" \"*\" RETURN (SPECIAL-USE)").await?;
+        let r = self.read_cmd("LIST \"\" \"*\" RETURN (SPECIAL-USE)").await?;
         if !r.tagged.ok {
             super::errors::map_response("LIST", &r.tagged.text)?;
         }
@@ -624,14 +999,90 @@ impl Conn {
 
     /// Raw UID FETCH for Gmail items; callers decode via proto. Returns
     /// (sequence, attributes) in server order.
+    ///
+    /// Legacy string entry point for call sites that migrate in P4.3; new
+    /// code uses [`Conn::uid_fetch_items`].
     pub async fn uid_fetch(
         &mut self,
         uid_set: &str,
         items: &str,
     ) -> Result<Vec<(u32, Vec<super::proto::FetchAttr>)>, SiftError> {
-        let r = self.cmd(&format!("UID FETCH {uid_set} {items}")).await?;
+        match self.uid_fetch_typed(uid_set, &FetchItems::verbatim(items)).await {
+            Ok(rows) => Ok(rows),
+            Err(TaggedFailure::Tagged {
+                completion,
+                code,
+                text,
+            }) => {
+                let ctx = errors::OpCtx {
+                    command: "UID FETCH",
+                    stage: "fetch",
+                    correlation: "-",
+                };
+                Err(errors::map_tagged(&ctx, completion, code.as_ref(), &text))
+            }
+            Err(TaggedFailure::Conn(e)) => Err(e),
+        }
+    }
+
+    /// Typed UID FETCH (P1.1). The item list is built by [`FetchItems`], so a
+    /// multi-item command is always parenthesized.
+    pub async fn uid_fetch_items(
+        &mut self,
+        uid_set: &str,
+        items: &FetchItems,
+    ) -> Result<Vec<(u32, Vec<super::proto::FetchAttr>)>, SiftError> {
+        match self.uid_fetch_typed(uid_set, items).await {
+            Ok(rows) => Ok(rows),
+            Err(TaggedFailure::Tagged {
+                completion,
+                code,
+                text,
+            }) => {
+                let ctx = errors::OpCtx {
+                    command: "UID FETCH",
+                    stage: "fetch",
+                    correlation: "-",
+                };
+                Err(errors::map_tagged(&ctx, completion, code.as_ref(), &text))
+            }
+            Err(TaggedFailure::Conn(e)) => Err(e),
+        }
+    }
+
+    /// UID FETCH that preserves the tagged completion kind and machine
+    /// response code on failure (P1.6). Safe read: it goes through the
+    /// reconnect+reselect wrapper.
+    pub async fn uid_fetch_typed(
+        &mut self,
+        uid_set: &str,
+        items: &FetchItems,
+    ) -> Result<Vec<(u32, Vec<super::proto::FetchAttr>)>, TaggedFailure> {
+        self.uid_fetch_typed_ext(uid_set, items, None).await
+    }
+
+    /// [`Conn::uid_fetch_typed`] with an extra trailing modifier such as
+    /// `(CHANGEDSINCE n)`. This is the single wire-assembly point for FETCH.
+    pub async fn uid_fetch_typed_ext(
+        &mut self,
+        uid_set: &str,
+        items: &FetchItems,
+        suffix: Option<&str>,
+    ) -> Result<Vec<(u32, Vec<super::proto::FetchAttr>)>, TaggedFailure> {
+        let body = match suffix {
+            Some(s) => format!("UID FETCH {uid_set} {items} {s}"),
+            None => format!("UID FETCH {uid_set} {items}"),
+        };
+        let r = match self.read_cmd(&body).await {
+            Ok(r) => r,
+            Err(e) => return Err(TaggedFailure::Conn(e)),
+        };
         if !r.tagged.ok {
-            super::errors::map_response("UID FETCH", &r.tagged.text)?;
+            return Err(TaggedFailure::Tagged {
+                completion: completion_of(&r.tagged),
+                code: r.tagged.code.clone(),
+                text: r.tagged.text.clone(),
+            });
         }
         let mut out = vec![];
         for u in r.untagged {
@@ -644,7 +1095,7 @@ impl Conn {
 
     /// All UIDs in the selected folder, ascending.
     pub async fn uid_search_all(&mut self) -> Result<Vec<u32>, SiftError> {
-        let r = self.cmd("UID SEARCH ALL").await?;
+        let r = self.read_cmd("UID SEARCH ALL").await?;
         if !r.tagged.ok {
             super::errors::map_response("UID SEARCH", &r.tagged.text)?;
         }
@@ -664,26 +1115,38 @@ impl Conn {
         &mut self,
         modseq: u64,
     ) -> Result<Vec<(u32, Vec<super::proto::FetchAttr>)>, SiftError> {
-        let r = self
-            .cmd(&format!(
-                "UID FETCH 1:* (UID FLAGS X-GM-LABELS X-GM-THRID MODSEQ) (CHANGEDSINCE {modseq})"
-            ))
-            .await?;
-        if !r.tagged.ok {
-            super::errors::map_response("UID FETCH", &r.tagged.text)?;
-        }
-        let mut out = vec![];
-        for u in r.untagged {
-            if let Response::Untagged(Untagged::Fetch { seq, attrs }) = u {
-                out.push((seq, attrs));
+        let items = FetchItems::new()
+            .uid()
+            .flags()
+            .gmail_labels()
+            .gmail_thrid()
+            .modseq();
+        match self
+            .uid_fetch_typed_ext("1:*", &items, Some(&format!("(CHANGEDSINCE {modseq})")))
+            .await
+        {
+            Ok(rows) => Ok(rows),
+            Err(TaggedFailure::Tagged {
+                completion,
+                code,
+                text,
+            }) => {
+                let ctx = errors::OpCtx {
+                    command: "UID FETCH",
+                    stage: "changed",
+                    correlation: "-",
+                };
+                Err(errors::map_tagged(&ctx, completion, code.as_ref(), &text))
             }
+            Err(TaggedFailure::Conn(e)) => Err(e),
         }
-        Ok(out)
     }
 
     /// UIDs in the selected folder with a given Gmail message id.
     pub async fn uid_search_gmmsgid(&mut self, msgid: u64) -> Result<Vec<u32>, SiftError> {
-        let r = self.cmd(&format!("UID SEARCH X-GM-MSGID {msgid}")).await?;
+        let r = self
+            .read_cmd(&format!("UID SEARCH X-GM-MSGID {msgid}"))
+            .await?;
         if !r.tagged.ok {
             super::errors::map_response("UID SEARCH", &r.tagged.text)?;
         }
@@ -701,7 +1164,9 @@ impl Conn {
     pub async fn uid_search_raw(&mut self, query: &str) -> Result<Vec<u32>, SiftError> {
         // Quote-escape the query; Gmail syntax travels verbatim otherwise.
         let q = query.replace('\\', "\\\\").replace('"', "\\\"");
-        let r = self.cmd(&format!("UID SEARCH X-GM-RAW \"{q}\"")).await?;
+        let r = self
+            .read_cmd(&format!("UID SEARCH X-GM-RAW \"{q}\""))
+            .await?;
         if !r.tagged.ok {
             super::errors::map_response("UID SEARCH", &r.tagged.text)?;
         }
@@ -838,7 +1303,7 @@ impl Conn {
 
     pub async fn status(&mut self, folder: &str) -> Result<HashMap<String, u64>, SiftError> {
         let r = self
-            .cmd(&format!(
+            .read_cmd(&format!(
                 "STATUS {} (MESSAGES UIDNEXT UIDVALIDITY HIGHESTMODSEQ)",
                 quote_folder(folder)
             ))

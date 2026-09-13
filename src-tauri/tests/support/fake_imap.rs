@@ -45,6 +45,41 @@ pub struct Behavior {
     pub no_condstore: bool,
     /// Omit IDLE from caps.
     pub no_idle: bool,
+
+    // -- P1.2 strictness and failure injection -------------------------------
+    /// LEGACY mode (explicitly named, pre-existing non-attachment tests only):
+    /// an unselected session silently defaults to the `all` folder. Strict is
+    /// the default: selected-state commands before SELECT/EXAMINE are BAD.
+    pub legacy_unselected_defaults: bool,
+    /// Split every response into this many TCP writes (literal fragmentation).
+    pub fragmented_literals: usize,
+    /// Delay the tagged completion by this many milliseconds.
+    pub completion_delay_ms: u64,
+    /// FETCH answers with a row for a DIFFERENT uid than the requested one.
+    pub wrong_uid_response: bool,
+    /// A section FETCH answers with a zero-length literal (`{0}`).
+    pub empty_section: bool,
+    /// A section FETCH answers with the row but WITHOUT the BODY[...] data.
+    pub omit_section_data: bool,
+    /// The next FETCH fails with a tagged BAD (syntax), never retried.
+    pub fetch_bad: bool,
+    /// The next FETCH fails with a transient tagged NO.
+    pub fetch_no: bool,
+    /// Close the socket immediately after a successful SELECT/EXAMINE.
+    pub disconnect_after_select: bool,
+    /// Apply the next mutation and close WITHOUT its tagged completion.
+    pub disconnect_after_mutation: bool,
+}
+
+impl Behavior {
+    /// Explicit legacy opt-in. Only pre-existing non-attachment tests whose
+    /// selected-mailbox fixes land in P4.3 may use this.
+    pub fn legacy() -> Self {
+        Self {
+            legacy_unselected_defaults: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -55,9 +90,16 @@ pub struct State {
     pub modseq: u64,
     pub folders: HashMap<String, String>,
     pub behavior: Behavior,
+    /// Sanitized command structures (`VERB rest`); credentials never appear.
     pub commands_seen: Vec<String>,
     pub idle_txs: Vec<mpsc::UnboundedSender<String>>,
     pub cmd_count: usize,
+    /// Byte-exact section payloads for attachment protocol tests, keyed by
+    /// (msgid, section). When present they replace the generated payload and
+    /// are served unmodified (binary-safe).
+    pub section_bytes: HashMap<(u64, String), Vec<u8>>,
+    /// Number of TCP connections accepted so far (connection-cap tests).
+    pub connections: usize,
 }
 
 pub struct FakeGmail {
@@ -82,6 +124,7 @@ impl FakeGmail {
                 let Ok((sock, _)) = listener.accept().await else {
                     break;
                 };
+                s2.lock().unwrap().connections += 1;
                 let st = s2.clone();
                 tokio::spawn(async move { handle(sock, st).await });
             }
@@ -145,6 +188,28 @@ impl FakeGmail {
                 },
             );
         }
+    }
+
+    /// Serve exact bytes for one `(msgid, section)` on section FETCHes.
+    ///
+    /// Used by the attachment protocol tests to pin zero-byte payloads,
+    /// embedded NULs and bytes above 0x7f without any String round-trip.
+    pub fn set_section_bytes(&self, msgid: u64, section: &str, bytes: Vec<u8>) {
+        let mut st = self.state.lock().unwrap();
+        st.section_bytes.insert((msgid, section.to_string()), bytes);
+    }
+
+    /// Sanitized command log (credentials are never recorded).
+    pub fn commands(&self) -> Vec<String> {
+        self.state.lock().unwrap().commands_seen.clone()
+    }
+
+    /// Commands matching a prefix, in arrival order.
+    pub fn commands_with_prefix(&self, prefix: &str) -> Vec<String> {
+        self.commands()
+            .into_iter()
+            .filter(|c| c.starts_with(prefix))
+            .collect()
     }
 
     /// Deliver a brand-new message to a folder (IDLE/poll tests).
@@ -251,6 +316,14 @@ fn internaldate(offset_h: i64) -> String {
         sod / 60 % 60,
         sod % 60
     )
+}
+
+/// Recorded command structure. Credentials never appear (P1.2).
+fn sanitize_command(verb: &str, rest: &str) -> String {
+    if verb.eq_ignore_ascii_case("LOGIN") || verb.eq_ignore_ascii_case("AUTHENTICATE") {
+        return format!("{verb} <redacted>");
+    }
+    format!("{verb} {rest}")
 }
 
 fn quote(s: &str) -> String {
@@ -372,7 +445,10 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
         }
         let pre = {
             let mut st = state.lock().unwrap();
-            st.commands_seen.push(format!("{verb} {rest}"));
+            // Sanitized structure only: LOGIN credentials and literal bodies
+            // must never enter the recorded log (P1.2).
+            st.commands_seen
+                .push(sanitize_command(&verb, &rest));
             st.cmd_count += 1;
             if st.behavior.transient_first_n > 0 {
                 st.behavior.transient_first_n -= 1;
@@ -534,7 +610,18 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                     uids.len(),
                     if verb == "SELECT" { "WRITE" } else { "ONLY" }
                 ));
-                w.write_all(out.as_bytes()).await.unwrap();
+                let drop_now = {
+                    let mut st = state.lock().unwrap();
+                    let d = st.behavior.disconnect_after_select;
+                    st.behavior.disconnect_after_select = false;
+                    d
+                };
+                write_out(&mut w, out.as_bytes(), &state).await;
+                if drop_now {
+                    // Selected state is established, then the socket dies
+                    // before the next command (P1.3 recovery test).
+                    return;
+                }
             }
             "STATUS" => {
                 // STATUS <folder> (...)
@@ -571,46 +658,109 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                 let mut sub = rest.splitn(2, ' ');
                 let subverb = sub.next().unwrap_or("").to_ascii_uppercase();
                 let subrest = sub.next().unwrap_or("").to_string();
+                // P1.2: selected-state operations before SELECT/EXAMINE are a
+                // protocol error. Legacy mode (explicit opt-in) keeps the old
+                // `all` default for pre-existing non-attachment tests.
+                let legacy = state.lock().unwrap().behavior.legacy_unselected_defaults;
+                let sel = match selected.clone() {
+                    Some(s) => s,
+                    None if legacy => "all".to_string(),
+                    None => {
+                        write_out(
+                            &mut w,
+                            format!("{tag} BAD no mailbox selected\r\n").as_bytes(),
+                            &state,
+                        )
+                        .await;
+                        continue;
+                    }
+                };
                 match subverb.as_str() {
                     "SEARCH" => {
-                        let sel = selected.clone().unwrap_or_else(|| "all".into());
                         let uids = uid_search(&state, &sel, &subrest);
                         let list = uids
                             .iter()
                             .map(|u| u.to_string())
                             .collect::<Vec<_>>()
                             .join(" ");
-                        w.write_all(
+                        write_out(
+                            &mut w,
                             format!(
                                 "* SEARCH{sep}{list}\r\n{tag} OK done\r\n",
                                 sep = if list.is_empty() { "" } else { " " },
                                 list = list
                             )
                             .as_bytes(),
+                            &state,
                         )
-                        .await
-                        .unwrap();
+                        .await;
                     }
                     "FETCH" => {
-                        // <set> (<items>) [CHANGEDSINCE n]
-                        let (set, items, since) = parse_fetch_args(&subrest);
-                        let sel = selected.clone().unwrap_or_else(|| "all".into());
-                        let lines = uid_fetch(&state, &sel, &set, &items, since);
-                        let mut out = lines.join("");
-                        out.push_str(&format!("{tag} OK done\r\n"));
-                        w.write_all(out.as_bytes()).await.unwrap();
+                        // <set> <items> [CHANGEDSINCE n]; strict validation.
+                        let (set, items, since) = match parse_fetch_args(&subrest) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                write_out(
+                                    &mut w,
+                                    format!("{tag} BAD {e}\r\n").as_bytes(),
+                                    &state,
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        let (bad, transient) = {
+                            let mut st = state.lock().unwrap();
+                            let bad = st.behavior.fetch_bad;
+                            st.behavior.fetch_bad = false;
+                            let t = st.behavior.fetch_no;
+                            st.behavior.fetch_no = false;
+                            (bad, t)
+                        };
+                        if bad {
+                            write_out(
+                                &mut w,
+                                format!("{tag} BAD syntax error at FETCH\r\n").as_bytes(),
+                                &state,
+                            )
+                            .await;
+                            continue;
+                        }
+                        if transient {
+                            write_out(
+                                &mut w,
+                                format!("{tag} NO [UNAVAILABLE] Temporary System Problem.\r\n")
+                                    .as_bytes(),
+                                &state,
+                            )
+                            .await;
+                            continue;
+                        }
+                        let mut out = uid_fetch(&state, &sel, &set, &items, since);
+                        out.extend_from_slice(format!("{tag} OK done\r\n").as_bytes());
+                        write_out(&mut w, &out, &state).await;
                     }
                     "STORE" => {
                         // <set> +/-FLAGS.SILENT (...) / +/-X-GM-LABELS (...)
-                        let (n, changed) = uid_store(
-                            &state,
-                            &selected.clone().unwrap_or_else(|| "all".into()),
-                            &subrest,
-                        );
+                        let dropped = {
+                            let mut st = state.lock().unwrap();
+                            let d = st.behavior.disconnect_after_mutation;
+                            st.behavior.disconnect_after_mutation = false;
+                            d
+                        };
+                        let (n, changed) = uid_store(&state, &sel, &subrest);
                         let _ = (n, changed);
-                        w.write_all(format!("{tag} OK done\r\n").as_bytes())
-                            .await
-                            .unwrap();
+                        if dropped {
+                            // Applied, but the completion never arrives: the
+                            // client must not replay the mutation (P1.3).
+                            return;
+                        }
+                        write_out(
+                            &mut w,
+                            format!("{tag} OK done\r\n").as_bytes(),
+                            &state,
+                        )
+                        .await;
                     }
                     "MOVE" => {
                         // <set> <dest>
@@ -618,8 +768,18 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                         let set = it.next().unwrap_or("");
                         let dest = unquote(it.next().unwrap_or("").trim());
                         let dest_role = role_of(&state, &dest);
-                        let sel = selected.clone().unwrap_or_else(|| "all".into());
+                        let dropped = {
+                            let mut st = state.lock().unwrap();
+                            let d = st.behavior.disconnect_after_mutation;
+                            st.behavior.disconnect_after_mutation = false;
+                            d
+                        };
                         uid_move(&state, &sel, &dest_role, set);
+                        if dropped {
+                            // The mutation may have been accepted; the client
+                            // must not blindly replay it (P1.3).
+                            return;
+                        }
                         w.write_all(format!("{tag} OK done\r\n").as_bytes())
                             .await
                             .unwrap();
@@ -629,18 +789,34 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                         let set = it.next().unwrap_or("");
                         let dest = unquote(it.next().unwrap_or("").trim());
                         let dest_role = role_of(&state, &dest);
-                        let sel = selected.clone().unwrap_or_else(|| "all".into());
+                        let dropped = {
+                            let mut st = state.lock().unwrap();
+                            let d = st.behavior.disconnect_after_mutation;
+                            st.behavior.disconnect_after_mutation = false;
+                            d
+                        };
                         uid_copy(&state, &sel, &dest_role, set);
+                        if dropped {
+                            return;
+                        }
                         w.write_all(format!("{tag} OK done\r\n").as_bytes())
                             .await
                             .unwrap();
                     }
                     "EXPUNGE" => {
-                        let sel = selected.clone().unwrap_or_else(|| "all".into());
+                        let dropped = {
+                            let mut st = state.lock().unwrap();
+                            let d = st.behavior.disconnect_after_mutation;
+                            st.behavior.disconnect_after_mutation = false;
+                            d
+                        };
                         if subrest.trim().is_empty() {
                             uid_expunge_deleted(&state, &sel);
                         } else {
                             uid_expunge_set(&state, &sel, subrest.trim());
+                        }
+                        if dropped {
+                            return;
                         }
                         w.write_all(format!("{tag} OK done\r\n").as_bytes())
                             .await
@@ -859,32 +1035,191 @@ fn role_of(state: &Arc<Mutex<State>>, folder: &str) -> String {
     decode_utf7_mailbox(folder)
 }
 
-/// Parse `UID FETCH <set> (<items>) [CHANGEDSINCE n]`.
-fn parse_fetch_args(s: &str) -> (String, String, Option<u64>) {
-    let since = s
-        .to_ascii_uppercase()
-        .find("CHANGEDSINCE")
-        .and_then(|i| s[i + 11..].split_whitespace().next())
+/// Split a FETCH argument tail at TOP-LEVEL whitespace, honoring `[...]`
+/// (which may contain `(...)` field lists with spaces) and quoted strings.
+fn split_items(s: &str) -> Result<Vec<String>, String> {
+    let b = s.as_bytes();
+    let mut out: Vec<String> = vec![];
+    let mut cur = String::new();
+    let (mut depth_paren, mut depth_bracket) = (0usize, 0usize);
+    let mut in_q = false;
+    for &c in b {
+        match c {
+            b'(' if !in_q => {
+                depth_paren += 1;
+                cur.push('(');
+            }
+            b')' if !in_q => {
+                if depth_paren == 0 {
+                    return Err("unbalanced )".into());
+                }
+                depth_paren -= 1;
+                cur.push(')');
+            }
+            b'[' if !in_q => {
+                depth_bracket += 1;
+                cur.push('[');
+            }
+            b']' if !in_q => {
+                if depth_bracket == 0 {
+                    return Err("unbalanced ]".into());
+                }
+                depth_bracket -= 1;
+                cur.push(']');
+            }
+            b'"' => {
+                in_q = !in_q;
+                cur.push('"');
+            }
+            b' ' | b'\t' if !in_q && depth_paren == 0 && depth_bracket == 0 => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(c as char),
+        }
+    }
+    if in_q {
+        return Err("unterminated quote".into());
+    }
+    if depth_paren > 0 || depth_bracket > 0 {
+        return Err("unbalanced item list".into());
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    Ok(out)
+}
+
+/// A UID set: digits/`*`, optional `:<end>`, comma-separated entries.
+fn valid_uid_set(set: &str) -> bool {
+    if set.is_empty() {
+        return false;
+    }
+    let num = |t: &str| t == "*" || (!t.is_empty() && t.bytes().all(|c| c.is_ascii_digit()));
+    set.split(',').all(|part| match part.split_once(':') {
+        Some((a, b)) => num(a) && num(b),
+        None => num(part),
+    })
+}
+
+/// One legal FETCH data item (no embedded top-level spaces).
+fn validate_item(tok: &str) -> Result<(), String> {
+    if tok.starts_with('(') {
+        return Err("nested list is not a single item".into());
+    }
+    let up = tok.to_ascii_uppercase();
+    if matches!(
+        up.as_str(),
+        "UID"
+            | "FLAGS"
+            | "INTERNALDATE"
+            | "RFC822"
+            | "RFC822.HEADER"
+            | "RFC822.SIZE"
+            | "ENVELOPE"
+            | "MODSEQ"
+            | "BODYSTRUCTURE"
+            | "X-GM-MSGID"
+            | "X-GM-THRID"
+            | "X-GM-LABELS"
+    ) {
+        return Ok(());
+    }
+    if let Some(rest) = up
+        .strip_prefix("BODY.PEEK[")
+        .or_else(|| up.strip_prefix("BODY["))
+    {
+        // `...]` plus an optional `<origin[.len]>` partial suffix.
+        let Some(close) = rest.find(']') else {
+            return Err("unterminated section".into());
+        };
+        let tail = rest[close + 1..].trim();
+        if tail.is_empty() {
+            return Ok(());
+        }
+        let inner = tail
+            .strip_prefix('<')
+            .and_then(|t| t.strip_suffix('>'))
+            .ok_or_else(|| "bad partial suffix".to_string())?;
+        let ok = inner.split_once('.').map_or_else(
+            || inner.bytes().all(|c| c.is_ascii_digit()) && !inner.is_empty(),
+            |(o, l)| {
+                !o.is_empty()
+                    && o.bytes().all(|c| c.is_ascii_digit())
+                    && !l.is_empty()
+                    && l.bytes().all(|c| c.is_ascii_digit())
+            },
+        );
+        return if ok {
+            Ok(())
+        } else {
+            Err("bad partial suffix".into())
+        };
+    }
+    Err(format!("unknown fetch item {tok}"))
+}
+
+/// Validate a fetched item list: either ONE legal bare item or a balanced
+/// parenthesized list of legal items. Two bare items are rejected (P1.1).
+fn validate_items(items: &str) -> Result<(), String> {
+    let t = items.trim();
+    if t.is_empty() {
+        return Err("empty item list".into());
+    }
+    if t.starts_with('(') {
+        if !t.ends_with(')') {
+            return Err("unbalanced item list".into());
+        }
+        let inner = &t[1..t.len() - 1];
+        let toks = split_items(inner)?;
+        if toks.is_empty() {
+            return Err("empty item list".into());
+        }
+        for tok in toks {
+            validate_item(&tok)?;
+        }
+        Ok(())
+    } else {
+        let toks = split_items(t)?;
+        if toks.len() != 1 {
+            return Err("multiple bare FETCH items must be parenthesized".into());
+        }
+        validate_item(&toks[0])
+    }
+}
+
+/// Test-only entry point to the strict FETCH argument validator (P1.2).
+pub fn parse_fetch_args_for_test(s: &str) -> Result<(String, String, Option<u64>), String> {
+    parse_fetch_args(s)
+}
+
+/// Parse `UID FETCH <set> <items> [CHANGEDSINCE n]`, returning
+/// `(set, items, changedsince)`. Malformed input is a tagged BAD, not a
+/// silently-accepted default (P1.2).
+fn parse_fetch_args(s: &str) -> Result<(String, String, Option<u64>), String> {
+    const MOD: &str = "CHANGEDSINCE";
+    let found = s.to_ascii_uppercase().find(MOD);
+    let since = found
+        .and_then(|i| s.get(i + MOD.len()..)?.split(|c: char| !c.is_ascii_digit()).next())
         .and_then(|n| n.parse().ok());
-    let head = match s.to_ascii_uppercase().find("CHANGEDSINCE") {
-        Some(i) => s[..i].trim(),
+    // The modifier travels as `(CHANGEDSINCE n)`; drop the whole modifier
+    // including its opening paren, not just the keyword.
+    let head = match found {
+        Some(i) => s[..i].trim().trim_end_matches('(').trim_end(),
         None => s.trim(),
     };
-    // head: `<set> (<items>)` or a bare item (e.g. BODYSTRUCTURE)
-    let (set, items) = match head.find('(') {
-        Some(depth) => (
-            head[..depth].trim().to_string(),
-            head[depth..].trim().to_string(),
-        ),
-        None => {
-            let mut it = head.splitn(2, ' ');
-            (
-                it.next().unwrap_or("").to_string(),
-                it.next().unwrap_or("").to_string(),
-            )
-        }
-    };
-    (set, items, since)
+    let toks = split_items(head)?;
+    if toks.len() < 2 {
+        return Err("missing uid set or items".into());
+    }
+    if !valid_uid_set(&toks[0]) {
+        return Err(format!("bad uid set {}", toks[0]));
+    }
+    let set = toks[0].clone();
+    let items = toks[1..].join(" ");
+    validate_items(&items)?;
+    Ok((set, items, since))
 }
 
 fn uid_search(state: &Arc<Mutex<State>>, folder: &str, query: &str) -> Vec<u32> {
@@ -923,99 +1258,35 @@ fn uid_search(state: &Arc<Mutex<State>>, folder: &str, query: &str) -> Vec<u32> 
     v
 }
 
-/// Render one FETCH response for the requested items.
-fn uid_fetch(
+/// Write a response, optionally fragmented across several TCP writes and/or
+/// delayed (P1.2 failure injection).
+async fn write_out<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    bytes: &[u8],
     state: &Arc<Mutex<State>>,
-    folder: &str,
-    set: &str,
-    items: &str,
-    since: Option<u64>,
-) -> Vec<String> {
-    let st = state.lock().unwrap();
-    let max_uid = st
-        .msgs
-        .values()
-        .filter_map(|m| m.folders.get(folder).copied())
-        .max()
-        .unwrap_or(1);
-    let want: HashSet<u32> = parse_uid_set(set, max_uid).into_iter().collect();
-    let mut seq = 0u32;
-    let mut ordered: Vec<(&FMsg, u32)> = vec![];
-    let mut all: Vec<(&FMsg, u32)> = st
-        .msgs
-        .values()
-        .filter_map(|m| m.folders.get(folder).map(|u| (m, *u)))
-        .collect();
-    all.sort_by_key(|(_, u)| *u);
-    for (m, u) in all {
-        seq += 1;
-        if !want.contains(&u) {
-            continue;
-        }
-        if let Some(s) = since {
-            if m.modseq <= s {
-                continue;
-            }
-        }
-        ordered.push((m, seq));
+) {
+    let (frags, delay_ms) = {
+        let st = state.lock().unwrap();
+        (st.behavior.fragmented_literals, st.behavior.completion_delay_ms)
+    };
+    if delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
-    let items_up = items.to_ascii_uppercase();
-    let mut out = vec![];
-    for (m, s) in ordered {
-        let mut parts: Vec<String> = vec![];
-        // UID always included for sanity (callers key on it).
-        let u = m.folders.get(folder).copied().unwrap_or(0);
-        parts.push(format!("UID {u}"));
-        if items_up.contains("FLAGS") {
-            parts.push(format!("FLAGS ({})", m.flags.join(" ")));
-        }
-        if items_up.contains("INTERNALDATE") {
-            parts.push(format!(
-                "INTERNALDATE \"{}\"",
-                internaldate(m.date_offset_h)
-            ));
-        }
-        if items_up.contains("RFC822.SIZE") {
-            parts.push(format!("RFC822.SIZE {}", m.size));
-        }
-        if items_up.contains("MODSEQ") {
-            parts.push(format!("MODSEQ ({})", m.modseq));
-        }
-        if items_up.contains("X-GM-MSGID") {
-            parts.push(format!("X-GM-MSGID {}", m.msgid));
-        }
-        if items_up.contains("X-GM-THRID") {
-            parts.push(format!("X-GM-THRID {}", m.thrid));
-        }
-        if items_up.contains("X-GM-LABELS") {
-            // Like real Gmail, folder membership implies system labels.
-            let mut labels = m.labels.clone();
-            let implied = match folder {
-                "trash" => Some("\\Trash"),
-                "junk" => Some("\\Spam"),
-                _ => None,
-            };
-            if let Some(imp) = implied {
-                if !labels.iter().any(|l| l == imp) {
-                    labels.push(imp.into());
-                }
-            }
-            parts.push(format!("X-GM-LABELS {}", gm_label_list(&labels)));
-        }
-        if items_up.contains("BODYSTRUCTURE") {
-            parts.push(format!("BODYSTRUCTURE {}", bodystructure(m)));
-        }
-        // BODY.PEEK[...] items (header fields, sections, partials).
-        for spec in body_specs(items) {
-            parts.push(render_body_part(m, &spec));
-        }
-        // Every response is CRLF-terminated (literals embed their own).
-        out.push(format!("* {s} FETCH ({})\r\n", parts.join(" ")));
+    if frags <= 1 || bytes.len() < 2 {
+        let _ = w.write_all(bytes).await;
+        let _ = w.flush().await;
+        return;
     }
-    out
+    let chunk = bytes.len().div_ceil(frags).max(1);
+    for c in bytes.chunks(chunk) {
+        let _ = w.write_all(c).await;
+        let _ = w.flush().await;
+        tokio::task::yield_now().await;
+    }
 }
 
-/// Extract `BODY.PEEK[...]...` specs from the item list.
+/// Extract `BODY.PEEK[...]` / `BODY[...]` specs (with any `<origin.len>`
+/// suffix) from a validated item list.
 fn body_specs(items: &str) -> Vec<String> {
     let mut out = vec![];
     let upper = items.to_ascii_uppercase();
@@ -1062,23 +1333,186 @@ fn body_specs(items: &str) -> Vec<String> {
     out
 }
 
-fn render_body_part(m: &FMsg, spec: &str) -> String {
+fn literal_head(label: &str, section: &str, origin: u32, len: usize) -> Vec<u8> {
+    if section.is_empty() {
+        format!("{label}[]<{origin}> {{{len}}}\r\n").into_bytes()
+    } else {
+        format!("{label}[{section}]<{origin}> {{{len}}}\r\n").into_bytes()
+    }
+}
+
+fn slice_partial(b: &[u8], partial: Option<(usize, usize)>) -> &[u8] {
+    match partial {
+        None => b,
+        Some((o, l)) => {
+            let o = o.min(b.len());
+            &b[o..(o + l).min(b.len())]
+        }
+    }
+}
+
+/// Render one FETCH response for the requested items. Byte-exact: overridden
+/// section payloads and binary literals are never routed through a String.
+fn uid_fetch(
+    state: &Arc<Mutex<State>>,
+    folder: &str,
+    set: &str,
+    items: &str,
+    since: Option<u64>,
+) -> Vec<u8> {
+    let st = state.lock().unwrap();
+    let max_uid = st
+        .msgs
+        .values()
+        .filter_map(|m| m.folders.get(folder).copied())
+        .max()
+        .unwrap_or(1);
+    let want: HashSet<u32> = parse_uid_set(set, max_uid).into_iter().collect();
+    let wrong = st.behavior.wrong_uid_response;
+    let omit = st.behavior.omit_section_data;
+    let mut seq = 0u32;
+    let mut ordered: Vec<(&FMsg, u32, u32)> = vec![];
+    let mut all: Vec<(&FMsg, u32)> = st
+        .msgs
+        .values()
+        .filter_map(|m| m.folders.get(folder).map(|u| (m, *u)))
+        .collect();
+    all.sort_by_key(|(_, u)| *u);
+    let folder_uids: Vec<u32> = all.iter().map(|(_, u)| *u).collect();
+    for (m, u) in all {
+        seq += 1;
+        if !want.contains(&u) {
+            continue;
+        }
+        if let Some(s) = since {
+            if m.modseq <= s {
+                continue;
+            }
+        }
+        ordered.push((m, u, seq));
+    }
+    let items_up = items.to_ascii_uppercase();
+    let specs = body_specs(items);
+    let mut out: Vec<u8> = vec![];
+    for (m, u, s) in ordered {
+        // A deliberately wrong UID models an unsolicited/stale FETCH row the
+        // client must filter out (P1.2).
+        let advertised = if wrong {
+            folder_uids
+                .iter()
+                .copied()
+                .filter(|v| !want.contains(v))
+                .min()
+                .unwrap_or(u + 1000)
+        } else {
+            u
+        };
+        let mut parts: Vec<String> = vec![format!("UID {advertised}")];
+        if items_up.contains("FLAGS") {
+            parts.push(format!("FLAGS ({})", m.flags.join(" ")));
+        }
+        if items_up.contains("INTERNALDATE") {
+            parts.push(format!(
+                "INTERNALDATE \"{}\"",
+                internaldate(m.date_offset_h)
+            ));
+        }
+        if items_up.contains("RFC822.SIZE") {
+            parts.push(format!("RFC822.SIZE {}", m.size));
+        }
+        if items_up.contains("MODSEQ") {
+            parts.push(format!("MODSEQ ({})", m.modseq));
+        }
+        if items_up.contains("X-GM-MSGID") {
+            parts.push(format!("X-GM-MSGID {}", m.msgid));
+        }
+        if items_up.contains("X-GM-THRID") {
+            parts.push(format!("X-GM-THRID {}", m.thrid));
+        }
+        if items_up.contains("X-GM-LABELS") {
+            let mut labels = m.labels.clone();
+            let implied = match folder {
+                "trash" => Some("\\Trash"),
+                "junk" => Some("\\Spam"),
+                _ => None,
+            };
+            if let Some(imp) = implied {
+                if !labels.iter().any(|l| l == imp) {
+                    labels.push(imp.into());
+                }
+            }
+            parts.push(format!("X-GM-LABELS {}", gm_label_list(&labels)));
+        }
+        if items_up.contains("BODYSTRUCTURE") {
+            parts.push(format!("BODYSTRUCTURE {}", bodystructure(m)));
+        }
+        let mut body: Vec<Vec<u8>> = vec![];
+        if !omit {
+            for spec in &specs {
+                body.push(render_body_part(m, spec, &st));
+            }
+        }
+        out.extend_from_slice(format!("* {s} FETCH (").as_bytes());
+        out.extend_from_slice(parts.join(" ").as_bytes());
+        for b in body {
+            out.extend_from_slice(b" ");
+            out.extend_from_slice(&b);
+        }
+        out.extend_from_slice(b")\r\n");
+    }
+    out
+}
+
+fn render_body_part(m: &FMsg, spec: &str, st: &State) -> Vec<u8> {
     // spec like `[HEADER.FIELDS (FROM ...)]`, `[1]<0.2048>`, `[]`
     let inner = spec.trim_start_matches('[');
     let (section, partial) = match inner.find("]<") {
-        Some(i) => (&inner[..i], Some(&inner[i + 2..inner.len() - 1])),
+        Some(i) => (
+            &inner[..i],
+            Some(&inner[i + 2..inner.len().saturating_sub(1)]),
+        ),
         None => (inner.strip_suffix(']').unwrap_or(inner), None),
     };
+    let partial = partial.map(|p| {
+        let (o, l) = p.split_once('.').unwrap_or((p, ""));
+        (
+            o.parse::<usize>().unwrap_or(0),
+            if l.is_empty() {
+                usize::MAX
+            } else {
+                l.parse().unwrap_or(usize::MAX)
+            },
+        )
+    });
+    let origin = partial.map(|(o, _)| o as u32).unwrap_or(0);
     let up = section.to_ascii_uppercase();
+
+    // Zero-length or byte-exact payloads for protocol tests (P1.2).
+    if st.behavior.empty_section && !section.is_empty() && !up.starts_with("HEADER") {
+        let mut out = literal_head("BODY", section, origin, 0);
+        out.extend_from_slice(b"\r\n");
+        return out;
+    }
+    if !section.is_empty() {
+        if let Some(bytes) = st.section_bytes.get(&(m.msgid, section.to_string())) {
+            let bytes = slice_partial(bytes, partial);
+            let mut out = literal_head("BODY", section, origin, bytes.len());
+            out.extend_from_slice(bytes);
+            return out;
+        }
+    }
+
     if up.starts_with("HEADER") {
         let h = header_block(m);
-        return format!("BODY[{section}] {{{}}}\r\n{h}", h.len());
+        let mut out = literal_head("BODY", section, origin, h.len());
+        out.extend_from_slice(h.as_bytes());
+        return out;
     }
     if section.is_empty() {
-        // full body: realistic MIME (alternative + optional attachment +
-        // inline image + quote), deterministic per message for snapshots.
         let full = full_mime(m);
-        return format!("BODY[] {{{}}}\r\n{full}", full.len());
+        let mut out = literal_head("BODY", section, origin, full.len());
+        out.extend_from_slice(full.as_bytes());
+        return out;
     }
     // section fetch: content honors the encoding the BODYSTRUCTURE
     // advertises (base64 parts serve base64, like real Gmail).
@@ -1089,23 +1523,10 @@ fn render_body_part(m: &FMsg, spec: &str) -> String {
         text.push_str(&t);
     }
     // harnesses that need byte-exactness fetch small windows; cap there.
-    let text = text;
-    let (origin, len) = partial
-        .map(|p| {
-            let (o, l) = p.split_once('.').unwrap_or((p, ""));
-            (
-                o.parse::<usize>().unwrap_or(0),
-                if l.is_empty() {
-                    usize::MAX
-                } else {
-                    l.parse().unwrap_or(usize::MAX)
-                },
-            )
-        })
-        .unwrap_or((0, usize::MAX));
-    let slice = &text.as_bytes()[origin.min(text.len())..(origin + len).min(text.len())];
-    let s = String::from_utf8_lossy(slice).into_owned();
-    format!("BODY[{section}]<{origin}> {{{}}}\r\n{s}", s.len())
+    let slice = slice_partial(text.as_bytes(), partial);
+    let mut out = literal_head("BODY", section, origin, slice.len());
+    out.extend_from_slice(slice);
+    out
 }
 
 /// Apply STORE edits; returns (matched uids, changed msgids).

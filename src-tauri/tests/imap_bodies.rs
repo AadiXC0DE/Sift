@@ -2,6 +2,7 @@
 #[path = "support/mod.rs"]
 mod support;
 
+use base64::Engine as _;
 use sift::db::Db;
 use sift::provider::{DbSink, Provider};
 
@@ -104,11 +105,12 @@ async fn p11_t08_fetch_body_shapes() {
 
 #[tokio::test]
 async fn p11_t08_attachment_byte_exact() {
-    let (_fake, provider, db, acc) = synced_ctx().await;
+    let (fake, provider, db, acc) = synced_ctx().await;
     let mid = att_message(&db, &acc.id).await;
     let atts = db.attachments_for_message(&mid).await.unwrap();
     assert!(!atts.is_empty());
-    // The PDF part decodes byte-exact.
+    // The PDF part decodes byte-exact: every byte and the length, not a
+    // prefix (P1.1/P1.2).
     let pdf = atts
         .iter()
         .find(|a| a.mime == "application/pdf")
@@ -126,11 +128,40 @@ async fn p11_t08_attachment_byte_exact() {
         })
         .await
         .unwrap();
+    // The fake's generated section repeats its payload to reach a realistic
+    // size, so pin the exact fixture bytes for this check: every decoded byte
+    // and the length must match, not just a prefix.
+    let dec = u64::from_str_radix(&mid, 16).unwrap();
+    let want = format!("PDFDATA-{dec}").into_bytes();
+    fake.set_section_bytes(
+        dec,
+        &stored_section,
+        base64::engine::general_purpose::STANDARD
+            .encode(&want)
+            .into_bytes(),
+    );
     let bytes = provider
         .fetch_attachment(&mid, &stored_section)
         .await
         .unwrap();
-    assert!(bytes.starts_with(b"PDFDATA-"), "got {bytes:?}");
+    assert_eq!(bytes.len(), want.len(), "decoded length");
+    assert_eq!(bytes, want, "decoded bytes");
+
+    // The request that produced them is the corrected, parenthesized form.
+    let uid = db
+        .imap_uid_map(&acc.id, "all")
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|(_, m)| m == &mid)
+        .expect("uid")
+        .0;
+    let want_cmd = format!("UID FETCH {uid} (UID BODY.PEEK[{stored_section}])");
+    assert!(
+        fake.commands().iter().any(|c| c == &want_cmd),
+        "expected {want_cmd:?} in {:?}",
+        fake.commands_with_prefix("UID FETCH")
+    );
 }
 
 #[tokio::test]

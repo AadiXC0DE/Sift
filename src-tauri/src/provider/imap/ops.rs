@@ -6,7 +6,7 @@
 //! since the last sync); a `NO` with `[NONEXISTENT]`-style text maps to
 //! `AlreadyApplied`.
 
-use super::{conn::ImapPool, folders::FolderMap};
+use super::{conn::ImapPool, folders::FolderMap, ids};
 use crate::db::Db;
 use crate::errors::SiftError;
 use crate::provider::ApplyOutcome;
@@ -72,7 +72,7 @@ pub async fn locate(
         }
     }
     // Unknown locally: search every folder by numeric Gmail id.
-    let Ok(dec) = u64::from_str_radix(message_hex, 16) else {
+    let Some(dec) = ids::from_hex(message_hex) else {
         return Ok(None);
     };
     for role in ["all", "trash", "junk"] {
@@ -499,7 +499,7 @@ pub async fn apply_delete_threads(
                 Some(v) => v,
                 None => {
                     // SEARCH trash/junk/all for the current copy.
-                    let Ok(dec) = u64::from_str_radix(&mid, 16) else {
+                    let Some(dec) = ids::from_hex(&mid) else {
                         continue;
                     };
                     let mut found: Option<(String, i64)> = None;
@@ -570,7 +570,9 @@ pub async fn draft_upsert(
         let mut guard = pool.worker().await?;
         let conn = guard.as_mut().expect("connected");
         conn.select(&drafts, true).await?;
-        let fetched = conn.uid_fetch(&uid.to_string(), "(X-GM-MSGID)").await?;
+        let fetched = conn
+            .uid_fetch_items(&uid.to_string(), &super::conn::FetchItems::new().gmail_msgid())
+            .await?;
         fetched
             .into_iter()
             .find_map(|(_, attrs)| {
@@ -618,7 +620,7 @@ pub async fn draft_delete(
     let uid = match uid {
         Some(u) => u,
         None => {
-            let Ok(dec) = u64::from_str_radix(remote_id, 16) else {
+            let Some(dec) = ids::from_hex(remote_id) else {
                 return Ok(());
             };
             let mut guard = pool.worker().await?;

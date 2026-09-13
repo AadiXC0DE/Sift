@@ -10,6 +10,7 @@ pub mod errors;
 pub mod folders;
 pub mod full;
 pub mod idle;
+pub mod ids;
 pub mod message;
 pub mod ops;
 pub mod partial;

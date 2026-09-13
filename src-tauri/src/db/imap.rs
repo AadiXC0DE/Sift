@@ -117,6 +117,35 @@ impl Db {
         .await
     }
 
+    /// Invalidate a folder's cached UID epoch after a UIDVALIDITY change
+    /// (P1.4).
+    ///
+    /// Drops ONLY the `imap_uids` rows for that folder and records the new
+    /// epoch. Message bodies, cached attachment files and mail on the server
+    /// are never touched. Passing `None` leaves the stored epoch as-is.
+    pub async fn imap_invalidate_epoch(
+        &self,
+        account_id: &str,
+        role: &str,
+        uidvalidity: Option<i64>,
+    ) -> Result<()> {
+        let (a, r) = (account_id.to_string(), role.to_string());
+        self.write(move |db| {
+            db.execute(
+                "DELETE FROM imap_uids WHERE account_id=? AND role=?",
+                params![a, r],
+            )?;
+            if let Some(v) = uidvalidity {
+                db.execute(
+                    "UPDATE imap_folders SET uidvalidity=? WHERE account_id=? AND role=?",
+                    params![v, a, r],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// Every folder/uid holding a message (for resolving op targets).
     pub async fn uids_for_message(
         &self,

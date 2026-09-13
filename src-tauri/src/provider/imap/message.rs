@@ -4,7 +4,8 @@
 //! rows + snippet section selection; transfer encodings + charsets decode to
 //! snippet text. Gmail-specific semantics (labels, hex ids) live here so
 //! `full.rs`/`partial.rs` stay orchestration-only.
-use super::conn::Conn;
+use super::conn::{Conn, FetchItems};
+use super::ids::ImapSection;
 use super::proto::{decode_utf7_mailbox, walk_parts, BodyStruct, FetchAttr, GmailMeta};
 use crate::db::{attachments::AttPut, messages::MsgUpsert};
 use crate::errors::SiftError;
@@ -23,9 +24,27 @@ pub struct MetaItem {
     pub headers: HashMap<String, String>,
 }
 
-/// The metadata FETCH item list (task 6 step 3). Header fields mirror the
-/// REST `metadataHeaders` set so replies/threads/unsubscribe all work.
-pub const META_ITEMS: &str = "(UID FLAGS INTERNALDATE RFC822.SIZE MODSEQ X-GM-MSGID X-GM-THRID X-GM-LABELS BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM TO CC BCC REPLY-TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST)])";
+/// Header fields the metadata FETCH requests; mirrors the REST
+/// `metadataHeaders` set so replies/threads/unsubscribe all work.
+pub const META_HEADER_FIELDS: &str = "FROM TO CC BCC REPLY-TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST";
+
+/// The metadata FETCH item list (task 6 step 3), assembled by the typed
+/// builder so the multi-item command is always parenthesized (P1.1).
+pub fn meta_items() -> FetchItems {
+    FetchItems::new()
+        .uid()
+        .flags()
+        .internaldate()
+        .rfc822_size()
+        .modseq()
+        .gmail_msgid()
+        .gmail_thrid()
+        .gmail_labels()
+        .bodystructure()
+        .raw(format!(
+            "BODY.PEEK[HEADER.FIELDS ({META_HEADER_FIELDS})]"
+        ))
+}
 
 /// UID set string, newest-first, compressed ranges, max `max` entries.
 pub fn uid_set(uids: &[u32], max: usize) -> String {
@@ -57,7 +76,7 @@ pub async fn fetch_meta(conn: &mut Conn, uids: &[u32]) -> Result<Vec<MetaItem>, 
         return Ok(vec![]);
     }
     let fetched = conn
-        .uid_fetch(&uid_set(uids, uids.len()), META_ITEMS)
+        .uid_fetch_items(&uid_set(uids, uids.len()), &meta_items())
         .await?;
     let mut out = vec![];
     for (seq, attrs) in fetched {
@@ -449,11 +468,27 @@ pub(crate) async fn fetch_snippet_groups(
                 Some(c) => c,
                 None => return,
             };
+            // Typed item list (P1.1): the partial section read is one item,
+            // and a multi-item FETCH is always parenthesized.
+            let section = if section.is_empty() {
+                None
+            } else {
+                match ImapSection::parse(section) {
+                    Some(s) => Some(s),
+                    None => {
+                        log::warn!(
+                            target: "sift::imap",
+                            "skipping snippet fetch for invalid section locator"
+                        );
+                        return;
+                    }
+                }
+            };
+            let items = FetchItems::new()
+                .uid()
+                .peek_partial(section, 0, Some(2048));
             match conn
-                .uid_fetch(
-                    &uid_set(&uids, uids.len()),
-                    &format!("UID BODY.PEEK[{section}]<0.2048>"),
-                )
+                .uid_fetch_items(&uid_set(&uids, uids.len()), &items)
                 .await
             {
                 Ok(f) => f,
