@@ -1,89 +1,89 @@
+//! `sift-att://` resolution (P2.1).
+//!
+//! The scheme's `<message-id>/<key>` is a *lookup* key: a row id, the stored
+//! MIME section, or a Content-ID. Resolution goes through the attachment
+//! service, which selects the row and then derives the transport locator from
+//! the row's own stored fields — a CID such as `logo@example.test` must fetch
+//! the row's numeric section, never `BODY.PEEK[logo@example.test]`.
+
 use crate::db::Db;
 use crate::provider::Provider;
 
-fn bad_id(s: &str) -> bool {
-    s.is_empty() || s.contains("..") || s.contains('/') || s.contains('\\')
-}
-
-/// Resolve sift-att message/part to bytes + mime.
+/// Bytes + MIME for a scheme key. Callers that need typed cache metadata use
+/// [`crate::attachments::ensure_local`] instead.
 pub async fn resolve_attachment(
     db: &Db,
     provider: &dyn Provider,
     message_id: &str,
-    part_id: &str,
+    key: &str,
 ) -> Result<(Vec<u8>, String), crate::errors::SiftError> {
-    if bad_id(message_id) || bad_id(part_id) {
-        return Err(crate::errors::SiftError::app(
-            "bad_id",
-            "invalid attachment id",
-            false,
-        ));
-    }
-    let rec = db
-        .attachment_by_msg_part(message_id, part_id)
-        .await
-        .map_err(|e| crate::errors::SiftError::app("db", e.to_string(), false))?;
-    let Some((_row_id, mime, att_id_opt, _mime2, data_opt, local_opt, _fname)) = rec else {
-        return Err(crate::errors::SiftError::NotFound("attachment".into()));
-    };
-    if let Some(b) = data_opt {
-        return Ok((b, mime));
-    }
-    if let Some(p) = local_opt.clone() {
-        if std::path::Path::new(&p).exists() {
-            let b = tokio::fs::read(&p)
-                .await
-                .map_err(crate::errors::SiftError::from)?;
-            return Ok((b, mime));
-        }
-    }
-    // Transport locator: Gmail attachmentId, or the IMAP section path stored
-    // in part_id (gmail_att_id is NULL for IMAP rows).
-    let locator = att_id_opt
-        .as_deref()
-        .filter(|attachment_id| !attachment_id.is_empty())
-        .unwrap_or(part_id);
-    let bytes = provider.fetch_attachment(message_id, locator).await?;
-    if !bytes.is_empty() {
-        return Ok((bytes, mime));
-    }
-    Err(crate::errors::SiftError::NotFound("attachment".into()))
+    crate::attachments::resolve_bytes(db, provider, message_id, key).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[tokio::test]
-    async fn p5_t01_uri_serves_inline() {
+    use crate::db::attachments::AttPut;
+    use crate::provider::gmail::api::GmailApiProvider;
+    use crate::provider::gmail::client::GmailClient;
+
+    async fn db_with_inline(content_id: Option<&str>) -> (Db, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let a = db.new_account("a@x.com", None, None).await.unwrap();
-        let aid = a.id.clone();
+        let aid = a.id;
         db.write(move |c| {
-      c.execute("INSERT INTO messages (id,account_id,thread_id,internal_date) VALUES ('m1',?, 't1', 1)", rusqlite::params![aid])?;
-      Ok(())
-    }).await.unwrap();
-        db.attachments_put(crate::db::attachments::AttPut {
+            c.execute(
+                "INSERT INTO messages (id,account_id,thread_id,internal_date) VALUES ('m1',?,'t1',1)",
+                rusqlite::params![aid],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        db.attachments_put(AttPut {
             id: "att1".into(),
             message_id: "m1".into(),
             gmail_att_id: None,
-            part_id: "p1".into(),
-            filename: Some("a.png".into()),
+            part_id: "2".into(),
+            filename: Some("logo.png".into()),
             mime: "image/png".into(),
             size: 3,
-            content_id: None,
+            content_id: content_id.map(str::to_string),
             is_inline: true,
             data: Some(vec![1, 2, 3]),
         })
         .await
         .unwrap();
-        let c = crate::provider::gmail::api::GmailApiProvider::new(
-            "a".into(),
-            crate::provider::gmail::client::GmailClient::new("t".into()),
-        );
-        let (b, mime) = resolve_attachment(&db, &c, "m1", "p1").await.unwrap();
+        (db, dir)
+    }
+
+    #[tokio::test]
+    async fn p5_t01_uri_serves_inline() {
+        let (db, _dir) = db_with_inline(None).await;
+        let c = GmailApiProvider::new("a".into(), GmailClient::new("t".into()));
+        let (b, mime) = resolve_attachment(&db, &c, "m1", "2").await.unwrap();
         assert_eq!(b, vec![1, 2, 3]);
         assert_eq!(mime, "image/png");
         assert!(resolve_attachment(&db, &c, "m1", "nope").await.is_err());
+    }
+
+    /// P2.1: a CID key resolves to the row's numeric section. Nothing here
+    /// reaches the network (`data` is cached), and the resolver never treats
+    /// the CID as a locator.
+    #[tokio::test]
+    async fn cid_key_is_not_a_locator() {
+        let (db, _dir) = db_with_inline(Some("<logo@example.test>")).await;
+        let c = GmailApiProvider::new("a".into(), GmailClient::new("t".into()));
+        let (b, _) = resolve_attachment(&db, &c, "m1", "logo@example.test")
+            .await
+            .unwrap();
+        assert_eq!(b, vec![1, 2, 3]);
+        let rec = db.attachment_resolve("m1", "logo@example.test").await.unwrap().unwrap();
+        assert_eq!(rec.part_id, "2");
+        assert_eq!(rec.locator_for(crate::provider::ProviderKind::GmailImap), Some("2"));
+        // No REST attachment id on this row: the REST transport has no locator
+        // for it, which is an error rather than a fabricated request.
+        assert_eq!(rec.locator_for(crate::provider::ProviderKind::GmailApi), None);
     }
 }

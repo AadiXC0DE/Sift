@@ -1,37 +1,29 @@
+//! Attachment commands (P2.1–P2.4, P2.6).
+//!
+//! Thin wrappers: the attachment service owns identity, cache, streaming,
+//! progress, saving and open policy. These commands only translate UI shapes
+//! into service calls and run the native dialogs.
+
+use crate::attachments::service;
+use crate::attachments::AttachmentRuntime;
 use crate::app_state::AppState;
+use crate::dto::{SaveAllResult, SaveAsResult};
 use crate::errors::SiftError;
+use std::path::PathBuf;
 use tauri::State;
 
-#[tauri::command]
-pub async fn attachments_open(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    attachment_id: String,
-) -> Result<(), SiftError> {
-    let (path, mime) = ensure_downloaded_guarded(&state, &attachment_id).await?;
-    // executables need confirm - frontend shows dialog; backend double-checks extension
-    let _ = mime;
-    crate::opener::open_path(&app, &path).map_err(|e| SiftError::app("open", e.to_string(), false))
+fn runtime(state: &AppState, app: &tauri::AppHandle) -> AttachmentRuntime {
+    crate::attachments::runtime_for(state, app)
 }
 
-#[tauri::command]
-pub async fn attachments_save_as(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-    attachment_id: String,
-) -> Result<serde_json::Value, SiftError> {
+/// Offer a Save As destination. Returns `None` when the user cancels.
+async fn prompt_save_path(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
     use tauri_plugin_dialog::DialogExt;
-    let (src, _mime) = ensure_downloaded_guarded(&state, &attachment_id).await?;
-    let name = std::path::Path::new(&src)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("attachment")
-        .to_string();
-
     // Use the callback dialog, not `blocking_save_file`: the blocking variant
     // parks a runtime thread on a synchronous channel, which can deadlock the
     // command and leave the UI spinning forever.
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let name = name.to_string();
     app.dialog()
         .file()
         .add_filter("All", &["*"])
@@ -39,112 +31,100 @@ pub async fn attachments_save_as(
         .save_file(move |dest| {
             let _ = tx.send(dest);
         });
-    let dest = rx
-        .await
-        .map_err(|_| SiftError::app("cancelled", "Save dialog closed", false))?;
-    let Some(dest) = dest else {
-        return Err(SiftError::app("cancelled", "Save cancelled", false));
-    };
-    let dest_path = dest
-        .into_path()
-        .map_err(|e| SiftError::app("save", e.to_string(), false))?;
-    tokio::fs::copy(&src, &dest_path)
-        .await
-        .map_err(SiftError::from)?;
-    Ok(serde_json::json!({ "path": dest_path.to_string_lossy() }))
+    let dest = rx.await.ok().flatten()?;
+    dest.into_path().ok()
 }
 
-/// Bound the fetch so a dead IMAP/SMTP connection can never leave the UI
-/// spinner running forever; surface a clear, retryable error instead.
-async fn ensure_downloaded_guarded(
-    state: &AppState,
-    attachment_id: &str,
-) -> Result<(String, String), SiftError> {
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        ensure_downloaded(state, attachment_id),
-    )
+/// One folder prompt for Save All.
+async fn prompt_folder(app: &tauri::AppHandle) -> Option<PathBuf> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |folder| {
+        let _ = tx.send(folder);
+    });
+    let folder = rx.await.ok().flatten()?;
+    folder.into_path().ok()
+}
+
+/// Open an attachment with the system handler.
+///
+/// `confirmed_executable` is the caller's confirmation result for downloaded
+/// app/script/executable types; without it those never reach the opener. The
+/// check is enforced here, in the backend.
+#[tauri::command]
+pub async fn attachments_open(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    attachment_id: String,
+    // Account-qualified key (appendix A). Optional so callers that still pass
+    // only an attachment id work until the P4 scoping migration: ownership is
+    // then derived from the message join, never guessed.
+    account_id: Option<String>,
+    confirmed_executable: Option<bool>,
+) -> Result<(), SiftError> {
+    let rt = runtime(&state, &app);
+    let rec = service::owned_record(&rt.db, account_id.as_deref(), &attachment_id).await?;
+    service::open(&rt, &*state, &rec, confirmed_executable.unwrap_or(false), |path| {
+        crate::opener::open_path(&app, &path.to_string_lossy())
+    })
     .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(SiftError::app(
-            "timeout",
-            "This attachment is taking too long to download. Check your connection and try again.",
-            true,
-        )),
-    }
 }
 
-async fn ensure_downloaded(
-    state: &AppState,
-    attachment_id: &str,
-) -> Result<(String, String), SiftError> {
-    let rec = state
-        .db
-        .attachment_get(attachment_id)
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?
-        .ok_or_else(|| SiftError::NotFound("attachment".into()))?;
-    let (message_id, part_id, gmail_att_id, mime, data, local) = rec;
-    if let Some(p) = local {
-        if std::path::Path::new(&p).exists() {
-            return Ok((p, mime));
-        }
-    }
-    if let Some(b) = data {
-        let dir = state.data_dir.join("attachments");
-        let _ = std::fs::create_dir_all(&dir);
-        let p = dir.join(format!("{attachment_id}-bin"));
-        std::fs::write(&p, &b).map_err(SiftError::from)?;
-        let ps = p.to_string_lossy().into_owned();
-        let ps2 = ps.clone();
-        let __aid = attachment_id.to_string();
-        state
-            .db
-            .write(move |c| {
-                c.execute(
-                    "UPDATE attachments SET local_path=? WHERE id=?",
-                    rusqlite::params![ps2, __aid],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-        return Ok((ps, mime));
-    }
-    // fetch (transport locator: Gmail attachmentId, or the IMAP section path
-    // stored in part_id when gmail_att_id is NULL)
-    let account_id = state
-        .db
-        .message_thread(&message_id)
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?
-        .map(|(account, _)| account)
-        .ok_or_else(|| SiftError::NotFound("message".into()))?;
-    let provider = state.provider_for(&account_id).await?;
-    let locator = gmail_att_id.as_deref().unwrap_or(&part_id);
-    if locator.is_empty() {
-        return Err(SiftError::app("nodata", "no data", true));
-    }
-    let bytes = provider.fetch_attachment(&message_id, locator).await?;
-    let dir = state.data_dir.join("attachments");
-    let _ = std::fs::create_dir_all(&dir);
-    let p = dir.join(format!("{attachment_id}-bin"));
-    std::fs::write(&p, &bytes).map_err(SiftError::from)?;
-    let ps = p.to_string_lossy().into_owned();
-    let ps2 = ps.clone();
-    let __aid = attachment_id.to_string();
-    state
-        .db
-        .write(move |c| {
-            c.execute(
-                "UPDATE attachments SET local_path=? WHERE id=?",
-                rusqlite::params![ps2, __aid],
-            )?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-    let _ = part_id;
-    Ok((ps, mime))
+/// Save As. The destination is chosen *before* any uncached download, so a
+/// cancelled dialog costs no network work and a failed copy leaves nothing
+/// half-written at the destination.
+#[tauri::command]
+pub async fn attachments_save_as(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    attachment_id: String,
+    account_id: Option<String>,
+) -> Result<SaveAsResult, SiftError> {
+    let rt = runtime(&state, &app);
+    let rec = service::owned_record(&rt.db, account_id.as_deref(), &attachment_id).await?;
+    let name = crate::attachments::naming::basename(
+        rec.filename.as_deref(),
+        &rec.mime,
+        &rec.id,
+    );
+    let Some(dest) = prompt_save_path(&app, &name).await else {
+        return Ok(SaveAsResult {
+            path: None,
+            cancelled: true,
+        });
+    };
+    service::copy_to(&rt, &*state, &rec, &dest).await?;
+    Ok(SaveAsResult {
+        path: Some(dest.to_string_lossy().into_owned()),
+        cancelled: false,
+    })
+}
+
+/// Save All for a message with two or more non-inline attachments (P2.6).
+#[tauri::command]
+pub async fn attachments_save_all(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    message_id: String,
+    account_id: Option<String>,
+) -> Result<SaveAllResult, SiftError> {
+    let rt = runtime(&state, &app);
+    let Some(dir) = prompt_folder(&app).await else {
+        return Ok(SaveAllResult {
+            saved: 0,
+            failed: vec![],
+        });
+    };
+    service::save_all_into(&rt, &*state, account_id.as_deref(), &message_id, &dir).await
+}
+
+/// Cancel an in-flight transfer by the `requestId` the progress event carries
+/// (an account-qualified attachment id). Immediate, and idempotent.
+#[tauri::command]
+pub async fn attachments_cancel(
+    account_id: String,
+    request_id: String,
+) -> Result<(), SiftError> {
+    service::cancel(account_id.trim(), request_id.trim());
+    Ok(())
 }

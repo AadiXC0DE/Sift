@@ -425,7 +425,15 @@ pub async fn store_parsed(
         (None, 0, 0, true)
     };
     for p in parsed.attachments.iter().chain(parsed.inline.iter()) {
-        let small = if p.data.len() < 64 * 1024 {
+        // A metadata-only parse (BODYSTRUCTURE walk) carries no bytes at all;
+        // a genuinely zero-byte attachment has no bytes *and* declares size 0.
+        // Storing an empty payload for the former would make the cache hand
+        // back an empty file for a large attachment, so the declared size
+        // disambiguates. Rows larger than the row-cache cap are fetched on
+        // demand instead of being duplicated in SQLite.
+        let payload = if p.data.is_empty() {
+            (p.size <= 0).then(Vec::new)
+        } else if p.data.len() <= crate::attachments::service::ROW_CACHE_CAP {
             Some(p.data.clone())
         } else {
             None
@@ -440,7 +448,7 @@ pub async fn store_parsed(
             size: p.size,
             content_id: p.content_id.clone(),
             is_inline: p.is_inline,
-            data: small,
+            data: payload,
         })
         .await?;
     }
@@ -482,9 +490,29 @@ pub async fn store_parsed(
     Ok(())
 }
 
+/// One incremental attachment payload step (P2.4). `Data` chunks arrive in
+/// order, followed by exactly one `Done` that reports the exact decoded total.
+#[derive(Debug, Clone)]
+pub enum AttachmentChunk {
+    Data(Vec<u8>),
+    Done { total_bytes: u64 },
+}
+
+/// Send one chunk, mapping a closed receiver (the consumer cancelled or went
+/// away) to a typed cancellation error rather than a silent success.
+async fn send_chunk(
+    tx: &tokio::sync::mpsc::Sender<AttachmentChunk>,
+    chunk: AttachmentChunk,
+) -> Result<(), SiftError> {
+    tx.send(chunk)
+        .await
+        .map_err(|_| SiftError::app("attachment_cancelled", "Download cancelled", false))
+}
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn kind(&self) -> ProviderKind;
+
     /// Sign-in check: email + display name (+ avatar url if known).
     async fn verify(&self) -> Result<ProfileInfo, SiftError>;
     async fn list_labels(&self) -> Result<Vec<Label>, SiftError>;
@@ -520,6 +548,26 @@ pub trait Provider: Send + Sync {
         message_id: &str,
         attachment_id: &str,
     ) -> Result<Vec<u8>, SiftError>;
+    /// Incremental attachment payload (P2.4). `Data` chunks are delivered in
+    /// order, then exactly one `Done` carrying the exact decoded total; the
+    /// return value repeats that total. A transport with real streaming
+    /// overrides this; the default forwards [`Provider::fetch_attachment`] as
+    /// a single chunk. Returning `Err` after some `Data` chunks means the
+    /// payload is incomplete and must be discarded.
+    async fn fetch_attachment_chunks(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+        tx: tokio::sync::mpsc::Sender<AttachmentChunk>,
+    ) -> Result<u64, SiftError> {
+        let bytes = self.fetch_attachment(message_id, attachment_id).await?;
+        let total = bytes.len() as u64;
+        if !bytes.is_empty() {
+            send_chunk(&tx, AttachmentChunk::Data(bytes)).await?;
+        }
+        send_chunk(&tx, AttachmentChunk::Done { total_bytes: total }).await?;
+        Ok(total)
+    }
     /// "View source".
     async fn fetch_raw(&self, message_id: &str) -> Result<String, SiftError>;
     /// One outbox op from the 8.4 table. Idempotent: re-applying an already

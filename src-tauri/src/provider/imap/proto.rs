@@ -82,12 +82,25 @@ pub enum FetchAttr {
     GmailLabels(Vec<String>),
     BodyStructure(BodyStruct),
     /// `BODY[<section>]` or `BODY[<section>]<origin>` literal bytes.
+    ///
+    /// `section` is always a non-empty part path (`1`, `2.1`, …). The
+    /// whole-message form has its own sentinel ([`FetchAttr::WholeMessage`]),
+    /// so a section read can never be satisfied by a whole-message literal.
     BodySection {
         section: String,
         origin: u32,
         bytes: Vec<u8>,
     },
-    /// `BODY[HEADER.FIELDS (...)]` literal bytes.
+    /// `BODY[]` — the WHOLE RFC822 message.
+    ///
+    /// Kept distinct from [`FetchAttr::HeaderFields`] and
+    /// [`FetchAttr::BodySection`] (P2.7): a response for a numbered part is
+    /// never accepted as the whole message and vice versa.
+    WholeMessage {
+        origin: u32,
+        bytes: Vec<u8>,
+    },
+    /// `BODY[HEADER]` / `BODY[HEADER.FIELDS (...)]` literal bytes.
     HeaderFields(Vec<u8>),
     /// Anything unrecognized, kept verbatim for forward tolerance.
     Raw(String),
@@ -693,18 +706,36 @@ fn parse_fetch_attrs(c: &mut Cur) -> Result<Vec<FetchAttr>, ParseError> {
         if c.peek().is_none() {
             return Err(ParseError::Incomplete);
         }
+        let attr_start = c.pos;
         match parse_fetch_attr(c) {
             Ok(a) => out.push(a),
             Err(ParseError::Incomplete) => return Err(ParseError::Incomplete),
-            Err(_) => {
-                // Tolerant: keep the raw span and continue with the message.
-                let start = c.pos;
+            Err(e) => {
+                // Tolerance is for attributes we do NOT understand. A
+                // malformed BODYSTRUCTURE (or bare BODY) must surface its
+                // typed error — e.g. the nesting cap (P2.4) — instead of
+                // being skipped as opaque `Raw`.
+                if matches!(attr_name(&c.b[attr_start..]).as_str(), "BODY" | "BODYSTRUCTURE") {
+                    return Err(e);
+                }
+                // Rewind and skip the whole attribute, not just the part the
+                // failed parse consumed.
+                c.pos = attr_start;
                 c.skip_item()?;
-                out.push(FetchAttr::Raw(lossy(&c.b[start..c.pos])));
+                out.push(FetchAttr::Raw(lossy(&c.b[attr_start..c.pos])));
             }
         }
     }
     Ok(out)
+}
+
+/// Attribute name at the front of `rest` (the token the FETCH parser reads).
+fn attr_name(rest: &[u8]) -> String {
+    let end = rest
+        .iter()
+        .position(|b| !(b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.')))
+        .unwrap_or(rest.len());
+    lossy(&rest[..end]).to_uppercase()
 }
 
 fn parse_fetch_attr(c: &mut Cur) -> Result<FetchAttr, ParseError> {
@@ -790,7 +821,7 @@ fn parse_gm_labels(c: &mut Cur) -> Result<Vec<String>, ParseError> {
 
 /// `BODY`, `BODY[...]`, `BODY[...]<origin>` (+ optional literal).
 /// `name` is always `"BODY"` here (the atom stops at `[`); the bracket part
-/// is parsed below. Returns HeaderFields / BodySection.
+/// is parsed below. Returns WholeMessage / HeaderFields / BodySection.
 fn parse_body_attr(c: &mut Cur, _name: &str) -> Result<FetchAttr, ParseError> {
     let mut section = String::new();
     let mut had_brackets = false;
@@ -865,8 +896,13 @@ fn shape_section(had_brackets: bool, section: &str, origin: u32, bytes: Vec<u8>)
         // sends it since we always ask BODYSTRUCTURE; keep raw on sight.
         return FetchAttr::Raw(format!("BODY<{origin}>[{} bytes]", bytes.len()));
     }
-    if section.is_empty() || section.to_uppercase().starts_with("HEADER") {
-        // BODY[] (whole message) and BODY[HEADER...] are header-ish payloads.
+    if section.is_empty() {
+        // `BODY[]`: the whole message. A distinct sentinel (P2.7) so it can
+        // never be confused with a numbered part's bytes or a header block.
+        return FetchAttr::WholeMessage { origin, bytes };
+    }
+    if section.to_uppercase().starts_with("HEADER") {
+        // `BODY[HEADER]` / `BODY[HEADER.FIELDS (...)]`: header text only.
         return FetchAttr::HeaderFields(bytes);
     }
     FetchAttr::BodySection {
@@ -880,7 +916,19 @@ fn shape_section(had_brackets: bool, section: &str, origin: u32, bytes: Vec<u8>)
 // BODYSTRUCTURE
 // ---------------------------------------------------------------------------
 
+/// Maximum BODYSTRUCTURE nesting accepted (P2.4). Real Gmail never exceeds a
+/// handful of MIME levels; the bound stops a hostile/broken server from
+/// driving unbounded recursion.
+pub const MAX_BODY_NESTING: usize = 100;
+
 fn parse_bodystructure(c: &mut Cur) -> Result<BodyStruct, ParseError> {
+    parse_bodystructure_at(c, 0)
+}
+
+fn parse_bodystructure_at(c: &mut Cur, depth: usize) -> Result<BodyStruct, ParseError> {
+    if depth > MAX_BODY_NESTING {
+        return Err(ParseError::Malformed("BODYSTRUCTURE nesting too deep".into()));
+    }
     if !c.eat(b'(') {
         return Err(ParseError::Malformed("BODYSTRUCTURE (".into()));
     }
@@ -888,7 +936,7 @@ fn parse_bodystructure(c: &mut Cur) -> Result<BodyStruct, ParseError> {
     if c.peek() == Some(b'(') {
         let mut parts = vec![];
         while c.peek() == Some(b'(') {
-            parts.push(parse_bodystructure(c)?);
+            parts.push(parse_bodystructure_at(c, depth + 1)?);
             c.eat_ws();
         }
         c.eat_ws();
@@ -920,12 +968,26 @@ fn parse_bodystructure(c: &mut Cur) -> Result<BodyStruct, ParseError> {
         c.eat_ws();
         let size: u32 = c.number()?;
         c.eat_ws();
-        // text/* has an extra line count
         let mut lines = None;
         if mime.eq_ignore_ascii_case("text")
             && c.peek().map(|b| b.is_ascii_digit()).unwrap_or(false)
         {
+            // text/* has an extra line count.
             lines = Some(c.number()?);
+            c.eat_ws();
+        } else if mime.eq_ignore_ascii_case("message") && subtype.eq_ignore_ascii_case("rfc822")
+        {
+            // message/rfc822 carries the encapsulated message inline:
+            // body-fld-envelope, body-fld-body, body-fld-lines (RFC 3501).
+            // The raw message is what section N returns; its own parts are
+            // sections N.1… and are deliberately NOT walked here (P2.7), so
+            // a forwarded `.eml` stays one attachable part and its nested
+            // text cannot be mistaken for the outer body.
+            c.skip_item()?; // envelope
+            c.eat_ws();
+            let _nested = parse_bodystructure_at(c, depth + 1)?;
+            c.eat_ws();
+            let _encapsulated_lines: u32 = c.number()?;
             c.eat_ws();
         }
         // body-ext-1part: md5, disposition, language, location - disposition
@@ -1180,8 +1242,12 @@ pub fn encode_utf7_mailbox(s: &str) -> String {
     out
 }
 
-/// Walk a BODYSTRUCTURE assigning IMAP part numbers ("1", "2", "1.1"...).
-/// Returns (number, is_multipart, mime, single-ref) for every addressable part.
+/// Walk a BODYSTRUCTURE assigning IMAP part numbers (`"1"`, `"2"`, `"1.1"`…).
+/// Returns `(section, part)` for every addressable part.
+///
+/// RFC 3501 section numbering: a non-multipart message's whole body is
+/// section `1`, so a single-part root is addressable (P2.7); a multipart's
+/// children are `1`, `2`, … in order. Nested multiparts keep dotted paths.
 pub fn walk_parts(bs: &BodyStruct) -> Vec<(String, &BodyStruct)> {
     fn go<'a>(bs: &'a BodyStruct, prefix: String, out: &mut Vec<(String, &'a BodyStruct)>) {
         match bs {
@@ -1204,7 +1270,9 @@ pub fn walk_parts(bs: &BodyStruct) -> Vec<(String, &BodyStruct)> {
     let mut out = vec![];
     match bs {
         BodyStruct::Multipart { .. } => go(bs, String::new(), &mut out),
-        single => out.push((String::new(), single)),
+        // Non-multipart root: its addressable body is section 1, never the
+        // empty string (which would make attachment_rows skip it).
+        single => out.push(("1".to_string(), single)),
     }
     out
 }
@@ -1360,5 +1428,133 @@ mod tests {
             assert_eq!(format!("{dec:x}"), hex);
             assert_eq!(u64::from_str_radix(hex, 16).unwrap(), dec);
         }
+    }
+
+    /// Parse one synthetic `* 1 FETCH (...)` and return its attributes.
+    fn fetch_attrs_of(response: &str) -> Vec<FetchAttr> {
+        let mut line = response.to_string();
+        if !line.ends_with("\r\n") {
+            line.push_str("\r\n");
+        }
+        match parse_response(line.as_bytes()).expect("parse") {
+            (_, Response::Untagged(Untagged::Fetch { attrs, .. })) => attrs,
+            other => panic!("want FETCH, got {other:?}"),
+        }
+    }
+
+    fn bodystructure_of(response: &str) -> BodyStruct {
+        fetch_attrs_of(response)
+            .into_iter()
+            .find_map(|a| match a {
+                FetchAttr::BodyStructure(bs) => Some(bs),
+                _ => None,
+            })
+            .expect("bodystructure")
+    }
+
+    #[test]
+    fn p27_single_part_root_is_section_one() {
+        // Non-multipart root: addressable body is section 1, not empty.
+        let bs = bodystructure_of(
+            "* 1 FETCH (UID 1 BODYSTRUCTURE (\"application\" \"pdf\" (\"name\" \"doc.pdf\") NIL NIL \"base64\" 2100 NIL (\"attachment\" (\"filename\" \"doc.pdf\")) NIL NIL))",
+        );
+        let parts = walk_parts(&bs);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].0, "1");
+        assert!(matches!(parts[0].1, BodyStruct::Single { .. }));
+
+        // A single-part text root is also section 1 (body, not attachment).
+        let bs = bodystructure_of(
+            "* 1 FETCH (UID 1 BODYSTRUCTURE (\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"7bit\" 10 1 NIL NIL NIL NIL))",
+        );
+        assert_eq!(walk_parts(&bs)[0].0, "1");
+
+        // Multipart children keep 1..n and nested multiparts stay dotted.
+        let bs = bodystructure_of(
+            "* 1 FETCH (UID 1 BODYSTRUCTURE ((\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"7bit\" 10 1 NIL NIL NIL NIL) ((\"text\" \"html\" (\"charset\" \"utf-8\") NIL NIL \"7bit\" 20 1 NIL NIL NIL NIL) (\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"7bit\" 20 1 NIL NIL NIL NIL) \"alternative\" (\"boundary\" \"a\") NIL NIL NIL) \"mixed\" (\"boundary\" \"m\") NIL NIL NIL))",
+        );
+        let nums: Vec<String> = walk_parts(&bs).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(nums, vec!["1", "2", "2.1", "2.2"]);
+    }
+
+    #[test]
+    fn p27_whole_message_and_header_sections_are_distinct() {
+        let attrs = fetch_attrs_of("* 1 FETCH (UID 1 BODY[] {4}\r\nbody)");
+        assert!(matches!(
+            attrs.iter().find(|a| matches!(a, FetchAttr::WholeMessage { .. })),
+            Some(FetchAttr::WholeMessage { bytes, .. }) if bytes == b"body"
+        ));
+        assert!(!attrs.iter().any(|a| matches!(a, FetchAttr::BodySection { .. })));
+
+        let attrs = fetch_attrs_of(
+            "* 1 FETCH (UID 1 BODY[HEADER.FIELDS (FROM)] {3}\r\nhi\n)",
+        );
+        assert!(attrs.iter().any(|a| matches!(a, FetchAttr::HeaderFields(_))));
+
+        let attrs = fetch_attrs_of("* 1 FETCH (UID 1 BODY[2.1]<10> {2}\r\nab)");
+        assert!(matches!(
+            attrs.iter().find(|a| matches!(a, FetchAttr::BodySection { .. })),
+            Some(FetchAttr::BodySection { section, origin, bytes })
+                if section == "2.1" && *origin == 10 && bytes == b"ab"
+        ));
+    }
+
+    #[test]
+    fn p27_message_rfc822_parses_encapsulated_structure() {
+        // RFC 3501 body-type-msg: subtype, params, id, desc, encoding, octets,
+        // envelope, encapsulated body, encapsulated lines, then extensions.
+        let bs = bodystructure_of(
+            "* 1 FETCH (UID 1 BODYSTRUCTURE ((\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"7bit\" 10 1 NIL NIL NIL NIL) (\"message\" \"rfc822\" NIL NIL NIL \"7bit\" 500 (\"Wed, 12 Aug 2026 09:14:03 +0000\" \"Fwd\" ((\"Ada\" NIL \"ada\" \"acme.com\")) NIL NIL NIL NIL NIL NIL NIL) ((\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"7bit\" 20 1 NIL NIL NIL NIL) (\"application\" \"pdf\" NIL NIL NIL \"base64\" 40 NIL NIL NIL NIL) \"mixed\" (\"boundary\" \"n\") NIL NIL NIL) 3 NIL (\"attachment\" (\"filename\" \"fwd.eml\")) NIL NIL) \"mixed\" (\"boundary\" \"m\") NIL NIL NIL))",
+        );
+        let parts = walk_parts(&bs);
+        // The forwarded message is ONE part at section 2; its encapsulated
+        // text/plain is never surfaced as section 2.
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[1].0, "2");
+        match parts[1].1 {
+            BodyStruct::Single {
+                mime,
+                subtype,
+                size,
+                disposition,
+                ..
+            } => {
+                assert_eq!((mime.as_str(), subtype.as_str()), ("message", "rfc822"));
+                assert_eq!(*size, 500);
+                assert_eq!(
+                    disposition.as_ref().and_then(|(_, p)| p
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("filename"))
+                        .map(|(_, v)| v.as_str())),
+                    Some("fwd.eml")
+                );
+            }
+            other => panic!("want single message/rfc822, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn p27_bodystructure_nesting_is_capped() {
+        let leaf = "(\"text\" \"plain\" NIL NIL NIL \"7bit\" 1 1 NIL NIL NIL NIL)";
+        // Positive control: shallow multipart nesting must parse.
+        let mut shallow = leaf.to_string();
+        for _ in 0..3 {
+            shallow = format!("({shallow} \"mixed\" (\"boundary\" \"b\") NIL NIL NIL)");
+        }
+        let line = format!("* 1 FETCH (UID 1 BODYSTRUCTURE {shallow})\r\n");
+        let r = parse_response(line.as_bytes());
+        assert!(r.is_ok(), "shallow nesting must parse: {r:?}\n{line}");
+
+        // 101 nested multiparts must be rejected, not recursed into.
+        let mut inner = leaf.to_string();
+        for _ in 0..(MAX_BODY_NESTING + 1) {
+            inner = format!("({inner} \"mixed\" (\"boundary\" \"b\") NIL NIL NIL)");
+        }
+        let line = format!("* 1 FETCH (UID 1 BODYSTRUCTURE {inner})\r\n");
+        let e = parse_response(line.as_bytes()).expect_err("must reject deep nesting");
+        assert!(
+            format!("{e:?}").contains("nesting too deep"),
+            "typed malformed error, got {e:?}"
+        );
     }
 }

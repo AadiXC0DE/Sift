@@ -69,6 +69,15 @@ pub struct Behavior {
     pub disconnect_after_select: bool,
     /// Apply the next mutation and close WITHOUT its tagged completion.
     pub disconnect_after_mutation: bool,
+    /// A partial section FETCH declares a literal far larger than requested
+    /// (and sends no bytes): the client must refuse the declaration (P2.4).
+    pub oversized_partial_literal: bool,
+    /// A partial section FETCH sends only the literal head, then the socket
+    /// closes: the client must surface a typed error, never truncated bytes.
+    pub drop_in_section_literal: bool,
+    /// Serve a whole-message `BODY[]` of at least this many bytes (proves the
+    /// 8 MiB framing cap does not bound a legitimate message literal).
+    pub large_full_message_bytes: Option<usize>,
 }
 
 impl Behavior {
@@ -98,6 +107,8 @@ pub struct State {
     /// (msgid, section). When present they replace the generated payload and
     /// are served unmodified (binary-safe).
     pub section_bytes: HashMap<(u64, String), Vec<u8>>,
+    /// Explicit BODYSTRUCTURE text per msgid (P2.7 single-part/binary cases).
+    pub bodystructure_overrides: HashMap<u64, String>,
     /// Number of TCP connections accepted so far (connection-cap tests).
     pub connections: usize,
 }
@@ -197,6 +208,12 @@ impl FakeGmail {
     pub fn set_section_bytes(&self, msgid: u64, section: &str, bytes: Vec<u8>) {
         let mut st = self.state.lock().unwrap();
         st.section_bytes.insert((msgid, section.to_string()), bytes);
+    }
+
+    /// Serve an explicit BODYSTRUCTURE for one message (P2.7).
+    pub fn set_bodystructure(&self, msgid: u64, text: &str) {
+        let mut st = self.state.lock().unwrap();
+        st.bodystructure_overrides.insert(msgid, text.to_string());
     }
 
     /// Sanitized command log (credentials are never recorded).
@@ -737,6 +754,18 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                             continue;
                         }
                         let mut out = uid_fetch(&state, &sel, &set, &items, since);
+                        // Mid-stream drop (P2.4): send the literal head, then
+                        // close without the bytes or completion.
+                        let drop_now = {
+                            let st = state.lock().unwrap();
+                            st.behavior.drop_in_section_literal
+                                && items.to_ascii_uppercase().contains("BODY.PEEK[")
+                                && items.contains('<')
+                        };
+                        if drop_now {
+                            write_out(&mut w, &out, &state).await;
+                            return;
+                        }
                         out.extend_from_slice(format!("{tag} OK done\r\n").as_bytes());
                         write_out(&mut w, &out, &state).await;
                     }
@@ -1444,7 +1473,12 @@ fn uid_fetch(
             parts.push(format!("X-GM-LABELS {}", gm_label_list(&labels)));
         }
         if items_up.contains("BODYSTRUCTURE") {
-            parts.push(format!("BODYSTRUCTURE {}", bodystructure(m)));
+            let bs = st
+                .bodystructure_overrides
+                .get(&m.msgid)
+                .cloned()
+                .unwrap_or_else(|| bodystructure(m));
+            parts.push(format!("BODYSTRUCTURE {bs}"));
         }
         let mut body: Vec<Vec<u8>> = vec![];
         if !omit {
@@ -1487,6 +1521,25 @@ fn render_body_part(m: &FMsg, spec: &str, st: &State) -> Vec<u8> {
     let origin = partial.map(|(o, _)| o as u32).unwrap_or(0);
     let up = section.to_ascii_uppercase();
 
+    // Cap-boundary cases (P2.4): a partial section literal that is either
+    // over-declared or cut off by a dropped socket.
+    if let Some((_, requested)) = partial {
+        if requested != usize::MAX && !section.is_empty() {
+            if st.behavior.oversized_partial_literal {
+                return literal_head(
+                    "BODY",
+                    section,
+                    origin,
+                    requested.saturating_add(1_000_000),
+                );
+            }
+            if st.behavior.drop_in_section_literal {
+                // Head only; the handler closes the socket before any bytes.
+                return literal_head("BODY", section, origin, requested);
+            }
+        }
+    }
+
     // Zero-length or byte-exact payloads for protocol tests (P1.2).
     if st.behavior.empty_section && !section.is_empty() && !up.starts_with("HEADER") {
         let mut out = literal_head("BODY", section, origin, 0);
@@ -1509,6 +1562,15 @@ fn render_body_part(m: &FMsg, spec: &str, st: &State) -> Vec<u8> {
         return out;
     }
     if section.is_empty() {
+        if let Some(n) = st.behavior.large_full_message_bytes {
+            let mut full = header_block(m).into_bytes();
+            full.reserve(n);
+            full.extend(std::iter::repeat(b'x').take(n));
+            let bytes = slice_partial(&full, partial);
+            let mut out = literal_head("BODY", section, origin, bytes.len());
+            out.extend_from_slice(bytes);
+            return out;
+        }
         let full = full_mime(m);
         let mut out = literal_head("BODY", section, origin, full.len());
         out.extend_from_slice(full.as_bytes());

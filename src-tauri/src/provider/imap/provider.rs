@@ -62,43 +62,27 @@ fn attr_msgid(attrs: &[FetchAttr]) -> Option<u64> {
 }
 
 /// Transfer encoding of one section, from a BODYSTRUCTURE we already hold.
-fn encoding_for(attrs: &[FetchAttr], section: &ImapSection) -> String {
+///
+/// `None` means the section is not an addressable single part of this
+/// BODYSTRUCTURE. The old code silently defaulted to `7bit`, which decoded
+/// unknown/missing parts as if they were text (P2.4); callers must treat
+/// `None` as a missing part.
+fn encoding_for(attrs: &[FetchAttr], section: &ImapSection) -> Option<String> {
     let want = section.wire();
     for a in attrs {
         if let FetchAttr::BodyStructure(bs) = a {
             for (num, part) in super::proto::walk_parts(bs) {
                 if num == want {
-                    if let BodyStruct::Single { encoding, .. } = part {
-                        return encoding.clone();
-                    }
+                    return match part {
+                        BodyStruct::Single { encoding, .. } => Some(encoding.clone()),
+                        // A multipart container has no bytes of its own.
+                        BodyStruct::Multipart { .. } => None,
+                    };
                 }
             }
         }
     }
-    "7bit".to_string()
-}
-
-/// Reject obviously corrupt base64 before handing bytes to the decoder, so a
-/// truncated payload surfaces as `attachment_decode_failed` (P1.6).
-fn valid_base64(b: &[u8]) -> bool {
-    let mut chars = 0usize;
-    for &c in b {
-        match c {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' => chars += 1,
-            b'=' | b'\r' | b'\n' | b' ' | b'\t' => {}
-            _ => return false,
-        }
-    }
-    chars > 0 || b.is_empty()
-}
-
-fn decode_attachment(bytes: &[u8], encoding: &str, corr: &str) -> Result<Vec<u8>, SiftError> {
-    if encoding.eq_ignore_ascii_case("base64") && !valid_base64(bytes) {
-        return Err(imap_errors::attachment_decode_failed(&format!(
-            "BODY at decode (code=- ref {corr})"
-        )));
-    }
-    Ok(message::decode_transfer(bytes, encoding))
+    None
 }
 
 /// A verified transport locator: the folder/uid Gmail uses for a message,
@@ -484,9 +468,10 @@ impl FetchCtx {
             }
             for a in attrs {
                 match a {
-                    FetchAttr::BodySection { bytes, .. } | FetchAttr::HeaderFields(bytes)
-                        if !bytes.is_empty() =>
-                    {
+                    // Only the whole-message sentinel satisfies a raw read: a
+                    // numbered part or a header block must never stand in for
+                    // the message (P2.7).
+                    FetchAttr::WholeMessage { bytes, .. } if !bytes.is_empty() => {
                         return Ok((bytes.clone(), loc.gmail_id));
                     }
                     _ => {}
@@ -507,7 +492,13 @@ impl FetchCtx {
     ) -> Result<Vec<u8>, SiftError> {
         let corr = self.corr(message_id, &section.wire());
         let loc = self.resolve_message_on_connection(message_id, conn).await?;
-        let encoding = encoding_for(&loc.attrs, &section);
+        // The encoding MUST come from an exact BODYSTRUCTURE match; anything
+        // else means the locator does not name a part of this message (P2.4).
+        let encoding = encoding_for(&loc.attrs, &section).ok_or_else(|| {
+            imap_errors::attachment_part_missing(&format!(
+                "BODYSTRUCTURE at section-lookup (code=- ref {corr})"
+            ))
+        })?;
         let ctx = imap_errors::OpCtx {
             command: "FETCH",
             stage: "section-read",
@@ -545,7 +536,9 @@ impl FetchCtx {
                 } = a
                 {
                     if got.eq_ignore_ascii_case(&want) {
-                        return decode_attachment(bytes, &encoding, &corr);
+                        // Strict: unsupported/malformed transfer encodings are
+                        // an error, never the encoded text (P2.4).
+                        return message::TransferDecoder::decode_all(&encoding, bytes);
                     }
                 }
             }
@@ -577,6 +570,96 @@ impl FetchCtx {
                 "FETCH at section-read (code=- ref {corr})"
             ))),
         }
+    }
+
+    /// Stream one attachment section as 256 KiB encoded partial reads,
+    /// decoding incrementally and forwarding the decoded bytes (P2.4).
+    ///
+    /// Only one response is ever buffered (requested bytes + framing); the
+    /// decoded total is reported exactly, never taken from the BODYSTRUCTURE
+    /// octet count. The caller owns any overall transfer deadline.
+    async fn stream_attachment(
+        &self,
+        conn: &mut Conn,
+        message_id: &str,
+        section: &ImapSection,
+        tx: &tokio::sync::mpsc::Sender<crate::provider::AttachmentChunk>,
+    ) -> Result<u64, SiftError> {
+        use crate::provider::AttachmentChunk;
+        /// Encoded bytes requested per partial read (P2.4).
+        const CHUNK: u32 = 256 * 1024;
+        let corr = self.corr(message_id, &section.wire());
+        let loc = self.resolve_message_on_connection(message_id, conn).await?;
+        let encoding = encoding_for(&loc.attrs, section).ok_or_else(|| {
+            imap_errors::attachment_part_missing(&format!(
+                "BODYSTRUCTURE at section-lookup (code=- ref {corr})"
+            ))
+        })?;
+        let mut decoder = message::TransferDecoder::new(&encoding)?;
+        let mut total: u64 = 0;
+        let mut origin: u64 = 0;
+        loop {
+            let chunk_origin: u32 = origin.try_into().map_err(|_| {
+                imap_errors::attachment_part_missing(&format!(
+                    "BODY at origin-overflow (code=- ref {corr})"
+                ))
+            })?;
+            let row = conn
+                .uid_fetch_partial(loc.uid, *section, chunk_origin, CHUNK)
+                .await
+                .map_err(imap_errors::attachment_from_conn)?;
+            let (got_origin, bytes) = match row {
+                Some(v) => v,
+                None => {
+                    if origin == 0 {
+                        // No bytes at all for a section BODYSTRUCTURE lists.
+                        return Err(imap_errors::attachment_part_missing(&format!(
+                            "BODY at section-read (code=- ref {corr})"
+                        )));
+                    }
+                    // A server may omit the empty trailing literal.
+                    break;
+                }
+            };
+            if got_origin != chunk_origin {
+                return Err(imap_errors::attachment_part_missing(&format!(
+                    "BODY[{}] at origin-check (code=- ref {corr})",
+                    section.wire()
+                )));
+            }
+            if bytes.is_empty() {
+                break;
+            }
+            let short = bytes.len() < CHUNK as usize;
+            let decoded = decoder.feed(&bytes)?;
+            if !decoded.is_empty() {
+                total = total
+                    .checked_add(decoded.len() as u64)
+                    .ok_or_else(|| imap_errors::attachment_decode_failed("size overflow"))?;
+                tx.send(AttachmentChunk::Data(decoded))
+                    .await
+                    .map_err(|_| imap_errors::attachment_cancelled("stream at chunk-send"))?;
+            }
+            origin = origin
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| imap_errors::attachment_decode_failed("origin overflow"))?;
+            if short {
+                break;
+            }
+        }
+        let tail = decoder.finish()?;
+        if !tail.is_empty() {
+            total = total
+                .checked_add(tail.len() as u64)
+                .ok_or_else(|| imap_errors::attachment_decode_failed("size overflow"))?;
+            tx.send(AttachmentChunk::Data(tail))
+                .await
+                .map_err(|_| imap_errors::attachment_cancelled("stream at chunk-send"))?;
+        }
+        tx.send(AttachmentChunk::Done { total_bytes: total })
+            .await
+            .map_err(|_| imap_errors::attachment_cancelled("stream at done-send"))?;
+        Ok(total)
     }
 }
 
@@ -939,6 +1022,35 @@ impl Provider for GmailImapProvider {
                 return Err(imap_errors::attachment_offline("join at section-read"));
             }
         }
+    }
+
+    /// Real streaming (P2.4): 256 KiB encoded partial `BODY.PEEK[...]` reads
+    /// through the bound foreground lease, decoded incrementally into the
+    /// consumer's channel. The reported total is the exact decoded length.
+    async fn fetch_attachment_chunks(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+        tx: tokio::sync::mpsc::Sender<crate::provider::AttachmentChunk>,
+    ) -> Result<u64, SiftError> {
+        // Same pre-network validation as `fetch_attachment`: a malformed
+        // locator is rejected before any socket work.
+        let section = ImapSection::parse(attachment_id).ok_or_else(|| {
+            imap_errors::attachment_locator_invalid(&format!(
+                "locator at validate (code=- ref {})",
+                imap_errors::correlation_id(&self.account_id, message_id, attachment_id)
+            ))
+        })?;
+        let ctx = self.ctx();
+        let mut lease = ctx.lease().await?;
+        let r = ctx
+            .stream_attachment(lease.conn(), message_id, &section, &tx)
+            .await;
+        // A failed/unknown-framing stream must not be reused (P1.3).
+        if r.is_ok() {
+            lease.keep();
+        }
+        r
     }
 
     async fn fetch_raw(&self, message_id: &str) -> Result<String, SiftError> {

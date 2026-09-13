@@ -131,6 +131,174 @@ pub struct AttachmentMeta {
     pub downloaded: bool,
 }
 
+/// Cache lifecycle of one attachment row (P2.2). `Unverified` is the state of
+/// bytes written before `cache_version` verification existed: readable, but
+/// confirmed only on first read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheState {
+    Missing,
+    Downloading,
+    Ready,
+    Corrupt,
+    Unverified,
+}
+
+impl CacheState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CacheState::Missing => "missing",
+            CacheState::Downloading => "downloading",
+            CacheState::Ready => "ready",
+            CacheState::Corrupt => "corrupt",
+            CacheState::Unverified => "unverified",
+        }
+    }
+    /// Unknown text degrades to `Missing` (never a false `ready`).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "downloading" => CacheState::Downloading,
+            "ready" => CacheState::Ready,
+            "corrupt" => CacheState::Corrupt,
+            "unverified" => CacheState::Unverified,
+            _ => CacheState::Missing,
+        }
+    }
+    /// True when this state could satisfy a read without the network.
+    pub fn is_local(self) -> bool {
+        matches!(self, CacheState::Ready | CacheState::Unverified)
+    }
+}
+
+/// One attachment row joined to its message for account ownership (P2.1).
+///
+/// `id` is the local row key; `part_id` is the IMAP section path (and only
+/// that); `gmail_att_id` is the REST attachment id (and only that). A UI key
+/// such as a Content-ID or a row id selects a row and is never a network
+/// locator.
+#[derive(Debug, Clone)]
+pub struct AttachmentRecord {
+    pub id: String,
+    pub account_id: String,
+    pub message_id: String,
+    pub part_id: String,
+    pub gmail_att_id: Option<String>,
+    pub filename: Option<String>,
+    pub mime: String,
+    pub size: i64,
+    pub content_id: Option<String>,
+    pub is_inline: bool,
+    /// Decoded bytes when they fit in the row cache; `None` when only metadata
+    /// or a cache file exists.
+    pub data: Option<Vec<u8>>,
+    /// Set when the row has a stored payload that cannot be decoded. The
+    /// payload is never reported as empty bytes; callers refetch instead.
+    pub data_error: Option<String>,
+    pub local_path: Option<String>,
+    pub cache_state: CacheState,
+    pub decoded_size: Option<i64>,
+}
+
+impl AttachmentRecord {
+    /// Transport locator for the IMAP transport: the stored MIME section.
+    pub fn imap_locator(&self) -> Option<&str> {
+        let section = self.part_id.trim();
+        (!section.is_empty()).then_some(section)
+    }
+
+    /// Transport locator for the Gmail REST transport: the API attachment id.
+    pub fn rest_locator(&self) -> Option<&str> {
+        let id = self.gmail_att_id.as_deref()?.trim();
+        (!id.is_empty()).then_some(id)
+    }
+
+    /// The locator the given transport must be asked for, if the row has one.
+    pub fn locator_for(&self, kind: crate::provider::ProviderKind) -> Option<&str> {
+        match kind {
+            crate::provider::ProviderKind::GmailApi => self.rest_locator(),
+            crate::provider::ProviderKind::GmailImap => self.imap_locator(),
+        }
+    }
+
+    /// Ordering used when listing a message's attachments for Save All: real
+    /// attachments first, then inline, then by display name.
+    pub fn order_key(&self) -> (bool, String) {
+        (
+            self.is_inline,
+            self.filename.clone().unwrap_or_default().to_lowercase(),
+        )
+    }
+}
+
+/// Typed cache metadata returned by the attachment service. `path` is the
+/// verified cache file; callers convert to bytes only when a URI scheme needs
+/// them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentCacheInfo {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "attachmentId")]
+    pub attachment_id: String,
+    pub state: String,
+    pub path: Option<String>,
+    #[serde(rename = "displayName")]
+    pub display_name: Option<String>,
+    #[serde(rename = "cacheBasename")]
+    pub cache_basename: String,
+    pub mime: String,
+    pub size: i64,
+    #[serde(rename = "decodedSize")]
+    pub decoded_size: Option<i64>,
+    /// Downloaded app/script/executable: a system open needs an explicit
+    /// confirmation result from the caller.
+    #[serde(rename = "requiresConfirmation")]
+    pub requires_confirmation: bool,
+}
+
+/// Account-qualified attachment key (appendix A).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentRefKey {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "attachmentId")]
+    pub attachment_id: String,
+}
+
+/// One attachment state record, emitted at most 10x/second while a transfer
+/// runs (P2.4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentProgress {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "attachmentId")]
+    pub attachment_id: String,
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    /// queued | downloading | ready | failed | cancelled
+    pub state: String,
+    #[serde(rename = "transferredBytes")]
+    pub transferred_bytes: u64,
+    #[serde(rename = "totalBytes")]
+    pub total_bytes: Option<u64>,
+    #[serde(rename = "errorCode")]
+    pub error_code: Option<String>,
+}
+
+/// Result of a message-level Save All (P2.6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveAllResult {
+    pub saved: usize,
+    pub failed: Vec<AttachmentRefKey>,
+}
+
+/// Result of `attachments_save_as`. A cancelled dialog is a normal outcome,
+/// not an error toast.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveAsResult {
+    pub path: Option<String>,
+    pub cancelled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListUnsub {
     pub url: Option<String>,

@@ -266,9 +266,16 @@ pub fn attachment_rows(message_hex: &str, bs: &BodyStruct) -> Vec<AttPut> {
                 .is_some_and(|(k, _)| k.eq_ignore_ascii_case("attachment"));
             let full_mime = format!("{mime}/{subtype}").to_lowercase();
             let is_text = full_mime.starts_with("text/");
-            if filename.is_none() && (is_text || full_mime == "message/rfc822") && !is_attachment {
+            // Text without a name or attachment disposition is body content,
+            // not an attachment. Everything else addressable is kept: named
+            // parts, unnamed binary parts, and an encapsulated message/rfc822
+            // (forwarded `.eml`) whose RAW message is section `num` (P2.7).
+            if filename.is_none() && is_text && !is_attachment {
                 continue;
             }
+            let filename = filename.or_else(|| {
+                (full_mime == "message/rfc822").then(|| "forwarded-message.eml".to_string())
+            });
             let inline = !is_attachment
                 && (id.is_some()
                     || disposition
@@ -337,6 +344,212 @@ pub(crate) fn decode_transfer(bytes: &[u8], encoding: &str) -> Vec<u8> {
         "quoted-printable" => qp_decode(bytes),
         _ => bytes.to_vec(),
     }
+}
+
+/// Strict, chunked MIME transfer decoder (P2.4).
+///
+/// Unlike [`decode_transfer`] (best-effort snippet decoding, which tolerates
+/// a partial escape), this is the attachment path: unsupported or malformed
+/// encodings are an error, never the encoded text. State is carried across
+/// [`feed`](Self::feed) calls so a base64 quantum or a quoted-printable
+/// escape split by a 256 KiB partial read decodes exactly, and the reported
+/// total is the DECODED length (never the BODYSTRUCTURE octet count).
+#[derive(Debug)]
+pub(crate) struct TransferDecoder {
+    kind: TransferKind,
+    /// Encoded bytes not yet forming a complete unit.
+    carry: Vec<u8>,
+    /// base64: a padding character has been decoded; no more data may follow.
+    padded: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TransferKind {
+    Passthrough,
+    Base64,
+    QuotedPrintable,
+}
+
+impl TransferDecoder {
+    pub(crate) fn new(encoding: &str) -> Result<Self, SiftError> {
+        let e = encoding.trim().to_ascii_lowercase();
+        let kind = match e.as_str() {
+            // Explicitly supported no-op encodings.
+            "" | "7bit" | "8bit" | "binary" => TransferKind::Passthrough,
+            "base64" => TransferKind::Base64,
+            "quoted-printable" => TransferKind::QuotedPrintable,
+            // uuencode, x-gzip, … are not decodable: fail instead of handing
+            // back encoded bytes as if they were the attachment.
+            _ => return Err(decode_failed(&format!("unsupported encoding {e}"))),
+        };
+        Ok(Self {
+            kind,
+            carry: Vec::new(),
+            padded: false,
+        })
+    }
+
+    /// Decode a complete payload in one shot (the single-read path).
+    pub(crate) fn decode_all(encoding: &str, bytes: &[u8]) -> Result<Vec<u8>, SiftError> {
+        let mut d = Self::new(encoding)?;
+        let mut out = d.feed(bytes)?;
+        out.extend(d.finish()?);
+        Ok(out)
+    }
+
+    pub(crate) fn feed(&mut self, encoded: &[u8]) -> Result<Vec<u8>, SiftError> {
+        match self.kind {
+            TransferKind::Passthrough => Ok(encoded.to_vec()),
+            TransferKind::Base64 => self.feed_base64(encoded),
+            TransferKind::QuotedPrintable => self.feed_qp(encoded),
+        }
+    }
+
+    /// Flush a trailing incomplete unit; any residue is malformed.
+    pub(crate) fn finish(self) -> Result<Vec<u8>, SiftError> {
+        match self.kind {
+            TransferKind::Passthrough => Ok(Vec::new()),
+            TransferKind::Base64 => self.finish_base64(),
+            TransferKind::QuotedPrintable => self.finish_qp(),
+        }
+    }
+
+    fn feed_base64(&mut self, encoded: &[u8]) -> Result<Vec<u8>, SiftError> {
+        let mut out = Vec::with_capacity(encoded.len() / 4 * 3 + 3);
+        for &b in encoded {
+            // Legal MIME base64 may be wrapped at any column: whitespace
+            // between quanta is ignored, including a CRLF split across reads.
+            if b.is_ascii_whitespace() {
+                continue;
+            }
+            if self.padded {
+                return Err(decode_failed("base64 data after padding"));
+            }
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'=' => {
+                    self.carry.push(b);
+                }
+                _ => return Err(decode_failed("base64 contains a non-base64 byte")),
+            }
+            if self.carry.len() == 4 {
+                self.decode_base64_group(&mut out)?;
+            }
+        }
+        Ok(out)
+    }
+
+    fn decode_base64_group(&mut self, out: &mut Vec<u8>) -> Result<(), SiftError> {
+        use base64::Engine;
+        let group = std::mem::take(&mut self.carry);
+        let padded = group.contains(&b'=');
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(group)
+            .map_err(|_| decode_failed("base64 quantum is malformed"))?;
+        out.extend_from_slice(&decoded);
+        if padded {
+            self.padded = true;
+        }
+        Ok(())
+    }
+
+    fn finish_base64(self) -> Result<Vec<u8>, SiftError> {
+        use base64::Engine;
+        if self.padded {
+            return if self.carry.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Err(decode_failed("base64 data after padding"))
+            };
+        }
+        match self.carry.len() {
+            0 => Ok(Vec::new()),
+            // A lone trailing character cannot encode a byte.
+            1 => Err(decode_failed("truncated base64: 1 trailing character")),
+            // A final unpadded quantum: tolerate omitted padding (common in
+            // real mail) but still reject non-base64 residue.
+            n => {
+                debug_assert!(n == 2 || n == 3);
+                let mut tail = self.carry;
+                while tail.len() % 4 != 0 {
+                    tail.push(b'=');
+                }
+                base64::engine::general_purpose::STANDARD
+                    .decode(tail)
+                    .map_err(|_| decode_failed("truncated base64 quantum"))
+            }
+        }
+    }
+
+    fn feed_qp(&mut self, encoded: &[u8]) -> Result<Vec<u8>, SiftError> {
+        self.carry.extend_from_slice(encoded);
+        let (out, consumed) = {
+            let b = &self.carry;
+            let mut out = Vec::with_capacity(b.len());
+            let mut i = 0usize;
+            while i < b.len() {
+                if b[i] != b'=' {
+                    out.push(b[i]);
+                    i += 1;
+                    continue;
+                }
+                // `=` starts an escape; wait for the rest of it if needed.
+                let Some(&next) = b.get(i + 1) else { break };
+                match next {
+                    b'\r' => {
+                        let Some(&after) = b.get(i + 2) else { break };
+                        if after == b'\n' {
+                            i += 3; // soft line break
+                        } else {
+                            return Err(decode_failed(
+                                "quoted-printable soft break is not CRLF",
+                            ));
+                        }
+                    }
+                    b'\n' => i += 2,
+                    h => {
+                        let Some(&l) = b.get(i + 2) else { break };
+                        match (hex_val(h), hex_val(l)) {
+                            (Some(h), Some(l)) => {
+                                out.push((h << 4) | l);
+                                i += 3;
+                            }
+                            _ => {
+                                return Err(decode_failed(
+                                    "quoted-printable = escape is not two hex digits",
+                                ))
+                            }
+                        }
+                    }
+                }
+            }
+            (out, i)
+        };
+        self.carry.drain(..consumed);
+        Ok(out)
+    }
+
+    fn finish_qp(self) -> Result<Vec<u8>, SiftError> {
+        if self.carry.is_empty() {
+            Ok(Vec::new())
+        } else {
+            // Plain bytes are always consumed; only an incomplete `=` escape
+            // (and its `\r`) can remain.
+            Err(decode_failed("truncated quoted-printable escape"))
+        }
+    }
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_failed(detail: &str) -> SiftError {
+    super::errors::attachment_decode_failed(detail)
 }
 
 pub fn decode_snippet(bytes: &[u8], encoding: &str, charset: &str, is_html: bool) -> String {
@@ -469,24 +682,18 @@ pub(crate) async fn fetch_snippet_groups(
                 None => return,
             };
             // Typed item list (P1.1): the partial section read is one item,
-            // and a multi-item FETCH is always parenthesized.
-            let section = if section.is_empty() {
-                None
-            } else {
-                match ImapSection::parse(section) {
-                    Some(s) => Some(s),
-                    None => {
-                        log::warn!(
-                            target: "sift::imap",
-                            "skipping snippet fetch for invalid section locator"
-                        );
-                        return;
-                    }
-                }
+            // and a multi-item FETCH is always parenthesized. Sections are
+            // always numbered now (walk_parts gives a single-part root "1").
+            let Some(section) = ImapSection::parse(section) else {
+                log::warn!(
+                    target: "sift::imap",
+                    "skipping snippet fetch for invalid section locator"
+                );
+                return;
             };
             let items = FetchItems::new()
                 .uid()
-                .peek_partial(section, 0, Some(2048));
+                .peek_partial(Some(section), 0, Some(2048));
             match conn
                 .uid_fetch_items(&uid_set(&uids, uids.len()), &items)
                 .await
@@ -501,9 +708,10 @@ pub(crate) async fn fetch_snippet_groups(
                 FetchAttr::Uid(u) => Some(*u),
                 _ => None,
             });
+            // Only a numbered body section may supply snippet bytes: a
+            // HEADER.FIELDS literal must never be decoded as body text.
             let bytes = attrs.iter().find_map(|a| match a {
                 FetchAttr::BodySection { bytes, .. } => Some(bytes),
-                FetchAttr::HeaderFields(b) => Some(b),
                 _ => None,
             });
             if let (Some(uid), Some(bytes)) = (uid, bytes) {
@@ -604,6 +812,75 @@ mod tests {
     }
 
     #[test]
+    fn p27_single_part_root_rows_and_snippet() {
+        let pdf = BodyStruct::Single {
+            mime: "application".into(),
+            subtype: "pdf".into(),
+            params: vec![("name".into(), "doc.pdf".into())],
+            id: None,
+            encoding: "base64".into(),
+            size: 9,
+            lines: None,
+            disposition: Some((
+                "attachment".into(),
+                vec![("filename".into(), "doc.pdf".into())],
+            )),
+        };
+        let rows = attachment_rows("abc", &pdf);
+        assert_eq!(rows.len(), 1, "single-part attachment must be addressable");
+        assert_eq!(rows[0].id, "abc:1");
+        assert_eq!(rows[0].part_id, "1");
+        assert_eq!(rows[0].filename.as_deref(), Some("doc.pdf"));
+        assert!(!rows[0].is_inline);
+
+        // Root text body: no attachment row, snippet section is 1.
+        let text = BodyStruct::Single {
+            mime: "text".into(),
+            subtype: "plain".into(),
+            params: vec![("charset".into(), "utf-8".into())],
+            id: None,
+            encoding: "7bit".into(),
+            size: 5,
+            lines: Some(1),
+            disposition: None,
+        };
+        assert!(attachment_rows("abc", &text).is_empty());
+        assert_eq!(snippet_section(&text).map(|t| t.0), Some("1".to_string()));
+
+        // Unnamed root binary is kept as an attachment (P2.7).
+        let bin = BodyStruct::Single {
+            mime: "application".into(),
+            subtype: "octet-stream".into(),
+            params: vec![],
+            id: None,
+            encoding: "binary".into(),
+            size: 4,
+            lines: None,
+            disposition: None,
+        };
+        let rows = attachment_rows("abc", &bin);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].part_id, "1");
+        assert!(rows[0].filename.is_none());
+
+        // Forwarded message/rfc822: one raw-message attachment at section 1.
+        let fwd = BodyStruct::Single {
+            mime: "message".into(),
+            subtype: "rfc822".into(),
+            params: vec![],
+            id: None,
+            encoding: "7bit".into(),
+            size: 500,
+            lines: None,
+            disposition: None,
+        };
+        let rows = attachment_rows("abc", &fwd);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].part_id, "1");
+        assert_eq!(rows[0].filename.as_deref(), Some("forwarded-message.eml"));
+    }
+
+    #[test]
     fn p11_message_labels_and_decoders() {
         let (ids, unread, starred, draft, sent) = map_labels(
             &["\\Inbox".to_string(), "Clients/Acme".to_string()],
@@ -636,5 +913,110 @@ mod tests {
             "[Gmail]/Entwürfe"
         );
         assert_eq!(uid_set(&[1, 2, 3, 7, 8, 9, 4522], 100), "4522,7:9,1:3");
+    }
+
+    fn err_code(e: &SiftError) -> String {
+        serde_json::to_value(e).unwrap()["code"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn b64(bytes: &[u8]) -> Vec<u8> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .encode(bytes)
+            .into_bytes()
+    }
+
+    #[test]
+    fn p24_streaming_decoder_base64_is_chunk_boundary_safe() {
+        let payload: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
+        let encoded = b64(&payload);
+        // Split at every awkward position: inside a quantum, between the two
+        // padding characters, and at a CRLF.
+        for split in [1, 2, 3, 4, 5, 7, 100, 1023, 2048, encoded.len() - 1] {
+            let mut d = TransferDecoder::new("base64").unwrap();
+            let mut out = d.feed(&encoded[..split]).unwrap();
+            out.extend(d.feed(&encoded[split..]).unwrap());
+            out.extend(d.finish().unwrap());
+            assert_eq!(out, payload, "split at {split}");
+        }
+        // Wrapped at 76 columns with CRLF, decoded as one feed.
+        let mut wrapped = Vec::new();
+        for chunk in encoded.chunks(76) {
+            wrapped.extend_from_slice(chunk);
+            wrapped.extend_from_slice(b"\r\n");
+        }
+        assert_eq!(
+            TransferDecoder::decode_all("base64", &wrapped).unwrap(),
+            payload
+        );
+        // CRLF split across two feeds.
+        let mut d = TransferDecoder::new("base64").unwrap();
+        let mut out = d.feed(&encoded[..40]).unwrap();
+        out.extend(d.feed(b"\r").unwrap());
+        out.extend(d.feed(b"\n").unwrap());
+        out.extend(d.feed(&encoded[40..]).unwrap());
+        out.extend(d.finish().unwrap());
+        assert_eq!(out, payload);
+        // 0 and 1 bytes.
+        assert!(TransferDecoder::decode_all("base64", b"").unwrap().is_empty());
+        assert!(TransferDecoder::decode_all("base64", b"\r\n")
+            .unwrap()
+            .is_empty());
+        // Omitted final padding still decodes ("aGk" -> "hi").
+        assert_eq!(TransferDecoder::decode_all("base64", b"aGk").unwrap(), b"hi");
+        assert_eq!(
+            TransferDecoder::decode_all("base64", b"aGVsbG8=").unwrap(),
+            b"hello"
+        );
+        // A 1-char residue after a padded quantum is rejected.
+        let e = TransferDecoder::decode_all("base64", b"aGVsbG8=A").unwrap_err();
+        assert_eq!(err_code(&e), "attachment_decode_failed");
+        // Invalid characters never decode to encoded text.
+        for bad in [&b"aGVs*bG8="[..], &b"a==="[..], &b"aGVsbG8=\xff"[..]] {
+            let e = TransferDecoder::decode_all("base64", bad).unwrap_err();
+            assert_eq!(err_code(&e), "attachment_decode_failed", "input {bad:?}");
+        }
+    }
+
+    #[test]
+    fn p24_streaming_decoder_quoted_printable_is_chunk_boundary_safe() {
+        let encoded = b"Hello=20world=0A=\r\ncontinued =3D sign";
+        let want = b"Hello world\ncontinued = sign";
+        for split in 1..encoded.len() {
+            let mut d = TransferDecoder::new("quoted-printable").unwrap();
+            let mut out = d.feed(&encoded[..split]).unwrap();
+            out.extend(d.feed(&encoded[split..]).unwrap());
+            out.extend(d.finish().unwrap());
+            assert_eq!(out, want, "split at {split}");
+        }
+        // Bare-LF soft break is tolerated; truncated escape is not.
+        assert_eq!(
+            TransferDecoder::decode_all("quoted-printable", b"a=\nb").unwrap(),
+            b"ab"
+        );
+        for bad in [&b"a=Zb"[..], &b"abc="[..], &b"abc=\r"[..]] {
+            let e = TransferDecoder::decode_all("quoted-printable", bad).unwrap_err();
+            assert_eq!(err_code(&e), "attachment_decode_failed", "input {bad:?}");
+        }
+    }
+
+    #[test]
+    fn p24_streaming_decoder_encodings_and_unsupported() {
+        // Explicitly supported no-op encodings.
+        for enc in ["", "7bit", "8bit", "binary", "BASE64 " ] {
+            assert!(TransferDecoder::new(enc).is_ok(), "{enc}");
+        }
+        assert_eq!(
+            TransferDecoder::decode_all("binary", &[0x80, 0xff, 0x00]).unwrap(),
+            vec![0x80, 0xff, 0x00]
+        );
+        // Unsupported transfer encodings are rejected, never passed through.
+        for enc in ["x-uuencode", "uuencode", "gzip", "base64x"] {
+            let e = TransferDecoder::new(enc).unwrap_err();
+            assert_eq!(err_code(&e), "attachment_decode_failed", "{enc}");
+        }
     }
 }

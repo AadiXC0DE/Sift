@@ -39,6 +39,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
         "0006_rerender_bodies",
         include_str!("migrations/0006_rerender_bodies.sql"),
     ),
+    (
+        "0007_attachment_cache",
+        include_str!("migrations/0007_attachment_cache.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -96,7 +100,8 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         conn.execute("UPDATE schema_version SET version=5", [])?;
         let _ = conn.execute_batch(MIGRATIONS[4].1);
         conn.execute_batch(MIGRATIONS[5].1)?;
-        conn.execute("UPDATE schema_version SET version=6", [])?;
+        conn.execute_batch(MIGRATIONS[6].1)?;
+        conn.execute("UPDATE schema_version SET version=7", [])?;
         return Ok(());
     }
     let v: i64 = conn
@@ -130,6 +135,19 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     if v < 6 {
         conn.execute_batch(MIGRATIONS[5].1)?;
         conn.execute("UPDATE schema_version SET version=6", [])?;
+    }
+    if v < 7 {
+        // Table rebuild: one explicit transaction so a crash leaves either the
+        // old table or the migrated one, never half of each.
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let r = conn.execute_batch(MIGRATIONS[6].1);
+        if r.is_ok() {
+            conn.execute("UPDATE schema_version SET version=7", [])?;
+            conn.execute_batch("COMMIT")?;
+        } else {
+            let _ = conn.execute_batch("ROLLBACK");
+            r?;
+        }
     }
     Ok(())
 }
@@ -208,7 +226,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
         for t in [
             "accounts",
             "labels",

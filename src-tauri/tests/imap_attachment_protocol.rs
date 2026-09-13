@@ -117,7 +117,10 @@ async fn p1_t01_exact_wire_bytes_for_sections() {
     let ctx = synced().await;
     let (mid, _dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
     let uid = uid_in(&ctx.db, &ctx.acc.id, "all", &mid).await;
-    for section in ["1", "2", "1.2", "2.1.3"] {
+    // Sections that exist in this message's BODYSTRUCTURE. Note the fixture
+    // has no nested multipart, so only "1"/"2" are addressable (P2.4 now
+    // requires an exact BODYSTRUCTURE match instead of defaulting to 7bit).
+    for section in ["1", "2"] {
         let _ = ctx.provider.fetch_attachment(&mid, section).await;
         let want = format!("UID FETCH {uid} (UID BODY.PEEK[{section}])");
         assert!(
@@ -126,6 +129,32 @@ async fn p1_t01_exact_wire_bytes_for_sections() {
             ctx.fake.commands_with_prefix("UID FETCH")
         );
     }
+    // Dotted section paths still render byte-identically (P1.1).
+    let items = sift::provider::imap::conn::FetchItems::new()
+        .uid()
+        .peek_section(ImapSection::parse("1.2").unwrap());
+    assert_eq!(items.wire(), "(UID BODY.PEEK[1.2])");
+    // A section absent from BODYSTRUCTURE is refused before any section read.
+    let before = ctx.fake.commands().len();
+    for absent in ["1.2", "2.1.3", "3"] {
+        let e = ctx.provider.fetch_attachment(&mid, absent).await.unwrap_err();
+        assert_eq!(
+            err_code(&e),
+            "attachment_part_missing",
+            "absent section {absent} must not decode"
+        );
+    }
+    let section_reads: Vec<String> = ctx
+        .fake
+        .commands()
+        .into_iter()
+        .skip(before)
+        .filter(|c| c.contains("BODY.PEEK["))
+        .collect();
+    assert!(
+        section_reads.is_empty(),
+        "no section read may be issued for an absent part: {section_reads:?}"
+    );
 }
 
 #[tokio::test]
@@ -739,4 +768,338 @@ fn line_for(lines: &[String], tag: &str) -> String {
         .find(|l| l.starts_with(&format!("{tag} ")))
         .cloned()
         .unwrap_or_default()
+}
+
+// -- P2.4: streaming decode + protocol caps ---------------------------------
+
+fn b64(bytes: &[u8]) -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .encode(bytes)
+        .into_bytes()
+}
+
+/// Drive `fetch_attachment_chunks`, draining the channel concurrently.
+/// Returns (result, decoded bytes, Done total, saw-Data-after-Done).
+async fn collect_stream(
+    provider: &std::sync::Arc<GmailImapProvider>,
+    mid: &str,
+    section: &str,
+) -> (
+    Result<u64, sift::errors::SiftError>,
+    Vec<u8>,
+    Option<u64>,
+    bool,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let p = provider.clone();
+    let (m, s) = (mid.to_string(), section.to_string());
+    let handle = tokio::spawn(async move { p.fetch_attachment_chunks(&m, &s, tx).await });
+    let mut data = Vec::new();
+    let mut done = None;
+    let mut late = false;
+    while let Some(chunk) = rx.recv().await {
+        match chunk {
+            sift::provider::AttachmentChunk::Data(bytes) => {
+                if done.is_some() {
+                    late = true;
+                }
+                data.extend_from_slice(&bytes);
+            }
+            sift::provider::AttachmentChunk::Done { total_bytes } => done = Some(total_bytes),
+        }
+    }
+    (handle.await.unwrap(), data, done, late)
+}
+
+#[tokio::test]
+async fn p24_streams_256k_partials_and_reports_decoded_total() {
+    let ctx = synced().await;
+    let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    let uid = uid_in(&ctx.db, &ctx.acc.id, "all", &mid).await;
+    // 300 KiB of payload -> >256 KiB of base64, so at least two partial reads.
+    let payload: Vec<u8> = (0..300 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let encoded = b64(&payload);
+    assert!(encoded.len() > 256 * 1024);
+    ctx.fake.set_section_bytes(dec, "2", encoded);
+    let before = ctx.fake.commands().len();
+
+    let (res, data, done, late) = collect_stream(&ctx.provider, &mid, "2").await;
+    assert_eq!(res.unwrap(), payload.len() as u64);
+    assert_eq!(data, payload);
+    assert_eq!(done, Some(payload.len() as u64), "exact decoded total");
+    assert!(!late, "Data chunks must precede the single Done");
+    let reads: Vec<String> = ctx
+        .fake
+        .commands()
+        .into_iter()
+        .skip(before)
+        .filter(|c| c.contains("BODY.PEEK[2]<"))
+        .collect();
+    assert_eq!(
+        reads,
+        vec![
+            format!("UID FETCH {uid} (UID BODY.PEEK[2]<0.262144>)"),
+            format!("UID FETCH {uid} (UID BODY.PEEK[2]<262144.262144>)"),
+        ],
+        "256 KiB encoded partial reads, not one whole-literal buffer"
+    );
+}
+
+#[tokio::test]
+async fn p24_exact_chunk_multiple_still_terminates() {
+    let ctx = synced().await;
+    let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    // 196608 raw bytes encode to exactly 262144 base64 chars: a whole chunk
+    // whose end is not signalled by a short read.
+    let payload: Vec<u8> = (0..196_608u32).map(|i| (i % 256) as u8).collect();
+    let encoded = b64(&payload);
+    assert_eq!(encoded.len(), 262_144);
+    ctx.fake.set_section_bytes(dec, "2", encoded);
+    let (res, data, done, _) = collect_stream(&ctx.provider, &mid, "2").await;
+    assert_eq!(res.unwrap(), payload.len() as u64);
+    assert_eq!(data, payload);
+    assert_eq!(done, Some(payload.len() as u64));
+}
+
+#[tokio::test]
+async fn p24_zero_and_one_byte_streams() {
+    let ctx = synced().await;
+    let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    // Zero bytes: Done{0} with no Data chunk.
+    ctx.fake.set_section_bytes(dec, "2", Vec::new());
+    let (res, data, done, _) = collect_stream(&ctx.provider, &mid, "2").await;
+    assert_eq!(res.unwrap(), 0);
+    assert!(data.is_empty());
+    assert_eq!(done, Some(0));
+    // One byte: exact.
+    ctx.fake.set_section_bytes(dec, "2", b64(b"\x00"));
+    let (res, data, done, _) = collect_stream(&ctx.provider, &mid, "2").await;
+    assert_eq!(res.unwrap(), 1);
+    assert_eq!(data, vec![0x00]);
+    assert_eq!(done, Some(1));
+}
+
+#[tokio::test]
+async fn p24_wrapped_base64_and_crlf_boundary_exact() {
+    let ctx = synced().await;
+    let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    let payload: Vec<u8> = (0..1000u32).map(|i| (i % 256) as u8).collect();
+    let encoded = b64(&payload);
+    let mut wrapped = Vec::new();
+    for chunk in encoded.chunks(76) {
+        wrapped.extend_from_slice(chunk);
+        wrapped.extend_from_slice(b"\r\n");
+    }
+    ctx.fake.set_section_bytes(dec, "2", wrapped);
+    let (res, data, done, _) = collect_stream(&ctx.provider, &mid, "2").await;
+    assert_eq!(res.unwrap(), payload.len() as u64);
+    assert_eq!(data, payload, "legal MIME whitespace is transparent");
+    assert_eq!(done, Some(payload.len() as u64));
+}
+
+#[tokio::test]
+async fn p24_quoted_printable_section_stream_exact() {
+    let ctx = synced().await;
+    let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    // Section 1 is the fixture's text/html, advertised quoted-printable.
+    let raw = b"Euro =E2=82=AC and=0Asoft=\r\nbreak =3D done";
+    let want = b"Euro \xe2\x82\xac and\nsoftbreak = done";
+    ctx.fake.set_section_bytes(dec, "1", raw.to_vec());
+    let (res, data, done, _) = collect_stream(&ctx.provider, &mid, "1").await;
+    assert_eq!(res.unwrap(), want.len() as u64);
+    assert_eq!(data, want);
+    assert_eq!(done, Some(want.len() as u64));
+}
+
+#[tokio::test]
+async fn p24_malformed_base64_is_decode_failed() {
+    let ctx = synced().await;
+    let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    ctx.fake.set_section_bytes(dec, "2", b"@@@not-base64@@@".to_vec());
+    let (res, _, done, _) = collect_stream(&ctx.provider, &mid, "2").await;
+    let e = res.unwrap_err();
+    assert_eq!(
+        err_code(&e),
+        "attachment_decode_failed",
+        "bad encoding never silently succeeds"
+    );
+    assert_eq!(done, None, "no Done after a decode failure");
+}
+
+#[tokio::test]
+async fn p24_oversized_partial_declaration_is_protocol_error() {
+    let ctx = synced().await;
+    let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    let uid = uid_in(&ctx.db, &ctx.acc.id, "all", &mid).await as u32;
+    ctx.fake.set_section_bytes(dec, "2", b64(b"x"));
+    ctx.fake
+        .state
+        .lock()
+        .unwrap()
+        .behavior
+        .oversized_partial_literal = true;
+
+    let all = ctx
+        .db
+        .imap_get_folder(&ctx.acc.id, "all")
+        .await
+        .unwrap()
+        .unwrap()
+        .name;
+    let mut conn = ctx.pool.fresh_conn().await.unwrap();
+    conn.select(&all, true).await.unwrap();
+    let e = conn
+        .uid_fetch_partial(uid, ImapSection::parse("2").unwrap(), 0, 1024)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err_code(&e),
+        "imap_protocol",
+        "a literal over the requested cap is refused before allocation"
+    );
+    ctx.fake
+        .state
+        .lock()
+        .unwrap()
+        .behavior
+        .oversized_partial_literal = false;
+}
+
+#[tokio::test]
+async fn p24_mid_stream_drop_never_returns_partial_bytes() {
+    let ctx = synced().await;
+    let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    let payload = b"RECOVERABLE-BYTE-EXACT";
+    ctx.fake.set_section_bytes(dec, "2", b64(payload));
+    ctx.fake
+        .state
+        .lock()
+        .unwrap()
+        .behavior
+        .drop_in_section_literal = true;
+
+    let (res, data, done, _) = collect_stream(&ctx.provider, &mid, "2").await;
+    let e = res.unwrap_err();
+    let code = err_code(&e);
+    assert!(
+        matches!(
+            code.as_str(),
+            "attachment_offline" | "attachment_timeout" | "imap_transient"
+        ),
+        "a dropped literal surfaces as a transport error, got {code}"
+    );
+    assert_eq!(done, None, "a dropped stream must not claim completion");
+    assert!(data.len() < payload.len(), "no complete payload from a drop");
+
+    // Clearing the fault lets a fresh attempt complete byte-exact.
+    ctx.fake
+        .state
+        .lock()
+        .unwrap()
+        .behavior
+        .drop_in_section_literal = false;
+    let (res, data, done, _) = collect_stream(&ctx.provider, &mid, "2").await;
+    assert_eq!(res.unwrap(), payload.len() as u64);
+    assert_eq!(data, payload);
+    assert_eq!(done, Some(payload.len() as u64));
+}
+
+#[tokio::test]
+async fn p24_large_whole_message_literal_still_succeeds() {
+    let ctx = synced().await;
+    let (mid, _dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    // Above the 8 MiB metadata/framing cap, below the 64 MiB message cap.
+    let n = 8 * 1024 * 1024 + 4096;
+    ctx.fake
+        .state
+        .lock()
+        .unwrap()
+        .behavior
+        .large_full_message_bytes = Some(n);
+    let raw = ctx.provider.fetch_raw(&mid).await.unwrap();
+    assert!(raw.len() >= n, "whole-message literal was not truncated");
+    assert!(raw.contains("Subject:"));
+    ctx.fake
+        .state
+        .lock()
+        .unwrap()
+        .behavior
+        .large_full_message_bytes = None;
+}
+
+// -- P2.7: single-part / binary metadata ------------------------------------
+
+const SINGLE_PART_PDF: &str = "(\"application\" \"pdf\" (\"name\" \"root.pdf\") NIL NIL \"base64\" 9 NIL (\"attachment\" (\"filename\" \"root.pdf\")) NIL NIL)";
+
+#[tokio::test]
+async fn p27_single_part_root_downloads_exact_bytes() {
+    let ctx = synced().await;
+    let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
+    ctx.fake.set_bodystructure(dec, SINGLE_PART_PDF);
+    let payload = b"%PDF-1.4\n";
+    ctx.fake.set_section_bytes(dec, "1", b64(payload));
+
+    let got = ctx.provider.fetch_attachment(&mid, "1").await.unwrap();
+    assert_eq!(got, payload, "root section 1 downloads byte-exact");
+    let uid = uid_in(&ctx.db, &ctx.acc.id, "all", &mid).await;
+    let want = format!("UID FETCH {uid} (UID BODY.PEEK[1])");
+    assert!(
+        ctx.fake.commands().iter().any(|c| c == &want),
+        "expected {want:?} in {:?}",
+        ctx.fake.commands_with_prefix("UID FETCH")
+    );
+    // A section that the (overridden) BODYSTRUCTURE does not contain is
+    // refused before any read.
+    let e = ctx.provider.fetch_attachment(&mid, "2").await.unwrap_err();
+    assert_eq!(err_code(&e), "attachment_part_missing");
+}
+
+#[tokio::test]
+async fn p27_single_part_attachment_row_is_ingested() {
+    let fake = support::fake_imap::FakeGmail::start().await;
+    let msgid = {
+        let st = fake.state.lock().unwrap();
+        st.msgs
+            .iter()
+            .find(|(_, m)| m.folders.contains_key("all"))
+            .map(|(k, _)| *k)
+            .expect("a seeded All Mail message")
+    };
+    fake.set_bodystructure(msgid, SINGLE_PART_PDF);
+
+    let pool = pool_for(fake.addr.port());
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let acc = db.new_account("user@gmail.com", None, None).await.unwrap();
+    let provider = GmailImapProvider::new(acc.id.clone(), pool, db.clone());
+    let sink = DbSink::new(db.clone());
+    provider
+        .full_sync(&sink, tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
+
+    let mid = format!("{msgid:x}");
+    let atts = db.attachments_for_message(&mid).await.unwrap();
+    assert_eq!(
+        atts.len(),
+        1,
+        "single-part attachment appears once: {:?}",
+        atts.iter().map(|a| (&a.filename, &a.mime)).collect::<Vec<_>>()
+    );
+    let (part_id, filename): (String, Option<String>) = db
+        .read({
+            let mid = mid.clone();
+            move |c| {
+                Ok(c.query_row(
+                    "SELECT part_id, filename FROM attachments WHERE message_id=?",
+                    rusqlite::params![mid],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(part_id, "1", "root body is IMAP section 1");
+    assert_eq!(filename.as_deref(), Some("root.pdf"));
 }

@@ -1,4 +1,5 @@
 pub mod app_state;
+pub mod attachments;
 pub mod commands;
 pub mod db;
 pub mod demo;
@@ -234,6 +235,8 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::search::unsubscribe,
             commands::attachments::attachments_open,
             commands::attachments::attachments_save_as,
+            commands::attachments::attachments_save_all,
+            commands::attachments::attachments_cancel,
             commands::demo::demo_goto,
         ])
         .run(tauri::generate_context!())

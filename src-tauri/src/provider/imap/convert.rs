@@ -40,8 +40,40 @@ pub fn to_gmail_tree(raw: &[u8]) -> Option<Message> {
         // No parseable headers: not a message we can represent.
         return None;
     }
-    let mut parts = vec![];
-    walk(&msg, 0, String::new(), &mut parts);
+    // A non-multipart message is a single part: make the ROOT payload that
+    // part, so `parse_full` sees its filename/disposition/body exactly once
+    // (a separate container + leaf would duplicate it as an empty root
+    // attachment). Multipart roots keep a container payload plus leaves.
+    let payload = match &msg.root_part().body {
+        mail_parser::PartType::Multipart(_) => {
+            let mut parts = vec![];
+            walk(&msg, 0, String::new(), &mut parts);
+            MessagePart {
+                part_id: None,
+                mime_type: Some("multipart/mixed".into()),
+                filename: None,
+                headers: Some(headers),
+                body: None,
+                parts: if parts.is_empty() { None } else { Some(parts) },
+            }
+        }
+        _ => {
+            let mut root = leaf(&msg, 0, "1".to_string());
+            let mut all_headers = headers;
+            if let Some(extra) = root.headers.take() {
+                for h in extra {
+                    if !all_headers
+                        .iter()
+                        .any(|x| x.name.eq_ignore_ascii_case(&h.name))
+                    {
+                        all_headers.push(h);
+                    }
+                }
+            }
+            root.headers = Some(all_headers);
+            root
+        }
+    };
     Some(Message {
         id: String::new(),
         thread_id: String::new(),
@@ -50,34 +82,29 @@ pub fn to_gmail_tree(raw: &[u8]) -> Option<Message> {
         history_id: None,
         internal_date: None,
         size_estimate: Some(raw.len() as i64),
-        payload: Some(MessagePart {
-            part_id: None,
-            mime_type: Some(mime_of_root(&msg)),
-            filename: None,
-            headers: Some(headers),
-            body: None,
-            parts: if parts.is_empty() { None } else { Some(parts) },
-        }),
+        payload: Some(payload),
         raw: None,
     })
 }
 
-fn mime_of_root(msg: &mail_parser::Message) -> String {
-    let root = msg.root_part();
-    match &root.body {
-        mail_parser::PartType::Multipart(_) => "multipart/mixed".into(),
+/// Declared MIME of one part, from mail-parser's decoded Content-Type. Falls
+/// back to the parsed body variant when the header is absent or malformed.
+fn mime_of_part(part: &mail_parser::MessagePart<'_>) -> String {
+    use mail_parser::MimeHeaders;
+    if let Some(ct) = part.content_type() {
+        if let Some(st) = ct.subtype() {
+            return format!("{}/{}", ct.ctype(), st).to_lowercase();
+        }
+        return ct.ctype().to_lowercase();
+    }
+    match &part.body {
         mail_parser::PartType::Text(_) => "text/plain".into(),
         mail_parser::PartType::Html(_) => "text/html".into(),
-        mail_parser::PartType::Binary(_) | mail_parser::PartType::InlineBinary(_) => {
-            let raw = header_raw(msg, 0, "content-type").unwrap_or_default();
-            let (mime, _) = split_content_type(&raw);
-            if mime.is_empty() {
-                "application/octet-stream".into()
-            } else {
-                mime
-            }
-        }
         mail_parser::PartType::Message(_) => "message/rfc822".into(),
+        mail_parser::PartType::Binary(_) | mail_parser::PartType::InlineBinary(_) => {
+            "application/octet-stream".into()
+        }
+        mail_parser::PartType::Multipart(_) => "multipart/mixed".into(),
     }
 }
 
@@ -95,47 +122,35 @@ fn walk(msg: &mail_parser::Message, id: usize, section: String, out: &mut Vec<Me
             }
             // Multipart containers carry no content of their own; the
             // recursion above emitted every leaf with its section number.
-            // (Single-part messages fall through to the leaf handling below
-            // via the root call when parts.len() == 1 and body is a leaf.)
-            if msg.parts.len() == 1 {
-                // Degenerate single leaf at root handled by caller.
-            }
         }
         _ => {
+            // IMAP section numbering: a non-multipart ROOT's body is section
+            // `1`, matching `proto::walk_parts` (P2.7). Without this a
+            // single-part attachment had an empty part id and no locator.
+            let section = if section.is_empty() {
+                "1".to_string()
+            } else {
+                section
+            };
             out.push(leaf(msg, id, section));
         }
     }
 }
 
-/// Single message with no multipart structure: the root part itself is the
-/// leaf (to_gmail_tree handles this by checking parts length).
+/// One MIME leaf → Gmail-tree part. Filenames and parameters come from
+/// mail-parser's decoded headers, so RFC 2231 continuations, RFC 2047 words
+/// and quoted/semicolon filenames are correct without any manual splitting
+/// (P2.7).
 fn leaf(msg: &mail_parser::Message, id: usize, section: String) -> MessagePart {
     use base64::Engine;
+    use mail_parser::MimeHeaders;
     let part = &msg.parts[id];
-    let raw_ct = header_raw(msg, id, "content-type").unwrap_or_default();
-    let (mime, params) = split_content_type(&raw_ct);
-    let disp_raw = header_raw(msg, id, "content-disposition").unwrap_or_default();
-    let (disp, disp_params) = split_content_type(&disp_raw);
-    let mut filename = disp_params
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("filename"))
-        .map(|(_, v)| v.clone())
-        .or_else(|| {
-            params
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("name"))
-                .map(|(_, v)| v.clone())
-        });
-    if filename.is_none()
-        && matches!(
-            msg.parts.get(id).map(|p| &p.body),
-            Some(mail_parser::PartType::Message(_))
-        )
-    {
+    let mut filename = part.attachment_name().map(str::to_string);
+    if filename.is_none() && matches!(part.body, mail_parser::PartType::Message(_)) {
         // Forwarded message: surfaced in the attachment strip, opened on demand.
         filename = Some("forwarded-message.eml".into());
     }
-    let cid = header_raw(msg, id, "content-id");
+    let cid = part.content_id().map(str::to_string);
     let (bytes, size) = match &part.body {
         mail_parser::PartType::Text(s) | mail_parser::PartType::Html(s) => {
             (s.as_bytes().to_vec(), s.len() as i64)
@@ -144,7 +159,8 @@ fn leaf(msg: &mail_parser::Message, id: usize, section: String) -> MessagePart {
             (b.to_vec(), b.len() as i64)
         }
         mail_parser::PartType::Message(nested) => {
-            let b = nested.raw_message.to_vec();
+            // The RAW encapsulated message is what section `section` returns.
+            let b = nested.raw_message().to_vec();
             let n = b.len() as i64;
             (b, n)
         }
@@ -157,29 +173,27 @@ fn leaf(msg: &mail_parser::Message, id: usize, section: String) -> MessagePart {
             value: c,
         });
     }
-    if !disp_raw.is_empty() {
-        headers.push(Header {
+    let text_like = matches!(
+        &part.body,
+        mail_parser::PartType::Text(_) | mail_parser::PartType::Html(_)
+    );
+    match part.content_disposition() {
+        Some(disp) => headers.push(Header {
             name: "Content-Disposition".into(),
-            value: format!(
-                "{disp}{}",
-                disp_params
-                    .iter()
-                    .map(|(k, v)| format!("; {k}=\"{v}\""))
-                    .collect::<String>()
-            ),
-        });
+            value: disp.ctype().to_string(),
+        }),
+        // An unnamed, non-text leaf is still an attachment (P2.7); the shared
+        // parser keys on filename/Content-Disposition, so mark it explicitly
+        // rather than dropping the bytes.
+        None if !text_like => headers.push(Header {
+            name: "Content-Disposition".into(),
+            value: "attachment".into(),
+        }),
+        None => {}
     }
     MessagePart {
-        part_id: if section.is_empty() {
-            None
-        } else {
-            Some(section)
-        },
-        mime_type: Some(if mime.is_empty() {
-            "application/octet-stream".into()
-        } else {
-            mime
-        }),
+        part_id: Some(section),
+        mime_type: Some(mime_of_part(part)),
         filename,
         headers: if headers.is_empty() {
             None
@@ -195,55 +209,10 @@ fn leaf(msg: &mail_parser::Message, id: usize, section: String) -> MessagePart {
     }
 }
 
-/// Raw header value from a part's byte offsets. Raw (not pre-decoded)
-/// text is what the Gmail tree wants - `parse_full` decodes RFC2047 itself.
-fn header_raw(msg: &mail_parser::Message, id: usize, name: &str) -> Option<String> {
-    let raw = msg.raw_message();
-    let part = msg.parts.get(id)?;
-    let block = std::str::from_utf8(raw.get(part.offset_header..part.offset_end)?).ok()?;
-    // Unfold continuation lines, then find the field (first occurrence wins,
-    // matching how the values are used downstream).
-    let mut unfolded = String::new();
-    for line in block.lines() {
-        if line.starts_with([' ', '\t']) {
-            unfolded.push(' ');
-            unfolded.push_str(line.trim());
-        } else {
-            unfolded.push('\n');
-            unfolded.push_str(line);
-        }
-    }
-    for field in unfolded.split('\n').skip(1) {
-        // skip the (empty) pre-first-line segment
-        if field.is_empty() {
-            continue;
-        }
-        if let Some((k, v)) = field.split_once(':') {
-            if k.trim().eq_ignore_ascii_case(name) {
-                return Some(v.trim().to_string());
-            }
-        }
-    }
-    None
-}
-
 /// RFC 5322 field name: printable ASCII except colon (also rejects the
 /// control bytes mail-parser's lenient mode invents for binary input).
 fn is_field_name(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| (0x21..=0x7E).contains(&b) && b != b':')
-}
-
-/// Split `type/subtype; k=v; ...` into (mime, params). Values unquoted.
-fn split_content_type(raw: &str) -> (String, Vec<(String, String)>) {
-    let mut parts = raw.split(';');
-    let mime = parts.next().unwrap_or("").trim().to_string();
-    let mut params = vec![];
-    for p in parts {
-        if let Some((k, v)) = p.split_once('=') {
-            params.push((k.trim().to_string(), v.trim().trim_matches('"').to_string()));
-        }
-    }
-    (mime, params)
 }
 
 #[cfg(test)]
@@ -275,6 +244,9 @@ mod tests {
         assert_eq!(pm.attachments[0].filename.as_deref(), Some("doc.pdf"));
         assert_eq!(pm.attachments[0].mime, "application/pdf");
         assert!(!pm.attachments[0].data.is_empty());
+        // Nested multipart numbering: the PDF after multipart/alternative is
+        // IMAP section 2, never a display index (P2.7).
+        assert_eq!(pm.attachments[0].part_id, "2");
     }
 
     #[test]
@@ -282,5 +254,121 @@ mod tests {
         assert!(parse_raw(b"\x00\x01\x02").is_none());
         // Header-only input parses (empty body), never panics.
         let _ = parse_raw(b"From: x@y.z\r\n\r\n");
+    }
+
+    fn leaf_part_ids(raw: &[u8]) -> Vec<String> {
+        let tree = to_gmail_tree(raw).expect("tree");
+        let mut out = vec![];
+        let root = tree.payload.as_ref().expect("payload");
+        if let Some(id) = &root.part_id {
+            out.push(id.clone());
+        }
+        if let Some(parts) = &root.parts {
+            out.extend(parts.iter().filter_map(|p| p.part_id.clone()));
+        }
+        out
+    }
+
+    #[test]
+    fn p27_single_part_attachment_is_addressable_section_one() {
+        // Single-part application/pdf with an attachment disposition: the old
+        // empty section made it unaddressable (P2.7).
+        let raw = b"From: Ada <ada@acme.com>\r\nTo: Ben <ben@globex.io>\r\nSubject: Single\r\nMessage-ID: <s1@acme.com>\r\nContent-Type: application/pdf; name=\"doc.pdf\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"doc.pdf\"\r\n\r\nJVBERi0xLjQK\r\n";
+        assert_eq!(leaf_part_ids(raw), vec!["1".to_string()]);
+        let pm = parse_raw(raw).expect("parse");
+        assert_eq!(
+            pm.attachments.len(),
+            1,
+            "appears exactly once: {:?}",
+            pm.attachments
+                .iter()
+                .map(|a| (&a.filename, &a.mime, &a.part_id, a.data.len()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(pm.attachments[0].part_id, "1");
+        assert_eq!(pm.attachments[0].filename.as_deref(), Some("doc.pdf"));
+        assert_eq!(pm.attachments[0].mime, "application/pdf");
+        assert_eq!(pm.attachments[0].data, b"%PDF-1.4\n");
+
+        // A single-part text/plain mail still renders as the body.
+        let text = b"From: Ada <ada@acme.com>\r\nSubject: Plain\r\nMessage-ID: <s2@acme.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nJust the body.\r\n";
+        assert_eq!(leaf_part_ids(text), vec!["1".to_string()]);
+        let pm = parse_raw(text).expect("parse");
+        assert!(pm.text.unwrap().contains("Just the body"));
+        assert!(pm.attachments.is_empty());
+    }
+
+    #[test]
+    fn p27_root_text_attachment_stays_an_attachment() {
+        let raw = b"From: Ada <ada@acme.com>\r\nSubject: Note\r\nMessage-ID: <s3@acme.com>\r\nContent-Type: text/plain; name=\"note.txt\"\r\nContent-Disposition: attachment; filename=\"note.txt\"\r\n\r\nhello note\r\n";
+        let pm = parse_raw(raw).expect("parse");
+        assert_eq!(pm.attachments.len(), 1, "{:?}", pm.attachments.iter().map(|a| (&a.filename, &a.mime, &a.part_id)).collect::<Vec<_>>());
+        assert_eq!(pm.attachments[0].part_id, "1");
+        assert_eq!(pm.attachments[0].filename.as_deref(), Some("note.txt"));
+        assert_eq!(pm.attachments[0].mime, "text/plain");
+        // The part's exact bytes, including the trailing line break.
+        assert_eq!(pm.attachments[0].data, b"hello note\r\n");
+    }
+
+    #[test]
+    fn p27_binary_root_with_invalid_utf8_keeps_headers_and_bytes() {
+        // Valid headers, then a 8bit binary body that is not valid UTF-8: the
+        // old header range bled into the body and lost the headers entirely.
+        let mut raw = b"From: Ada <ada@acme.com>\r\nSubject: Bin\r\nMessage-ID: <s4@acme.com>\r\nContent-Type: application/octet-stream; name=\"blob.bin\"\r\nContent-Transfer-Encoding: 8bit\r\nContent-Disposition: attachment; filename=\"blob.bin\"\r\n\r\n".to_vec();
+        let payload: Vec<u8> = vec![0x80, 0xff, 0xfe, 0xc3, 0x28, 0x00, 0x1b, b'B', b'I', b'N'];
+        raw.extend_from_slice(&payload);
+        let pm = parse_raw(&raw).expect("parse");
+        assert_eq!(pm.subject, "Bin");
+        assert_eq!(pm.attachments.len(), 1, "named root binary is an attachment: {:?}", pm.attachments.iter().map(|a| (&a.filename, &a.mime, &a.part_id)).collect::<Vec<_>>());
+        assert_eq!(pm.attachments[0].part_id, "1");
+        assert_eq!(pm.attachments[0].filename.as_deref(), Some("blob.bin"));
+        assert_eq!(pm.attachments[0].mime, "application/octet-stream");
+        assert_eq!(pm.attachments[0].data, payload);
+    }
+
+    #[test]
+    fn p27_unnamed_root_binary_is_still_an_attachment() {
+        let mut raw = b"From: Ada <ada@acme.com>\r\nSubject: Raw\r\nMessage-ID: <s5@acme.com>\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: binary\r\n\r\n".to_vec();
+        raw.extend_from_slice(&[0x00, 0x01, 0x80, 0xff]);
+        let pm = parse_raw(&raw).expect("parse");
+        assert_eq!(pm.attachments.len(), 1);
+        assert_eq!(pm.attachments[0].part_id, "1");
+        assert_eq!(pm.attachments[0].data, vec![0x00, 0x01, 0x80, 0xff]);
+    }
+
+    #[test]
+    fn p27_rfc2231_and_quoted_filenames_decode() {
+        // RFC 2231 continuation with a charset-encoded first segment.
+        let raw = b"From: Ada <ada@acme.com>\r\nSubject: Invoice\r\nMessage-ID: <s6@acme.com>\r\nContent-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment;\r\n filename*0*=utf-8''%E2%82%AC;\r\n filename*1*=%20Rechnung.pdf\r\n\r\nJVBERi0xLjQK\r\n";
+        let pm = parse_raw(raw).expect("parse");
+        assert_eq!(pm.attachments.len(), 1, "{:?}", pm.attachments.iter().map(|a| (&a.filename, &a.mime, &a.part_id)).collect::<Vec<_>>());
+        let name = pm.attachments[0].filename.clone().unwrap();
+        assert!(name.ends_with("Rechnung.pdf"), "got {name:?}");
+        assert!(name.contains('€'), "RFC2231 charset segment decoded: {name:?}");
+
+        // A filename containing a semicolon and an escaped quote.
+        let raw = b"From: Ada <ada@acme.com>\r\nSubject: Odd\r\nMessage-ID: <s7@acme.com>\r\nContent-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"a;b\\\"c.pdf\"\r\n\r\nJVBERi0xLjQK\r\n";
+        let pm = parse_raw(raw).expect("parse");
+        assert_eq!(pm.attachments.len(), 1, "{:?}", pm.attachments.iter().map(|a| (&a.filename, &a.mime, &a.part_id)).collect::<Vec<_>>());
+        assert_eq!(
+            pm.attachments[0].filename.as_deref(),
+            Some("a;b\"c.pdf"),
+            "semicolon and escaped quote are part of the name"
+        );
+    }
+
+    #[test]
+    fn p27_forwarded_eml_is_one_raw_message_attachment() {
+        let raw = b"From: Ada <ada@acme.com>\r\nSubject: Fwd\r\nMessage-ID: <s8@acme.com>\r\nContent-Type: multipart/mixed; boundary=\"M\"\r\n\r\n--M\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nouter body\r\n--M\r\nContent-Type: message/rfc822\r\nContent-Transfer-Encoding: 7bit\r\n\r\nFrom: Inner <inner@acme.com>\r\nSubject: Inner\r\nMessage-ID: <i1@acme.com>\r\nTo: Ada <ada@acme.com>\r\n\r\nInner body text\r\n--M--\r\n";
+        let pm = parse_raw(raw).expect("parse");
+        assert_eq!(pm.attachments.len(), 1, "one forwarded .eml");
+        let att = &pm.attachments[0];
+        assert_eq!(att.mime, "message/rfc822");
+        assert_eq!(att.part_id, "2");
+        assert_eq!(att.filename.as_deref(), Some("forwarded-message.eml"));
+        let body = String::from_utf8_lossy(&att.data);
+        assert!(body.contains("Subject: Inner"), "raw inner message: {body:?}");
+        assert!(body.contains("Inner body text"));
+        assert!(!body.contains("outer body"), "not the outer body");
     }
 }

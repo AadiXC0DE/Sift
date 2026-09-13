@@ -26,6 +26,19 @@ const KEEPALIVE_IDLE: Duration = Duration::from_secs(5 * 60);
 /// Foreground connections idle longer than this are dropped (P1.5).
 pub const FOREGROUND_IDLE: Duration = Duration::from_secs(60);
 
+/// Absolute cap on non-literal response framing (status lines and FETCH item
+/// text). Equivalent to the old per-line cap but enforced as a typed error
+/// and applied to the whole response, not just one line (P2.4).
+const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+/// Absolute cap on a whole-message `BODY[]` literal (P2.4). Gmail refuses to
+/// transfer messages over ~50 MB, so 64 MiB admits every real message while
+/// still rejecting an unbounded server-declared length before allocating.
+const MAX_WHOLE_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+/// Framing tolerated around a requested partial literal (the
+/// `BODY[<section>]<origin> {n}` line plus the closing paren). Generous but
+/// bounded; a server declaring more than the requested bytes is rejected.
+const PARTIAL_FRAMING_BYTES: usize = 64 * 1024;
+
 /// Anything we can read IMAP responses from and write commands to.
 trait ImapStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> ImapStream for T {}
@@ -377,6 +390,11 @@ pub struct Conn {
     /// A failed literal read leaves the stream framed wrong; the connection
     /// must be rebuilt before any reuse (P1.3).
     poisoned: bool,
+    /// While set, a response literal larger than this many bytes is refused
+    /// (P2.4). [`Conn::uid_fetch_partial`] sets it to the requested byte
+    /// count plus bounded framing; `None` means a whole-message/header read,
+    /// bounded by [`MAX_WHOLE_MESSAGE_BYTES`] / [`MAX_FRAME_BYTES`].
+    pending_literal_cap: Option<usize>,
 }
 
 impl ImapPool {
@@ -567,6 +585,7 @@ impl Conn {
             tag: 0,
             selected: None,
             poisoned: false,
+            pending_literal_cap: None,
         }
     }
 
@@ -577,6 +596,7 @@ impl Conn {
             tag: 0,
             selected: None,
             poisoned: false,
+            pending_literal_cap: None,
         }
     }
 
@@ -629,6 +649,10 @@ impl Conn {
 
     pub(crate) async fn read_response(&mut self) -> Result<Response, SiftError> {
         let mut buf = vec![];
+        // Non-literal framing bytes accumulated for this response; a spliced
+        // literal is tracked separately so a large BODY[] never trips the
+        // 8 MiB metadata cap.
+        let mut frame_bytes: usize = 0;
         loop {
             // Read one line (or fail on timeout/close).
             let read_line = async {
@@ -639,7 +663,7 @@ impl Conn {
                     if line.ends_with(b"\r\n") {
                         break;
                     }
-                    if line.len() > 8 * 1024 * 1024 {
+                    if line.len() > MAX_FRAME_BYTES {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
                             "line too long",
@@ -650,6 +674,10 @@ impl Conn {
             };
             let line = match tokio::time::timeout(CONNECT_TIMEOUT, read_line).await {
                 Ok(Ok(line)) => line,
+                Ok(Err(e)) if e.kind() == std::io::ErrorKind::InvalidData => {
+                    // Typed, not a panic/assert (P2.4).
+                    return Err(protocol_error("IMAP response line exceeds the 8 MiB cap"));
+                }
                 Ok(Err(e)) => {
                     self.invalidate();
                     return Err(errors::io_err(e));
@@ -659,15 +687,55 @@ impl Conn {
                     return Err(SiftError::app("offline", "No connection to Gmail.", true));
                 }
             };
+            frame_bytes = frame_bytes
+                .checked_add(line.len())
+                .ok_or_else(|| protocol_error("IMAP response framing length overflow"))?;
+            if frame_bytes > MAX_FRAME_BYTES {
+                return Err(protocol_error(
+                    "IMAP response framing exceeds the 8 MiB metadata cap",
+                ));
+            }
             buf.extend_from_slice(&line);
-            // Splice `{n}` / `{n+}` literals inline so the parser sees whole responses.
-            if let Some(n) = trailing_literal_len(&line) {
+            // Splice `{n}` / `{n+}` literals inline so the parser sees whole
+            // responses.
+            let literal = match trailing_literal(&line) {
+                Trailing::None => None,
+                Trailing::Overflow => {
+                    return Err(protocol_error(
+                        "server declared a literal length Sift cannot represent",
+                    ))
+                }
+                Trailing::Len(n) => Some(n),
+            };
+            if let Some(n) = literal {
                 // NOTE: no CRLF follows literal bytes on the wire - the
                 // enclosing `)` (or the next response) comes immediately.
                 // A short/aborted literal leaves the stream mis-framed, so
                 // the connection is invalidated before any reuse (P1.3).
-                let mut data = vec![0u8; n];
-                match tokio::time::timeout(CONNECT_TIMEOUT, self.io.read_exact(&mut data)).await {
+                let cap = match self.pending_literal_cap {
+                    Some(cap) => cap,
+                    None => literal_cap_for(&line),
+                };
+                if n > cap {
+                    return Err(protocol_error(&format!(
+                        "server declared a {n}-byte literal over Sift's {cap}-byte cap"
+                    )));
+                }
+                let end = buf
+                    .len()
+                    .checked_add(n)
+                    .ok_or_else(|| protocol_error("IMAP literal length overflow"))?;
+                buf.try_reserve(n).map_err(|_| {
+                    protocol_error("IMAP literal allocation exceeded available memory")
+                })?;
+                buf.resize(end, 0);
+                let start = end - n;
+                match tokio::time::timeout(
+                    CONNECT_TIMEOUT,
+                    self.io.read_exact(&mut buf[start..end]),
+                )
+                .await
+                {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => {
                         self.invalidate();
@@ -678,7 +746,6 @@ impl Conn {
                         return Err(SiftError::app("offline", "No connection to Gmail.", true));
                     }
                 }
-                buf.extend_from_slice(&data);
                 continue;
             }
             match proto::parse_response(&buf) {
@@ -689,14 +756,71 @@ impl Conn {
                 }
                 Err(proto::ParseError::Incomplete) => continue,
                 Err(proto::ParseError::Malformed(msg)) => {
-                    return Err(SiftError::app(
-                        "imap_protocol",
-                        format!("Could not parse Gmail response: {msg}"),
-                        true,
-                    ));
+                    return Err(protocol_error(&format!(
+                        "Could not parse Gmail response: {msg}"
+                    )));
                 }
             }
         }
+    }
+
+    /// Bounded partial section read (P2.4): `UID FETCH <uid>
+    /// (UID BODY.PEEK[<section>]<origin.len>)`. The server may not send more
+    /// than the requested byte count plus bounded framing; a larger declared
+    /// literal is a typed error, never an unbounded allocation.
+    ///
+    /// Returns the section bytes and the server-echoed origin when the
+    /// response carries them for exactly this UID and section; `Ok(None)`
+    /// means the server returned a row without that section (so the caller
+    /// can treat the start of a stream as a missing part and a later origin
+    /// as end-of-data).
+    pub async fn uid_fetch_partial(
+        &mut self,
+        uid: u32,
+        section: super::ids::ImapSection,
+        origin: u32,
+        len: u32,
+    ) -> Result<Option<(u32, Vec<u8>)>, SiftError> {
+        let cap = (len as usize)
+            .checked_add(PARTIAL_FRAMING_BYTES)
+            .ok_or_else(|| protocol_error("partial literal cap overflow"))?;
+        let want = section.wire();
+        let items = FetchItems::new()
+            .uid()
+            .peek_partial(Some(section), origin, Some(len));
+        self.pending_literal_cap = Some(cap);
+        let result = self.read_cmd(&format!("UID FETCH {uid} {items}")).await;
+        self.pending_literal_cap = None;
+        let r = result?;
+        if !r.tagged.ok {
+            errors::map_response("UID FETCH", &r.tagged.text)?;
+        }
+        for u in r.untagged {
+            if let Response::Untagged(Untagged::Fetch { attrs, .. }) = u {
+                let row_uid = attrs.iter().find_map(|a| match a {
+                    proto::FetchAttr::Uid(v) => Some(*v),
+                    _ => None,
+                });
+                if row_uid != Some(uid) {
+                    continue;
+                }
+                for a in attrs {
+                    if let proto::FetchAttr::BodySection {
+                        section: got,
+                        origin: got_origin,
+                        bytes,
+                    } = a
+                    {
+                        if got.eq_ignore_ascii_case(&want) {
+                            return Ok(Some((got_origin, bytes)));
+                        }
+                    }
+                }
+                // Matching row without the requested section data.
+                return Ok(None);
+            }
+        }
+        Ok(None)
     }
 
     /// Send one command **without** any transparent recovery (P1.3).
@@ -1335,18 +1459,53 @@ pub fn imap_quote(s: &str) -> String {
 }
 
 /// Trailing `{n}` / `{n+}` on a response line → literal length to splice.
-fn trailing_literal_len(line: &[u8]) -> Option<usize> {
+/// A syntactically valid but unrepresentable length is [`Trailing::Overflow`]
+/// so it becomes a typed protocol error instead of a silent "incomplete".
+#[derive(Debug, PartialEq, Eq)]
+enum Trailing {
+    None,
+    Len(usize),
+    Overflow,
+}
+
+fn trailing_literal(line: &[u8]) -> Trailing {
     let line = line.strip_suffix(b"\r\n").unwrap_or(line);
-    let open = line.iter().rposition(|&b| b == b'{')?;
-    let inner = std::str::from_utf8(&line[open + 1..]).ok()?;
-    let inner = inner.strip_suffix('}')?;
+    let Some(open) = line.iter().rposition(|&b| b == b'{') else {
+        return Trailing::None;
+    };
+    let Ok(inner) = std::str::from_utf8(&line[open + 1..]) else {
+        return Trailing::None;
+    };
+    let Some(inner) = inner.strip_suffix('}') else {
+        return Trailing::None;
+    };
     let num = inner.strip_suffix('+').unwrap_or(inner);
     // A bare number; anything else (e.g. command echoes) is not a literal.
     if num.bytes().all(|b| b.is_ascii_digit()) && !num.is_empty() {
-        num.parse().ok()
+        match num.parse::<usize>() {
+            Ok(n) => Trailing::Len(n),
+            Err(_) => Trailing::Overflow,
+        }
     } else {
-        None
+        Trailing::None
     }
+}
+
+/// Cap for a literal when no partial request is outstanding: header/field
+/// literals stay within the metadata cap; a whole-message `BODY[]` uses the
+/// message cap.
+fn literal_cap_for(line: &[u8]) -> usize {
+    let up = line.to_ascii_uppercase();
+    if up.windows(6).any(|w| w == b"HEADER") {
+        MAX_FRAME_BYTES
+    } else {
+        MAX_WHOLE_MESSAGE_BYTES
+    }
+}
+
+/// Typed protocol error: never a panic, never a silent truncation (P2.4).
+fn protocol_error(msg: &str) -> SiftError {
+    SiftError::app("imap_protocol", msg.to_string(), true)
 }
 
 fn is_conn_error(e: &SiftError) -> bool {
@@ -1361,15 +1520,31 @@ mod tests {
     #[test]
     fn p11_conn_literal_framing_shapes() {
         assert_eq!(
-            trailing_literal_len(b"* 1 FETCH (UID 1 BODY[] {12}\r\n"),
-            Some(12)
+            trailing_literal(b"* 1 FETCH (UID 1 BODY[] {12}\r\n"),
+            Trailing::Len(12)
         );
         assert_eq!(
-            trailing_literal_len(b"* 1 FETCH (UID 1 BODY[] {12+}\r\n"),
-            Some(12)
+            trailing_literal(b"* 1 FETCH (UID 1 BODY[] {12+}\r\n"),
+            Trailing::Len(12)
         );
-        assert_eq!(trailing_literal_len(b"a001 OK done\r\n"), None);
-        assert_eq!(trailing_literal_len(b"* OK hello\r\n"), None);
+        assert_eq!(trailing_literal(b"a001 OK done\r\n"), Trailing::None);
+        assert_eq!(trailing_literal(b"* OK hello\r\n"), Trailing::None);
+        // A declared length that cannot be represented is a typed error, not
+        // a silent "incomplete".
+        assert_eq!(
+            trailing_literal(b"* 1 FETCH (UID 1 BODY[] {99999999999999999999999}\r\n"),
+            Trailing::Overflow
+        );
+        // Header literals are capped at the metadata cap; whole-message at
+        // the message cap.
+        assert_eq!(
+            literal_cap_for(b"* 1 FETCH (UID 1 BODY[HEADER.FIELDS (FROM)] {5}\r\n"),
+            MAX_FRAME_BYTES
+        );
+        assert_eq!(
+            literal_cap_for(b"* 1 FETCH (UID 1 BODY[] {5}\r\n"),
+            MAX_WHOLE_MESSAGE_BYTES
+        );
     }
 
     #[test]
