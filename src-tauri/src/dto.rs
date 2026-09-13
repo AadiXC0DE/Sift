@@ -93,7 +93,7 @@ pub struct ThreadsQuery {
     pub has_attachment: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Address {
     pub n: Option<String>,
     pub e: String,
@@ -333,6 +333,14 @@ pub struct MessageMeta {
     pub bcc: Vec<Address>,
     #[serde(rename = "replyTo", skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    /// This message's own Message-ID header, and the References chain it
+    /// carries (P5.4). The composer needs them to build a reply draft that
+    /// threads correctly, and the server re-derives the same values from the
+    /// stored parent row when the draft is saved.
+    #[serde(rename = "rfcMessageId", skip_serializing_if = "Option::is_none", default)]
+    pub rfc_message_id: Option<String>,
+    #[serde(rename = "references", default)]
+    pub references_json: Vec<String>,
     pub subject: String,
     pub snippet: String,
     #[serde(rename = "isUnread")]
@@ -421,20 +429,56 @@ pub struct ThreadAction {
     pub action: ActionKind,
 }
 
+/// State machine of a draft row (P5.1/P5.2). `editing` and `queued` are the
+/// only states a user-visible draft can be edited from; `sent`/`failed` are
+/// terminal and only ever set by the outbox (P6).
+pub const DRAFT_STATE_EDITING: &str = "editing";
+pub const DRAFT_STATE_QUEUED: &str = "queued";
+pub const DRAFT_STATE_SENT: &str = "sent";
+pub const DRAFT_STATE_FAILED: &str = "failed";
+
+fn draft_state_default() -> String {
+    DRAFT_STATE_EDITING.to_string()
+}
+
+fn draft_mode_default() -> String {
+    "new".to_string()
+}
+
+/// One draft. `localId` is allocated by the composer when a new draft is
+/// opened and never changes afterwards, so every save addresses the same row.
+/// `revision` counts local content changes and never decreases; a save that
+/// carries a stale `expectedRevision` is rejected instead of overwriting the
+/// newer content (P5.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Draft {
-    #[serde(rename = "localId")]
-    pub local_id: Option<String>,
-    #[serde(rename = "accountId")]
+    #[serde(rename = "localId", default)]
+    pub local_id: String,
+    #[serde(rename = "accountId", default)]
     pub account_id: String,
-    #[serde(rename = "remoteDraftId", skip_serializing_if = "Option::is_none")]
+    /// Sending identity selected by the user. None means the account's own
+    /// address.
+    #[serde(rename = "fromEmail", skip_serializing_if = "Option::is_none", default)]
+    pub from_email: Option<String>,
+    #[serde(rename = "remoteDraftId", skip_serializing_if = "Option::is_none", default)]
     pub remote_draft_id: Option<String>,
-    #[serde(rename = "remoteMessageId", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "remoteMessageId", skip_serializing_if = "Option::is_none", default)]
     pub remote_message_id: Option<String>,
-    #[serde(rename = "threadId", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "threadId", skip_serializing_if = "Option::is_none", default)]
     pub thread_id: Option<String>,
-    #[serde(rename = "inReplyToMessageId", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "inReplyToMessageId", skip_serializing_if = "Option::is_none", default)]
     pub in_reply_to_message_id: Option<String>,
+    /// Stable Message-ID of this draft's send lineage. Set when the draft is
+    /// first prepared or queued and reused by every retry of that attempt.
+    #[serde(rename = "rfcMessageId", skip_serializing_if = "Option::is_none", default)]
+    pub rfc_message_id: Option<String>,
+    /// RFC Message-ID of the message being replied to, and the References
+    /// chain up to it (P5.4). Both are carried into MIME and the REST body.
+    #[serde(rename = "parentRfcMessageId", skip_serializing_if = "Option::is_none", default)]
+    pub parent_rfc_message_id: Option<String>,
+    #[serde(rename = "references", default)]
+    pub references_json: Vec<String>,
+    #[serde(default = "draft_mode_default")]
     pub mode: String,
     #[serde(rename = "toJson", default)]
     pub to_json: Vec<Address>,
@@ -442,16 +486,132 @@ pub struct Draft {
     pub cc_json: Vec<Address>,
     #[serde(rename = "bccJson", default)]
     pub bcc_json: Vec<Address>,
+    #[serde(default)]
     pub subject: String,
-    #[serde(rename = "bodyHtml")]
+    #[serde(rename = "bodyHtml", default)]
     pub body_html: String,
     #[serde(rename = "attachmentsJson", default)]
     pub attachments_json: Vec<AttachmentRef>,
-    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    /// Monotonic local content revision.
+    #[serde(default)]
+    pub revision: i64,
+    /// The revision the remote copy was last built from. `revision >
+    /// saved_revision` is a locally-unsaved edit (P5.2).
+    #[serde(rename = "savedRevision", default)]
+    pub saved_revision: i64,
+    /// Last remote-side revision reconciled into this row.
+    #[serde(rename = "remoteRevision", default)]
+    pub remote_revision: i64,
+    #[serde(default = "draft_state_default")]
+    pub state: String,
+    /// Queued send deadline (undo send / send later).
+    #[serde(rename = "notBefore", skip_serializing_if = "Option::is_none", default)]
+    pub not_before: Option<i64>,
+    #[serde(rename = "scheduledAt", skip_serializing_if = "Option::is_none", default)]
+    pub scheduled_at: Option<i64>,
+    #[serde(rename = "scheduledTimezone", skip_serializing_if = "Option::is_none", default)]
+    pub scheduled_timezone: Option<String>,
+    #[serde(rename = "scheduledLocalTime", skip_serializing_if = "Option::is_none", default)]
+    pub scheduled_local_time: Option<String>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
     pub updated_at: Option<i64>,
 }
 
+impl Default for Draft {
+    fn default() -> Self {
+        Self {
+            local_id: String::new(),
+            account_id: String::new(),
+            from_email: None,
+            remote_draft_id: None,
+            remote_message_id: None,
+            thread_id: None,
+            in_reply_to_message_id: None,
+            rfc_message_id: None,
+            parent_rfc_message_id: None,
+            references_json: Vec::new(),
+            mode: draft_mode_default(),
+            to_json: Vec::new(),
+            cc_json: Vec::new(),
+            bcc_json: Vec::new(),
+            subject: String::new(),
+            body_html: String::new(),
+            attachments_json: Vec::new(),
+            revision: 0,
+            saved_revision: 0,
+            remote_revision: 0,
+            state: draft_state_default(),
+            not_before: None,
+            scheduled_at: None,
+            scheduled_timezone: None,
+            scheduled_local_time: None,
+            updated_at: None,
+        }
+    }
+}
+
+impl Draft {
+    /// True when the local content changed since the remote copy was built.
+    pub fn has_unsaved_revision(&self) -> bool {
+        self.revision > self.saved_revision
+    }
+
+    /// Every field a save carries, ignoring server-owned bookkeeping
+    /// (revision counters, state, ids, timestamps). Used to decide whether an
+    /// autosave actually changed anything: an unchanged snapshot must not
+    /// burn a revision or wake remote sync.
+    pub fn content_eq(&self, other: &Draft) -> bool {
+        self.account_id == other.account_id
+            && self.from_email == other.from_email
+            && self.thread_id == other.thread_id
+            && self.in_reply_to_message_id == other.in_reply_to_message_id
+            && self.parent_rfc_message_id == other.parent_rfc_message_id
+            && self.references_json == other.references_json
+            && self.mode == other.mode
+            && self.to_json == other.to_json
+            && self.cc_json == other.cc_json
+            && self.bcc_json == other.bcc_json
+            && self.subject == other.subject
+            && self.body_html == other.body_html
+            && self.attachments_json == other.attachments_json
+    }
+}
+
+/// One page of drafts, keyset-paged by `(updatedAt, localId)` (P5.1/P5.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftPage {
+    pub drafts: Vec<Draft>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// A draft that exists on the server, as the provider reports it. The mailbox
+/// copy of its content comes from the normal message sync, so this carries
+/// identity only (P5.2 remote import/reconciliation).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteDraft {
+    #[serde(rename = "remoteDraftId")]
+    pub remote_draft_id: String,
+    #[serde(rename = "messageId", skip_serializing_if = "Option::is_none", default)]
+    pub message_id: Option<String>,
+    #[serde(rename = "threadId", skip_serializing_if = "Option::is_none", default)]
+    pub thread_id: Option<String>,
+    /// RFC Message-ID of the remote draft when the transport knows it (IMAP
+    /// locator); `None` for REST, where the mailbox copy is authoritative.
+    #[serde(rename = "rfcMessageId", skip_serializing_if = "Option::is_none", default)]
+    pub rfc_message_id: Option<String>,
+}
+
+/// One queued send, frozen at queue time (P6.2 reuses this shape).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendHandle {
+    #[serde(rename = "opId")]
+    pub op_id: i64,
+    #[serde(rename = "notBefore")]
+    pub not_before: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentRef {
     pub name: String,
     pub mime: String,

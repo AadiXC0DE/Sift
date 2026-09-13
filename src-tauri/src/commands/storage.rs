@@ -28,7 +28,7 @@ use crate::errors::SiftError;
 pub const DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES: i64 = 512 * 1024 * 1024;
 
 const ATTACHMENT_CACHE_DIR: &str = "attachments";
-const DRAFT_CACHE_DIR: &str = "compose-cache";
+
 
 fn storage_error(e: anyhow::Error) -> SiftError {
     SiftError::app("storage", e.to_string(), false)
@@ -193,7 +193,7 @@ fn assemble(
 pub async fn measure(db: &Db, data_dir: &Path) -> Result<StorageUsage> {
     let db_usage = read_db_usage(db).await?;
     let limit = parse_cache_limit(&db.settings_get().await?.attachment_cache_size);
-    let draft_usage = dir_usage(&data_dir.join(DRAFT_CACHE_DIR));
+    let draft_usage = dir_usage(&data_dir.join(crate::outgoing::DRAFT_CACHE_DIR));
     Ok(assemble(
         db_usage,
         dir_usage(&data_dir.join(ATTACHMENT_CACHE_DIR)).0,
@@ -456,7 +456,7 @@ mod tests {
     async fn draft_staging_files_and_configured_limit_are_measured() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
-        let staging = dir.path().join(DRAFT_CACHE_DIR);
+        let staging = dir.path().join(crate::outgoing::DRAFT_CACHE_DIR);
         std::fs::create_dir_all(&staging).unwrap();
         std::fs::write(staging.join("draft-1-invoice.pdf"), vec![4u8; 7777]).unwrap();
 

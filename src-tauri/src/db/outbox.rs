@@ -2,6 +2,10 @@ use super::Db;
 use anyhow::Result;
 use rusqlite::params;
 
+/// How long remote draft synchronization waits for the user to stop typing
+/// (P5.2: "debounce remote synchronization to 2 seconds idle").
+pub const DRAFT_SYNC_DEBOUNCE_MS: i64 = 2_000;
+
 #[derive(Debug, Clone)]
 pub struct Op {
     pub id: i64,
@@ -36,6 +40,77 @@ impl Db {
       Ok(c.last_insert_rowid())
     }).await
     }
+    /// Queue (or refresh) the debounced remote synchronization of one draft.
+    ///
+    /// A burst of keystrokes must produce **one** Gmail draft, so an already
+    /// pending sync for the same draft is updated in place with the newest
+    /// revision and deadline instead of adding another operation. The 2 second
+    /// `not_before` is the debounce: the draft is local and committed
+    /// immediately, the remote copy follows once the user pauses.
+    pub async fn outbox_enqueue_draft_sync(
+        &self,
+        account_id: &str,
+        local_id: &str,
+        revision: i64,
+    ) -> Result<i64> {
+        let (a, l) = (account_id.to_string(), local_id.to_string());
+        let payload = serde_json::json!({"localId": l.clone(), "revision": revision}).to_string();
+        let not_before = super::now_ms() + DRAFT_SYNC_DEBOUNCE_MS;
+        self.write(move |c| {
+            let updated = c.execute(
+                "UPDATE outbox_ops SET payload=?, not_before=?, attempts=0, last_error=NULL \
+                 WHERE id = (SELECT id FROM outbox_ops WHERE account_id=? AND kind='draft_sync' \
+                 AND state='pending' AND json_extract(payload,'$.localId')=? \
+                 ORDER BY id DESC LIMIT 1)",
+                params![payload, not_before, a, l],
+            )?;
+            if updated > 0 {
+                return Ok(c.query_row(
+                    "SELECT id FROM outbox_ops WHERE account_id=? AND kind='draft_sync' \
+                     AND state='pending' AND json_extract(payload,'$.localId')=? \
+                     ORDER BY id DESC LIMIT 1",
+                    params![a, l],
+                    |r| r.get(0),
+                )?);
+            }
+            c.execute(
+                "INSERT INTO outbox_ops (account_id,kind,payload,not_before,created_at) \
+                 VALUES (?, 'draft_sync', ?, ?, ?)",
+                params![a, payload, not_before, super::now_ms()],
+            )?;
+            Ok(c.last_insert_rowid())
+        })
+        .await
+    }
+
+    /// Drop pending remote-sync work for one draft (explicit discard, or a
+    /// send that supersedes it).
+    pub async fn outbox_cancel_draft_sync(&self, account_id: &str, local_id: &str) -> Result<usize> {
+        let (a, l) = (account_id.to_string(), local_id.to_string());
+        self.write(move |c| {
+            Ok(c.execute(
+                "UPDATE outbox_ops SET state='cancelled' WHERE account_id=? AND kind='draft_sync' \
+                 AND state IN ('pending','inflight') AND json_extract(payload,'$.localId')=?",
+                params![a, l],
+            )?)
+        })
+        .await
+    }
+
+    /// Oldest pending sync for one draft, if any (diagnostics and tests).
+    pub async fn outbox_draft_sync_count(&self, local_id: &str) -> Result<i64> {
+        let l = local_id.to_string();
+        self.read(move |c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM outbox_ops WHERE kind='draft_sync' AND state='pending' \
+                 AND json_extract(payload,'$.localId')=?",
+                params![l],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+    }
+
     pub async fn outbox_next(&self, account_id: &str) -> Result<Option<Op>> {
         let a = account_id.to_string();
         let now = super::now_ms();

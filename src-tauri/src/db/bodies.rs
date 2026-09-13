@@ -17,7 +17,10 @@ pub struct BodyPut {
 fn z(s: &str) -> Vec<u8> {
     zstd::encode_all(s.as_bytes(), 3).unwrap_or_default()
 }
-fn uz(b: &[u8]) -> String {
+/// Decode a stored zstd body payload. Unknown bytes decode to an empty
+/// string rather than failing a read (P2.2 behaviour, reused by the draft
+/// import path).
+pub fn uz(b: &[u8]) -> String {
     zstd::decode_all(b)
         .map(|v| String::from_utf8_lossy(&v).into_owned())
         .unwrap_or_default()

@@ -17,6 +17,9 @@ async fn p11_t10_send_delivers_mime() {
         "user@gmail.com",
         "goodpassword0000",
         &raw,
+        "user@gmail.com",
+        &["bob@example.com".to_string()],
+        0,
     )
     .await
     .unwrap();
@@ -43,6 +46,9 @@ async fn p11_t10_smtp_errors_mapped() {
         "user@gmail.com",
         "badpassword00000000",
         &raw_msg(),
+        "user@gmail.com",
+        &["bob@example.com".to_string()],
+        0,
     )
     .await
     .unwrap_err();
@@ -63,6 +69,9 @@ async fn p11_t10_smtp_errors_mapped() {
         "user@gmail.com",
         "goodpassword0000",
         &raw_msg(),
+        "user@gmail.com",
+        &["bob@example.com".to_string()],
+        0,
     )
     .await
     .unwrap_err();
@@ -81,6 +90,9 @@ async fn p11_t10_smtp_errors_mapped() {
         "user@gmail.com",
         "goodpassword0000",
         &raw_msg(),
+        "user@gmail.com",
+        &["bob@example.com".to_string()],
+        0,
     )
     .await
     .unwrap_err();
@@ -92,6 +104,9 @@ async fn p11_t10_smtp_errors_mapped() {
         "user@gmail.com",
         "goodpassword0000",
         &raw_msg(),
+        "user@gmail.com",
+        &["bob@example.com".to_string()],
+        0,
     )
     .await
     .unwrap();

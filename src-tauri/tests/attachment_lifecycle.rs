@@ -1138,7 +1138,7 @@ async fn migration_0007_dedupes_and_preserves_richest_row() {
         .await
         .unwrap();
     // Hardcoded version updated for 0008_account_scoping.
-    assert_eq!(version, 8);
+    assert_eq!(version, sift::db::SCHEMA_VERSION);
     let indexes: i64 = db
         .read(|c| {
             Ok(c.query_row(

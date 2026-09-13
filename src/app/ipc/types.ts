@@ -200,13 +200,18 @@ export type ThreadAction = {
     | { kind: 'removeLabel'; labelId: string }
     | { kind: 'moveTo'; labelId: string };
 };
+export type DraftState = 'editing' | 'queued' | 'sent' | 'failed';
 export interface Draft {
-  localId?: string;
+  localId: string;
   accountId: string;
+  fromEmail?: string;
   remoteDraftId?: string;
   remoteMessageId?: string;
   threadId?: string;
   inReplyToMessageId?: string;
+  rfcMessageId?: string;
+  parentRfcMessageId?: string;
+  references?: string[];
   mode: string;
   toJson: Address[];
   ccJson: Address[];
@@ -214,7 +219,32 @@ export interface Draft {
   subject: string;
   bodyHtml: string;
   attachmentsJson: AttachmentRef[];
+  revision: number;
+  savedRevision?: number;
+  remoteRevision?: number;
+  state: DraftState;
+  notBefore?: number;
+  scheduledAt?: number;
+  scheduledTimezone?: string;
+  scheduledLocalTime?: string;
   updatedAt?: number;
+}
+export interface DraftPage {
+  drafts: Draft[];
+  nextCursor?: string;
+}
+export interface SendHandle {
+  opId: number;
+  notBefore: number;
+}
+export interface ComposeLimits {
+  rawMimeLimitBytes: number;
+}
+export interface RemoteDraft {
+  remoteDraftId: string;
+  messageId?: string;
+  threadId?: string;
+  rfcMessageId?: string;
 }
 export interface Contact {
   email: string;

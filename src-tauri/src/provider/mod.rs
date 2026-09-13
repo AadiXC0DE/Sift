@@ -471,6 +471,24 @@ impl SyncSink for DbSink {
     }
 }
 
+/// One prepared delivery (P5.3). Built by `outgoing::prepare` from a draft at a
+/// known revision, read back from the outbox payload, and handed to the
+/// transport unchanged.
+#[derive(Debug, Clone)]
+pub struct SendRequest {
+    /// Raw MIME including the `Bcc` header (Gmail's REST API delivers from it).
+    pub raw: Vec<u8>,
+    /// Thread to file the message into, where the transport supports it.
+    pub thread_id: Option<String>,
+    /// The envelope sender: the selected authorized identity.
+    pub from: String,
+    /// Every delivery recipient, de-duplicated, Bcc included.
+    pub recipients: Vec<String>,
+    /// How many `Bcc` headers the raw message is expected to carry, so the
+    /// SMTP path can prove it removed them.
+    pub bcc_count: usize,
+}
+
 /// Transport-agnostic body pipeline shared by backfill and foreground fetch:
 /// sanitize → compress → store (+ attachments meta). `ParsedMessage` is the
 /// single handoff type for both transports.
@@ -646,10 +664,36 @@ pub trait Provider: Send + Sync {
     /// One outbox op from the 8.4 table. Idempotent: re-applying an already
     /// applied op returns [`ApplyOutcome::AlreadyApplied`].
     async fn apply(&self, op: &OutboxOp) -> Result<ApplyOutcome, SiftError>;
-    async fn send(&self, raw: &[u8], thread_id: Option<&str>) -> Result<SentInfo, SiftError>;
-    /// Upsert a remote draft; returns the remote draft id.
-    async fn draft_upsert(&self, remote_id: Option<&str>, raw: &[u8]) -> Result<String, SiftError>;
+    /// Deliver one prepared message.
+    ///
+    /// The envelope is explicit: recipients come from the prepared draft, not
+    /// from re-parsing headers, and the SMTP transport removes the `Bcc`
+    /// header before DATA because the envelope already carries those
+    /// recipients ([`SendRequest::bcc_count`] is what the check compares
+    /// against).
+    async fn send(&self, req: &SendRequest) -> Result<SentInfo, SiftError>;
+    /// Upsert the remote copy of a draft and return its identity: the remote
+    /// draft id plus, where the transport knows it, the message id the copy
+    /// carries locally.
+    ///
+    /// `rfc_message_id` is the stable Message-ID of the draft's lineage: a
+    /// transport whose APPEND outcome is ambiguous reconciles against it
+    /// instead of appending a second copy.
+    async fn draft_upsert(
+        &self,
+        remote_id: Option<&str>,
+        raw: &[u8],
+        rfc_message_id: &str,
+    ) -> Result<crate::dto::RemoteDraft, SiftError>;
     async fn draft_delete(&self, remote_id: &str) -> Result<(), SiftError>;
+    /// Drafts that exist on the server, for import and reconciliation (P5.2).
+    ///
+    /// Message content is not fetched here: a remote draft's body is read from
+    /// the message copy the normal sync already stores. Transports without a
+    /// cheap listing return an empty list rather than an error.
+    async fn draft_list(&self) -> Result<Vec<crate::dto::RemoteDraft>, SiftError> {
+        Ok(Vec::new())
+    }
     /// Server search that also hydrates + indexes hits, so the second run is
     /// local (P8-T04). Returns thread refs for row mapping.
     async fn server_search(

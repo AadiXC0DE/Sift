@@ -147,7 +147,8 @@ pub async fn thread_get(
           r.get::<_, Option<String>>("reply_to")?, r.get::<_, String>("subject")?, r.get::<_, String>("snippet")?,
           r.get::<_, i64>("is_unread")? != 0, r.get::<_, i64>("is_starred")? != 0, r.get::<_, i64>("is_draft")? != 0,
           r.get::<_, i64>("is_sent_by_me")? != 0, label_ids, r.get::<_, i64>("has_attachments")? != 0,
-          r.get::<_, String>("body_state")?, r.get::<_, Option<String>>("list_unsubscribe")?, r.get::<_, i64>("list_unsubscribe_post")? != 0))
+          r.get::<_, String>("body_state")?, r.get::<_, Option<String>>("list_unsubscribe")?, r.get::<_, i64>("list_unsubscribe_post")? != 0,
+          r.get::<_, Option<String>>("rfc_message_id")?, r.get::<_, Option<String>>("references_json")?))
       })?.collect::<Result<Vec<_>, rusqlite::Error>>()?;
       let mut rows = rows;
       if count > 200 { rows.reverse(); }
@@ -175,6 +176,8 @@ pub async fn thread_get(
         body_state,
         list_unsub,
         list_post,
+        rfc_message_id,
+        references_json,
     ) in msgs
     {
         let attachments = state
@@ -220,6 +223,10 @@ pub async fn thread_get(
                 _ => "none".into(),
             },
             list_unsubscribe,
+            rfc_message_id,
+            references_json: references_json
+                .map(|j| serde_json::from_str(&j).unwrap_or_default())
+                .unwrap_or_default(),
         });
     }
     Ok(ThreadDetail {
@@ -253,6 +260,8 @@ type MsgTuple = (
     String,
     Option<String>,
     bool,
+    Option<String>,
+    Option<String>,
 );
 
 fn parse_list_unsub(raw: &str) -> (Option<String>, Option<String>) {

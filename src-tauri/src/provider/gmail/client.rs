@@ -326,6 +326,85 @@ impl GmailClient {
             .await?;
         r.json().await.map_err(SiftError::from)
     }
+    /// Create a Gmail draft. Used when a local draft has no remote copy yet.
+    pub async fn create_draft(
+        &self,
+        raw: &str,
+        thread_id: Option<&str>,
+    ) -> Result<DraftResource, SiftError> {
+        self.quota(10).await;
+        let body = DraftWrite {
+            message: DraftWriteMessage {
+                raw,
+                thread_id,
+            },
+        };
+        let r = self
+            .send_with_retry(
+                self.http
+                    .post(format!("{}/drafts", base_url()))
+                    .json(&body),
+            )
+            .await?;
+        r.json().await.map_err(SiftError::from)
+    }
+
+    /// Replace the content of an existing Gmail draft, keeping its id.
+    pub async fn update_draft(
+        &self,
+        draft_id: &str,
+        raw: &str,
+        thread_id: Option<&str>,
+    ) -> Result<DraftResource, SiftError> {
+        self.quota(10).await;
+        let body = DraftWrite {
+            message: DraftWriteMessage {
+                raw,
+                thread_id,
+            },
+        };
+        let r = self
+            .send_with_retry(
+                self.http
+                    .put(format!("{}/drafts/{}", base_url(), urlencoding::encode(draft_id)))
+                    .json(&body),
+            )
+            .await?;
+        r.json().await.map_err(SiftError::from)
+    }
+
+    /// Delete a Gmail draft. A draft that is already gone is not an error.
+    pub async fn delete_draft(&self, draft_id: &str) -> Result<(), SiftError> {
+        self.quota(5).await;
+        match self
+            .send_with_retry(
+                self.http
+                    .delete(format!("{}/drafts/{}", base_url(), urlencoding::encode(draft_id))),
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(SiftError::NotFound(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One page of Gmail drafts, newest first. `page_token` walks further
+    /// pages so a mailbox with many drafts still reconciles completely.
+    pub async fn list_drafts(
+        &self,
+        max: u32,
+        page_token: Option<&str>,
+    ) -> Result<DraftListResponse, SiftError> {
+        self.quota(5).await;
+        let mut url = format!("{}/drafts?maxResults={}", base_url(), max.min(500));
+        if let Some(t) = page_token {
+            url.push_str(&format!("&pageToken={}", urlencoding::encode(t)));
+        }
+        let r = self.send_with_retry(self.http.get(url)).await?;
+        r.json().await.map_err(SiftError::from)
+    }
+
     pub async fn send_as_list(&self) -> Result<serde_json::Value, SiftError> {
         self.quota(1).await;
         let base = std::env::var("SIFT_SETTINGS_URL").unwrap_or_else(|_| {

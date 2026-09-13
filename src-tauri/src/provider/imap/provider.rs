@@ -1148,18 +1148,24 @@ impl Provider for GmailImapProvider {
                 .await
             }
             "send" => {
-                use base64::Engine;
-                let raw_b64 = op.payload["raw"].as_str().unwrap_or_default();
-                let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(raw_b64)
-                    .unwrap_or_default();
-                let tid = op.payload["threadId"].as_str().map(|s| s.to_string());
-                self.send(&raw, tid.as_deref()).await?;
-                Ok(ApplyOutcome::Done)
+                // Executed by the outbox drain, which owns the prepared
+                // payload and the retry policy.
+                return Err(SiftError::app(
+                    "op",
+                    "send ops are applied by the outbox drain",
+                    false,
+                ));
+            }
+            "draft_sync" => {
+                return Err(SiftError::app(
+                    "op",
+                    "draft_sync ops are applied by the outbox drain",
+                    false,
+                ));
             }
             "draft_upsert" | "draft_delete" => {
-                // Draft remote sync stays local-only in v1 (same as API path);
-                // IMAP APPEND lands with the full draft flow in task 10b.
+                // Superseded by `draft_sync` (P5.2). Ops left in the queue by
+                // an older build complete as no-ops.
                 Ok(ApplyOutcome::Done)
             }
             _ => Err(SiftError::app(
@@ -1170,10 +1176,12 @@ impl Provider for GmailImapProvider {
         }
     }
 
-    async fn send(&self, raw: &[u8], _thread_id: Option<&str>) -> Result<SentInfo, SiftError> {
+    async fn send(&self, req: &crate::provider::SendRequest) -> Result<SentInfo, SiftError> {
         let email = self.pool.email();
         let pw = self.pool.app_password();
-        super::smtp::send_gmail(&email, &pw, raw).await?;
+        // The envelope is the prepared one; SMTP DATA gets the message without
+        // its Bcc header (the envelope carries those blind recipients).
+        super::smtp::send_gmail(&email, &pw, req).await?;
         // On success, run a partial tick so the Sent/All copy appears locally
         // with its real id within seconds (spec task 10/11).
         let folders = self.folders_cached().await?;
@@ -1204,7 +1212,12 @@ impl Provider for GmailImapProvider {
         })
     }
 
-    async fn draft_upsert(&self, remote_id: Option<&str>, raw: &[u8]) -> Result<String, SiftError> {
+    async fn draft_upsert(
+        &self,
+        remote_id: Option<&str>,
+        raw: &[u8],
+        rfc_message_id: &str,
+    ) -> Result<crate::dto::RemoteDraft, SiftError> {
         let folders = self.folders_cached().await?;
         super::ops::draft_upsert(
             &self.pool,
@@ -1213,6 +1226,7 @@ impl Provider for GmailImapProvider {
             &self.account_id,
             remote_id,
             raw,
+            rfc_message_id,
         )
         .await
     }
@@ -1220,6 +1234,51 @@ impl Provider for GmailImapProvider {
     async fn draft_delete(&self, remote_id: &str) -> Result<(), SiftError> {
         let folders = self.folders_cached().await?;
         super::ops::draft_delete(&self.pool, &self.db, &folders, &self.account_id, remote_id).await
+    }
+
+    /// Drafts the Drafts mailbox holds, read locally (P5.2).
+    ///
+    /// The folder is part of normal sync, so listing drafts costs no network
+    /// round trip: one query joins the uid map to the synced message rows for
+    /// the identity and the RFC Message-ID that reconciliation matches on.
+    async fn draft_list(&self) -> Result<Vec<crate::dto::RemoteDraft>, SiftError> {
+        let uidvalidity = self
+            .db
+            .imap_get_folder(&self.account_id, "drafts")
+            .await
+            .ok()
+            .flatten()
+            .map(|c| c.uidvalidity)
+            .unwrap_or_default();
+        let account = self.account_id.clone();
+        let rows: Vec<(i64, String, Option<String>)> = self
+            .db
+            .read(move |c| {
+                Ok(c.prepare(
+                    "SELECT u.uid, u.message_id, m.rfc_message_id FROM imap_uids u \
+                     LEFT JOIN messages m ON m.account_id=u.account_id AND m.id=u.message_id \
+                     WHERE u.account_id=? AND u.role='drafts' ORDER BY u.uid",
+                )?
+                .query_map(rusqlite::params![account], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?)
+            })
+            .await
+            .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+        Ok(rows
+            .into_iter()
+            .map(|(uid, hex, rfc)| crate::dto::RemoteDraft {
+                remote_draft_id: super::ops::encode_draft_locator(
+                    uidvalidity as u32,
+                    uid as u32,
+                    &hex,
+                ),
+                message_id: Some(hex),
+                thread_id: None,
+                rfc_message_id: rfc,
+            })
+            .collect())
     }
 
     async fn server_search(

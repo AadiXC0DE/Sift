@@ -8,6 +8,7 @@ pub mod dto;
 pub mod errors;
 pub mod logging;
 pub mod notify;
+pub mod outgoing;
 pub mod outbox;
 pub mod provider;
 pub mod render;
@@ -249,12 +250,16 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::actions::snooze_set,
             commands::actions::snooze_clear,
             commands::actions::labels_create,
+            commands::compose::drafts_get,
+            commands::compose::drafts_list,
             commands::compose::drafts_upsert,
             commands::compose::drafts_delete,
             commands::compose::drafts_send,
             commands::compose::send_cancel,
+            commands::compose::compose_limits,
             commands::compose::contacts_suggest,
             commands::compose::attachments_add_from_paths,
+            commands::compose::attachments_stage_from_message,
             commands::search::search,
             commands::search::unsubscribe,
             commands::attachments::attachments_open,

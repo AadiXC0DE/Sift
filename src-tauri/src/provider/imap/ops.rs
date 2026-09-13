@@ -543,8 +543,35 @@ pub async fn apply_delete_threads(
     Ok(ApplyOutcome::Done)
 }
 
-/// Draft upsert: APPEND to Drafts with (\Draft \Seen), return hex msgid,
-/// expunge the previous draft UID. Returns the new remote draft id.
+/// Stable locator for an IMAP draft: `uidvalidity:uid:hex-message-id`.
+///
+/// A UID is only meaningful inside its UIDVALIDITY epoch, so the epoch travels
+/// with it. When the epoch later differs, the draft is re-located by its stable
+/// Gmail message id instead of expunging whatever now holds that UID (P1.3/P5.2:
+/// an old UID must never address a different message).
+pub fn encode_draft_locator(uidvalidity: u32, uid: u32, hex_msgid: &str) -> String {
+    format!("{uidvalidity}:{uid}:{hex_msgid}")
+}
+
+/// Decode a draft locator. Anything else (an older build stored a bare hex
+/// message id) returns `None`, and callers fall back to id-based lookup.
+pub fn decode_draft_locator(s: &str) -> Option<(u32, u32, String)> {
+    let mut parts = s.splitn(3, ':');
+    let uidvalidity = parts.next()?.parse::<u32>().ok()?;
+    let uid = parts.next()?.parse::<u32>().ok()?;
+    let hex = parts.next().unwrap_or_default().to_string();
+    Some((uidvalidity, uid, hex))
+}
+
+/// Draft upsert: APPEND to Drafts with (\Draft \Seen), resolve the copy to a
+/// stable locator, then delete the previous revision.
+///
+/// Ordering is deliberate: the replacement is appended **before** the previous
+/// draft is deleted, so an interruption can only leave a duplicate, never
+/// nothing. An ambiguous APPEND (the connection dropped, or the server
+/// completed the transfer without APPENDUID) is reconciled by the Message-ID
+/// the message was built with — stable for the draft's lineage — so a retry
+/// adopts the copy that already landed instead of appending a second one.
 pub async fn draft_upsert(
     pool: &ImapPool,
     db: &Db,
@@ -552,48 +579,134 @@ pub async fn draft_upsert(
     account_id: &str,
     prev_remote: Option<&str>,
     raw: &[u8],
-) -> Result<String, SiftError> {
+    rfc_message_id: &str,
+) -> Result<crate::dto::RemoteDraft, SiftError> {
     let drafts = folders
         .name_for_role("drafts")
         .unwrap_or(&folders.all)
         .to_string();
-    let (uidvalidity, uid) = {
+    let appended = {
         let mut guard = pool.worker().await?;
         let conn = guard.as_mut().expect("connected");
         conn.append(&drafts, &["\\Draft".to_string(), "\\Seen".to_string()], raw)
-            .await?
+            .await
     };
-    let _ = uidvalidity;
-    // Resolve the new UID to its Gmail msgid; the SELECT and the FETCH that
-    // depends on it share one lease (P4.3).
-    let msgid = {
-        let mut w = pool.with_selected_worker(&drafts, true, &no_cancel()).await?;
-        let fetched = w
-            .conn()
-            .uid_fetch_items(&uid.to_string(), &super::conn::FetchItems::new().gmail_msgid())
-            .await?;
-        fetched
-            .into_iter()
-            .find_map(|(_, attrs)| {
-                attrs.into_iter().find_map(|a| match a {
-                    super::proto::FetchAttr::GmailMsgId(id) => Some(id),
-                    _ => None,
-                })
-            })
-            .ok_or_else(|| SiftError::app("imap_protocol", "APPEND without X-GM-MSGID", true))?
+    let (uidvalidity, uid, leftovers) = match appended {
+        Ok((uidvalidity, uid)) => (Some(uidvalidity), uid, Vec::new()),
+        Err(e) => {
+            // The APPEND may or may not have landed. Reconcile by Message-ID
+            // before deciding: adopting a landed copy is correct, and if
+            // nothing landed the error propagates and the outbox retries.
+            log::warn!("IMAP draft APPEND was ambiguous ({e}); reconciling by Message-ID");
+            let copies = find_draft_copies(pool, &drafts, rfc_message_id).await;
+            match copies.split_first() {
+                Some((first, rest)) => (None, *first, rest.to_vec()),
+                None => {
+                    return Err(SiftError::app(
+                        "imap_transient",
+                        "the draft could not be appended to the Drafts mailbox",
+                        true,
+                    ))
+                }
+            }
+        }
     };
-    let hex = format!("{msgid:x}");
+    // One draft per lineage: a copy left behind by an earlier ambiguous APPEND
+    // is expunged now that this revision is confirmed.
+    for other in leftovers {
+        let _ = expunge_uid(pool, db, account_id, &drafts, other).await;
+    }
+
+    let hex = resolve_hex(pool, &drafts, uid).await;
     let _ = db
         .imap_put_uids(account_id, "drafts", &[(uid as i64, hex.clone())])
         .await;
-    // Delete the previous draft revision.
     if let Some(prev) = prev_remote {
         let _ = draft_delete(pool, db, folders, account_id, prev).await;
     }
-    Ok(hex)
+    Ok(crate::dto::RemoteDraft {
+        remote_draft_id: encode_draft_locator(
+            uidvalidity.unwrap_or_default(),
+            uid,
+            &hex,
+        ),
+        message_id: (!hex.is_empty()).then(|| hex.clone()),
+        thread_id: None,
+        rfc_message_id: Some(rfc_message_id.to_string()),
+    })
 }
 
-/// Draft delete: flag \Deleted + EXPUNGE in Drafts (best effort).
+/// UIDs of draft copies carrying this Message-ID in the Drafts mailbox.
+async fn find_draft_copies(pool: &ImapPool, drafts: &str, rfc_message_id: &str) -> Vec<u32> {
+    let id = crate::outgoing::bare_message_id(rfc_message_id).to_string();
+    if id.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mut w) = pool.with_selected_worker(drafts, true, &no_cancel()).await else {
+        return Vec::new();
+    };
+    w.conn()
+        .uid_search_raw(&format!("HEADER Message-ID \"<{id}>\""))
+        .await
+        .unwrap_or_default()
+}
+
+/// The Gmail message id of a freshly appended draft, which lets the locator
+/// re-locate it after a UIDVALIDITY change. Empty when the server has no
+/// X-GM-MSGID (a non-Gmail server); the Message-ID is then the only key.
+async fn resolve_hex(pool: &ImapPool, drafts: &str, uid: u32) -> String {
+    let Ok(mut w) = pool.with_selected_worker(drafts, true, &no_cancel()).await else {
+        return String::new();
+    };
+    let Ok(fetched) = w
+        .conn()
+        .uid_fetch_items(&uid.to_string(), &super::conn::FetchItems::new().gmail_msgid())
+        .await
+    else {
+        return String::new();
+    };
+    fetched
+        .into_iter()
+        .find_map(|(_, attrs)| {
+            attrs.into_iter().find_map(|a| match a {
+                super::proto::FetchAttr::GmailMsgId(id) => Some(id),
+                _ => None,
+            })
+        })
+        .map(|id| format!("{id:x}"))
+        .unwrap_or_default()
+}
+
+/// Flag and expunge one draft UID in the Drafts mailbox.
+async fn expunge_uid(
+    pool: &ImapPool,
+    db: &Db,
+    account_id: &str,
+    drafts: &str,
+    uid: u32,
+) -> Result<(), SiftError> {
+    let mut w = pool.with_selected_worker(drafts, false, &no_cancel()).await?;
+    let conn = w.conn();
+    let set = super::message::uid_set(&[uid], 1);
+    let _ = conn
+        .uid_store(&set, "+FLAGS", &["\\Deleted".to_string()])
+        .await;
+    match conn.uid_expunge(Some(&set)).await {
+        Ok(()) => {}
+        Err(SiftError::App { message, .. }) if already_applied(&message) => {}
+        Err(e) => return Err(e),
+    }
+    let _ = db
+        .imap_delete_uids(account_id, "drafts", &[uid as i64])
+        .await;
+    Ok(())
+}
+
+/// Draft delete: expunge the draft's copy in the Drafts mailbox.
+///
+/// The locator's UID is used only while its UIDVALIDITY epoch still matches the
+/// folder; otherwise the draft is re-located by its stable Gmail message id. A
+/// draft that is already gone is a success.
 pub async fn draft_delete(
     pool: &ImapPool,
     db: &Db,
@@ -601,46 +714,53 @@ pub async fn draft_delete(
     account_id: &str,
     remote_id: &str,
 ) -> Result<(), SiftError> {
-    // remote_id is hex msgid; resolve to draft UID.
-    let holders = db
-        .uids_for_message(account_id, remote_id)
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-    // Prefer the drafts copy; fall back to a Gmail-id search in Drafts.
-    let uid: Option<u32> = holders
-        .iter()
-        .find(|(r, _)| r == "drafts")
-        .map(|(_, u)| *u as u32)
-        .or_else(|| holders.first().map(|(_, u)| *u as u32));
     let drafts = folders
         .name_for_role("drafts")
         .unwrap_or(&folders.all)
         .to_string();
-    let uid = match uid {
-        Some(u) => u,
-        None => {
-            let Some(dec) = ids::from_hex(remote_id) else {
-                return Ok(());
-            };
-            let mut w = pool.with_selected_worker(&drafts, false, &no_cancel()).await?;
-            match w.conn().uid_search_gmmsgid(dec).await {
-                Ok(v) => v.into_iter().next().unwrap_or(0),
-                Err(_) => return Ok(()),
-            }
-        }
+    let locator = decode_draft_locator(remote_id);
+    let epoch = db
+        .imap_get_folder(account_id, "drafts")
+        .await
+        .ok()
+        .flatten()
+        .map(|c| c.uidvalidity);
+    // 1. The locator's UID, while its epoch is the one the folder currently has.
+    let mut uid = match &locator {
+        Some((uidvalidity, uid, _)) if epoch == Some(*uidvalidity as i64) => Some(*uid),
+        _ => None,
     };
-    if uid == 0 {
-        return Ok(());
+    // 2. A copy the uid map knows about.
+    if uid.is_none() {
+        let holders = db
+            .uids_for_message(account_id, remote_id)
+            .await
+            .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+        uid = holders
+            .iter()
+            .find(|(r, _)| r == "drafts")
+            .map(|(_, u)| *u as u32);
     }
-    let mut w = pool.with_selected_worker(&drafts, false, &no_cancel()).await?;
-    let conn = w.conn();
-    let set = super::message::uid_set(&[uid], 1);
-    let _ = conn
-        .uid_store(&set, "+FLAGS", &["\\Deleted".to_string()])
-        .await;
-    let _ = conn.uid_expunge(Some(&set)).await;
-    let _ = db
-        .imap_delete_uids(account_id, "drafts", &[uid as i64])
-        .await;
-    Ok(())
+    // 3. Re-locate by the stable Gmail message id.
+    if uid.is_none() {
+        let hex = locator
+            .as_ref()
+            .map(|(_, _, hex)| hex.clone())
+            .filter(|h| !h.is_empty())
+            .or_else(|| (!remote_id.contains(':')).then(|| remote_id.to_string()));
+        if let Some(dec) = hex.and_then(|h| ids::from_hex(&h)) {
+            let mut w = pool.with_selected_worker(&drafts, false, &no_cancel()).await?;
+            uid = w
+                .conn()
+                .uid_search_gmmsgid(dec)
+                .await
+                .ok()
+                .and_then(|v| v.into_iter().next());
+        }
+    }
+    match uid {
+        Some(u) => expunge_uid(pool, db, account_id, &drafts, u).await,
+        // Already deleted elsewhere: nothing to do, and nothing to report.
+        None => Ok(()),
+    }
 }

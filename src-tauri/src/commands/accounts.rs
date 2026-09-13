@@ -333,7 +333,7 @@ struct RemovalReport {
 }
 
 async fn removal_counts(db: &Db, account_id: &str) -> Result<RemovalCounts, SiftError> {
-    let drafts = db.drafts_list(account_id).await.map_err(db_error)?.len() as i64;
+    let drafts = db.drafts_count(account_id).await.map_err(db_error)?;
     let queued = db.outbox_pending_count(account_id).await.map_err(db_error)?;
     let account_id = account_id.to_string();
     let uncertain_sends = db
@@ -388,10 +388,9 @@ async fn write_removal_report(
         .map_err(db_error)?;
     let unsent_drafts = state
         .db
-        .drafts_list(account_id)
+        .drafts_count(account_id)
         .await
-        .map_err(db_error)?
-        .len() as i64;
+        .map_err(db_error)?;
     if ops.is_empty() && unsent_drafts == 0 {
         return Ok(None);
     }
@@ -835,7 +834,7 @@ mod tests {
 
         assert!(state.db.accounts_list().await.unwrap().is_empty());
         assert_eq!(state.db.outbox_pending_count(&id).await.unwrap(), 0);
-        assert!(state.db.drafts_list(&id).await.unwrap().is_empty());
+        assert!(state.db.drafts_list(std::slice::from_ref(&id), None, 10).await.unwrap().drafts.is_empty());
         let threads: i64 = state
             .db
             .read({
@@ -1088,7 +1087,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(threads, 1);
-        assert_eq!(state.db.drafts_list(&id).await.unwrap().len(), 1);
+        assert_eq!(state.db.drafts_list(std::slice::from_ref(&id), None, 10).await.unwrap().drafts.len(), 1);
         // The mid-flight op is queued again for the new provider.
         assert_eq!(state.db.outbox_pending_count(&id).await.unwrap(), 1);
         assert_eq!(

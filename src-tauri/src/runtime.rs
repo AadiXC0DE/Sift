@@ -188,6 +188,26 @@ async fn poll_loop(
                         partial_tick(state, account_id, generation, cancel, &*provider, host)
                     })
                     .await;
+                // Remote drafts that were created or edited elsewhere become
+                // editable local drafts (P5.2). Best effort: an unreachable
+                // server must not stop the mailbox from syncing, and an
+                // unsynced message is retried on the next tick.
+                if state.is_current(account_id, generation).await {
+                    match crate::outbox::sync_remote_drafts(&state.db, &*provider, account_id).await
+                    {
+                        Ok(report) if report != Default::default() => {
+                            log::info!(
+                                "draft reconcile for {account_id}: {} imported, {} adopted, {} recovered, {} stranded",
+                                report.imported.len(),
+                                report.adopted.len(),
+                                report.recovered.len(),
+                                report.stranded.len()
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => log::debug!("draft reconcile for {account_id} skipped: {e}"),
+                    }
+                }
             }
         }
         if !sleep_or_cancel(cancel, wait).await {
@@ -765,19 +785,28 @@ mod tests {
             Err(unused())
         }
         async fn apply(&self, _op: &OutboxOp) -> Result<ApplyOutcome, SiftError> {
+            Err(unused())
+        }
+        /// The drain hands the prepared delivery to the transport: that call is
+        /// what the removal tests observe.
+        async fn send(
+            &self,
+            _req: &crate::provider::SendRequest,
+        ) -> Result<SentInfo, SiftError> {
             self.mark("send-entered").await;
             self.block_until_released().await;
             self.mark("send-late").await;
-            Ok(ApplyOutcome::Done)
-        }
-        async fn send(&self, _raw: &[u8], _thread_id: Option<&str>) -> Result<SentInfo, SiftError> {
-            Err(unused())
+            Ok(SentInfo {
+                id: "sent".into(),
+                thread_id: "t1".into(),
+            })
         }
         async fn draft_upsert(
             &self,
             _remote_id: Option<&str>,
             _raw: &[u8],
-        ) -> Result<String, SiftError> {
+            _rfc_message_id: &str,
+        ) -> Result<crate::dto::RemoteDraft, SiftError> {
             Err(unused())
         }
         async fn draft_delete(&self, _remote_id: &str) -> Result<(), SiftError> {
@@ -903,9 +932,25 @@ mod tests {
             .write()
             .await
             .insert(account.id.clone(), provider.clone());
+        // A prepared send: the drain reads the frozen MIME from disk and hands
+        // the envelope to the transport.
+        let raw_path = dir.path().join("prepared.eml");
+        let raw = b"From: outbox@x.com\r\nTo: someone@y.com\r\n\r\nbody";
+        std::fs::write(&raw_path, raw).unwrap();
+        let payload = serde_json::json!({
+            "localId": "d1",
+            "revision": 1,
+            "rawPath": raw_path.to_string_lossy(),
+            "rawSize": raw.len() as i64,
+            "from": "outbox@x.com",
+            "envelopeRecipients": ["someone@y.com"],
+            "bccRecipients": [],
+            "rfcMessageId": "<prepared@x.com>",
+        })
+        .to_string();
         state
             .db
-            .outbox_enqueue(&account.id, "send", "{\"thread_id\":\"t1\"}", None, 0)
+            .outbox_enqueue(&account.id, "send", &payload, None, 0)
             .await
             .unwrap();
         let events = Arc::new(AtomicUsize::new(0));

@@ -202,22 +202,16 @@ async fn removal_cleans_every_scoped_table() {
         db.contacts_upsert(aid, &format!("{tag}@x.com"), Some("P"))
             .await
             .unwrap();
-        db.drafts_upsert(&sift::dto::Draft {
-            local_id: Some(format!("d-{tag}")),
-            account_id: aid.clone(),
-            remote_draft_id: None,
-            remote_message_id: None,
-            thread_id: None,
-            in_reply_to_message_id: None,
-            mode: "new".into(),
-            to_json: vec![],
-            cc_json: vec![],
-            bcc_json: vec![],
-            subject: "d".into(),
-            body_html: "d".into(),
-            attachments_json: vec![],
-            updated_at: None,
-        })
+        db.drafts_upsert(
+            &sift::dto::Draft {
+                local_id: format!("d-{tag}"),
+                account_id: aid.clone(),
+                subject: "d".into(),
+                body_html: "d".into(),
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap();
         db.outbox_enqueue(aid, "modify_labels", "{}", None, 0)
@@ -295,7 +289,10 @@ async fn removal_cleans_every_scoped_table() {
     assert_eq!(fts_left, 0);
 
     // The sibling account is intact.
-    assert_eq!(db.drafts_list(&b).await.unwrap().len(), 1);
+    assert_eq!(
+        db.drafts_list(std::slice::from_ref(&b), None, 10).await.unwrap().drafts.len(),
+        1
+    );
     assert_eq!(
         db.attachments_records(&MessageRef::new(b.clone(), "m-b"))
             .await
@@ -376,7 +373,7 @@ async fn v6_upgrade_preserves_bodies_bytes_fts_and_reports_orphans() {
         .read(|c| Ok(c.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?))
         .await
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, sift::db::SCHEMA_VERSION);
 
     let (_, text, remote, _, _, _) = db.bodies_get(&m).await.unwrap().expect("body kept");
     assert_eq!(text.as_deref(), Some(body_text), "body text is byte-for-byte");

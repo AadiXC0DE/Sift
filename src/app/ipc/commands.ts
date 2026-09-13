@@ -5,13 +5,16 @@ import type {
   AttachmentRef,
   AttachmentRefKey,
   ConnectivityState,
+  ComposeLimits,
   Contact,
   Draft,
+  DraftPage,
   Label,
   MessageBody,
   RemovalCounts,
   SaveAllResult,
   SaveAsResult,
+  SendHandle,
   Settings,
   StorageUsage,
   SyncStatus,
@@ -96,11 +99,21 @@ export const api = {
     }),
   snooze_clear: (account_id: string, thread_ids: string[]) =>
     call<void>('snooze_clear', { accountId: account_id, threadIds: thread_ids }),
-  drafts_upsert: (d: Draft) => call<Draft>('drafts_upsert', { draft: d }),
+  drafts_get: (a: { localId: string }) => call<Draft>('drafts_get', a),
+  drafts_list: (a: { accountIds: string[]; cursor?: string; limit?: number }) =>
+    call<DraftPage>('drafts_list', a),
+  drafts_upsert: (a: { draft: Draft; expectedRevision?: number }) =>
+    call<Draft>('drafts_upsert', a),
+  // Explicit discard only: the send path must never call this.
   drafts_delete: (local_id: string) => call<void>('drafts_delete', { localId: local_id }),
-  drafts_send: (local_id: string, undo_delay_ms: number) =>
-    call<{ op_id: number }>('drafts_send', { localId: local_id, undoDelayMs: undo_delay_ms }),
-  send_cancel: (op_id: number) => call<Draft>('send_cancel', { opId: op_id }),
+  drafts_send: (a: {
+    localId: string;
+    revision: number;
+    notBefore?: number;
+    archiveAfterSend?: boolean;
+  }) => call<SendHandle>('drafts_send', a),
+  send_cancel: (a: { opId: number }) => call<Draft>('send_cancel', a),
+  compose_limits: () => call<ComposeLimits>('compose_limits'),
   contacts_suggest: (account_id: string, q: string, limit: number) =>
     call<Contact[]>('contacts_suggest', { accountId: account_id, q, limit }),
   search: (account_ids: string[], q: string, scope: 'local' | 'server') =>
@@ -112,8 +125,15 @@ export const api = {
     call<SaveAllResult>('attachments_save_all', a),
   attachments_cancel: (a: { accountId: string; requestId: string }) =>
     call<void>('attachments_cancel', a),
-  attachments_add_from_paths: (paths: string[]) =>
-    call<AttachmentRef[]>('attachments_add_from_paths', { paths }),
+  attachments_add_from_paths: (a: { accountId: string; draftId: string; paths: string[] }) =>
+    call<AttachmentRef[]>('attachments_add_from_paths', a),
+  // Forwarding: stage one attachment of an existing message into a draft.
+  attachments_stage_from_message: (a: {
+    accountId: string;
+    messageId: string;
+    attachmentId: string;
+    draftId: string;
+  }) => call<AttachmentRef>('attachments_stage_from_message', a),
   remote_images_load: (account_id: string, message_id: string, remember_sender: boolean) =>
     call<MessageBody>('remote_images_load', {
       accountId: account_id,

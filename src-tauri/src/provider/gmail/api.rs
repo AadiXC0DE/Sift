@@ -73,6 +73,16 @@ fn gmail_err(e: impl ToString) -> SiftError {
     SiftError::app("gmail", e.to_string(), true)
 }
 
+/// One Gmail draft resource as the local reconciliation sees it.
+fn draft_resource(d: super::types::DraftResource) -> crate::dto::RemoteDraft {
+    crate::dto::RemoteDraft {
+        remote_draft_id: d.id,
+        message_id: d.message.as_ref().map(|m| m.id.clone()),
+        thread_id: d.message.as_ref().and_then(|m| m.thread_id.clone()),
+        rfc_message_id: None,
+    }
+}
+
 #[async_trait]
 impl Provider for GmailApiProvider {
     fn kind(&self) -> ProviderKind {
@@ -218,17 +228,19 @@ impl Provider for GmailApiProvider {
                 }
             }
             "send" => {
-                use base64::Engine;
-                let raw_b64 = op.payload["raw"].as_str().unwrap_or_default();
-                let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(raw_b64)
-                    .unwrap_or_default();
-                let tid = op.payload["threadId"].as_str().map(|s| s.to_string());
-                self.send(&raw, tid.as_deref()).await?;
+                // Executed by the outbox drain, which owns the prepared
+                // payload and the retry policy.
+                return Err(SiftError::app(
+                    "op",
+                    "send ops are applied by the outbox drain",
+                    false,
+                ));
             }
-            // Remote draft sync was never implemented for the API path; the
-            // local draft is the truth. Preserved as a no-op.
-            "draft_upsert" | "draft_delete" => {}
+            "draft_upsert" | "draft_delete" => {
+                // Superseded by `draft_sync`, which carries the revision and
+                // the merge rules. An op left in the queue by an older build
+                // is completed as a no-op rather than replayed blindly.
+            }
             _ => {
                 return Err(SiftError::app(
                     "op",
@@ -240,26 +252,63 @@ impl Provider for GmailApiProvider {
         Ok(ApplyOutcome::Done)
     }
 
-    async fn send(&self, raw: &[u8], thread_id: Option<&str>) -> Result<SentInfo, SiftError> {
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
-        let m = self.client.send_raw(&encoded, thread_id).await?;
+    async fn send(&self, req: &crate::provider::SendRequest) -> Result<SentInfo, SiftError> {
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&req.raw);
+        // Gmail delivers from the message headers (Bcc included) and files the
+        // message into `threadId`; the API has no separate envelope.
+        let m = self
+            .client
+            .send_raw(&encoded, req.thread_id.as_deref())
+            .await?;
         Ok(SentInfo {
             id: m.id,
             thread_id: m.thread_id,
         })
     }
 
+    /// Real Gmail draft operations (P5.2): create when there is no remote copy,
+    /// update in place when there is one (so the user keeps one current draft),
+    /// and let the caller delete drafts that no longer exist.
     async fn draft_upsert(
         &self,
         remote_id: Option<&str>,
-        _raw: &[u8],
-    ) -> Result<String, SiftError> {
-        // See apply(): remote draft sync is local-only on the API path.
-        Ok(remote_id.unwrap_or_default().to_string())
+        raw: &[u8],
+        _rfc_message_id: &str,
+    ) -> Result<crate::dto::RemoteDraft, SiftError> {
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+        if let Some(id) = remote_id.filter(|id| !id.trim().is_empty()) {
+            match self.client.update_draft(id, &encoded, None).await {
+                Ok(d) => return Ok(draft_resource(d)),
+                // The draft was deleted elsewhere: fall through and create it
+                // again instead of failing the sync forever.
+                Err(SiftError::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(draft_resource(self.client.create_draft(&encoded, None).await?))
     }
 
-    async fn draft_delete(&self, _remote_id: &str) -> Result<(), SiftError> {
-        Ok(())
+    async fn draft_delete(&self, remote_id: &str) -> Result<(), SiftError> {
+        if remote_id.trim().is_empty() {
+            return Ok(());
+        }
+        self.client.delete_draft(remote_id).await
+    }
+
+    async fn draft_list(&self) -> Result<Vec<crate::dto::RemoteDraft>, SiftError> {
+        let mut out = Vec::new();
+        let mut page: Option<String> = None;
+        for _ in 0..10 {
+            let resp = self.client.list_drafts(200, page.as_deref()).await?;
+            for d in resp.drafts.unwrap_or_default() {
+                out.push(draft_resource(d));
+            }
+            match resp.next_page_token {
+                Some(t) if !t.is_empty() => page = Some(t),
+                _ => break,
+            }
+        }
+        Ok(out)
     }
 
     async fn server_search(

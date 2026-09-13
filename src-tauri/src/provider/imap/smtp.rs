@@ -1,10 +1,18 @@
-//! SMTP send via Gmail (Phase 11 task 11).
+//! SMTP send via Gmail (Phase 11 task 11, hardened in P5.3).
 //!
 //! `lettre` AsyncSmtpTransport to `smtp.gmail.com:465` (implicit TLS; 587
 //! STARTTLS fallback when 465 is blocked), AUTH PLAIN with the app password,
 //! EHLO `sift.local`, 30 s timeout, connection reused 5 min then dropped.
-//! Raw MIME comes from `mail-builder` as today; threading works via
-//! In-Reply-To/References. Gmail files the copy into Sent automatically.
+//!
+//! The envelope is explicit and comes from the prepared draft. It used to be
+//! scraped out of the raw headers with a comma split, and when that found
+//! nothing it **sent the message to the sender** — silently mailing the user
+//! their own unsent mail. Now a message whose recipients cannot be determined
+//! fails; the envelope is never defaulted to the sender.
+//!
+//! The DATA bytes never contain a `Bcc` header (recipient privacy): the
+//! envelope carries those recipients and [`strip_bcc`] removes the header,
+//! with the removal count checked against the prepared message.
 //!
 //! Errors map to the task-4/fix UI: 535 → `imap_bad_password`, 552/5.3.4 →
 //! size error, 421/4xx → retryable (message stays Sending… with backoff).
@@ -34,7 +42,7 @@ fn map_smtp_err(e: &str) -> SiftError {
     {
         return SiftError::app(
             "too_large",
-            "This message is over Gmail's 25 MB limit.",
+            "This message is over Sift's current 25 MB send limit.",
             false,
         );
     }
@@ -61,80 +69,103 @@ fn map_smtp_err(e: &str) -> SiftError {
     )
 }
 
-/// Parse raw MIME for From/To to satisfy lettre's envelope. Falls back to the
-/// account email when headers are missing (fake tests use minimal headers).
-#[allow(clippy::if_same_then_else)]
-fn envelope_from_raw(raw: &[u8], fallback: &str) -> (String, Vec<String>) {
-    let text = String::from_utf8_lossy(raw);
-    let mut from = fallback.to_string();
-    let mut to: Vec<String> = vec![];
-    let mut in_headers = true;
-    for line in text.lines() {
-        if !in_headers {
-            break;
-        }
-        if line.trim().is_empty() {
-            in_headers = false;
-            continue;
-        }
-        let lower = line.to_ascii_lowercase();
-        if lower.starts_with("from:") {
-            if let Some(addr) = extract_addr(&line[5..]) {
-                from = addr;
-            }
-        } else if lower.starts_with("to:") || lower.starts_with("cc:") {
-            let body = if lower.starts_with("to:") {
-                &line[3..]
-            } else {
-                &line[3..]
-            };
-            for a in extract_addrs(body) {
-                to.push(a);
-            }
-        } else if lower.starts_with("bcc:") {
-            for a in extract_addrs(&line[4..]) {
-                to.push(a);
-            }
-        }
-    }
-    if to.is_empty() {
-        to.push(fallback.to_string());
-    }
-    (from, to)
+/// Envelope derived from a raw message, for messages queued before the
+/// envelope was stored with them.
+///
+/// Addresses are parsed with `mail-parser` (never comma-split) and validated.
+/// A message with no usable recipient is an error; there is deliberately no
+/// fallback to the sender.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendEnvelope {
+    pub from: String,
+    pub recipients: Vec<String>,
+    pub bcc_count: usize,
 }
 
-fn extract_addr(s: &str) -> Option<String> {
-    // Prefer <addr>, else bare token with @.
-    if let Some(a) = s.find('<').and_then(|l| s.find('>').map(|r| (l, r))) {
-        let addr = s[a.0 + 1..a.1].trim().to_string();
-        if addr.contains('@') {
-            return Some(addr);
+pub fn envelope_from_raw(raw: &[u8], fallback_from: &str) -> Result<SendEnvelope, SiftError> {
+    let parsed = mail_parser::MessageParser::default()
+        .parse(raw)
+        .ok_or_else(|| SiftError::app("protocol", "the message could not be parsed", false))?;
+    let from = parsed
+        .from()
+        .and_then(|a| a.first())
+        .and_then(|a| a.address())
+        .map(str::to_string)
+        .or_else(|| {
+            parsed
+                .header("Sender")
+                .and_then(|h| h.as_text())
+                .map(|s| s.trim().to_string())
+        })
+        .filter(|f| f.contains('@'))
+        .unwrap_or_else(|| fallback_from.to_string());
+
+    let mut recipients: Vec<String> = Vec::new();
+    let mut bcc_count = 0usize;
+    for (list, is_bcc) in [
+        (parsed.to(), false),
+        (parsed.cc(), false),
+        (parsed.bcc(), true),
+    ] {
+        let Some(list) = list else { continue };
+        for a in list.iter() {
+            if let Some(addr) = a.address().map(str::trim).filter(|a| a.contains('@')) {
+                let addr = addr.to_string();
+                if is_bcc && !recipients.iter().any(|r| r.eq_ignore_ascii_case(&addr)) {
+                    bcc_count += 1;
+                }
+                if !recipients.iter().any(|r| r.eq_ignore_ascii_case(&addr)) {
+                    recipients.push(addr);
+                }
+            }
         }
     }
-    for tok in s.split([' ', '\t', ',', ';']) {
-        let t = tok
-            .trim()
-            .trim_matches(|c| c == '<' || c == '>' || c == '"' || c == '\'');
-        if t.contains('@') && !t.contains(' ') {
-            return Some(t.to_string());
-        }
+    if recipients.is_empty() {
+        return Err(SiftError::app(
+            "bad_recipient",
+            "the message has no deliverable recipient",
+            false,
+        ));
     }
-    None
+    Ok(SendEnvelope {
+        from,
+        recipients,
+        bcc_count,
+    })
 }
 
-fn extract_addrs(s: &str) -> Vec<String> {
-    let mut out = vec![];
-    for part in s.split(',') {
-        if let Some(a) = extract_addr(part) {
-            out.push(a);
-        }
+/// The bytes to send over SMTP: the message without its `Bcc` header.
+///
+/// `expected_bcc` is the number of `Bcc` headers the prepared message should
+/// carry. When the message claims Bcc recipients but none can be removed, that
+/// is a hard failure — sending it anyway would leak the blind recipients.
+pub fn smtp_data(raw: &[u8], expected_bcc: usize) -> Result<Vec<u8>, SiftError> {
+    let (data, removed) = crate::outgoing::strip_bcc(raw);
+    if removed < expected_bcc {
+        return Err(SiftError::app(
+            "bcc_strip_failed",
+            "refusing to send: the Bcc header could not be removed",
+            false,
+        ));
     }
-    out
+    if String::from_utf8_lossy(&data).to_ascii_lowercase().contains("\nbcc:") {
+        return Err(SiftError::app(
+            "bcc_strip_failed",
+            "refusing to send: a Bcc header survived",
+            false,
+        ));
+    }
+    Ok(data)
 }
 
 /// Send via Gmail production endpoints (465 implicit TLS, 587 fallback).
-pub async fn send_gmail(email: &str, app_password: &str, raw: &[u8]) -> Result<(), SiftError> {
-    let (from, to) = envelope_from_raw(raw, email);
+pub async fn send_gmail(
+    email: &str,
+    app_password: &str,
+    req: &crate::provider::SendRequest,
+) -> Result<(), SiftError> {
+    let data = smtp_data(&req.raw, req.bcc_count)?;
+    let recipients = recipients_or_error(&req.recipients)?;
     // Try 465 first, then 587 STARTTLS when 465 is blocked.
     match send_one(
         GMAIL_SMTP_HOST,
@@ -142,9 +173,9 @@ pub async fn send_gmail(email: &str, app_password: &str, raw: &[u8]) -> Result<(
         false,
         email,
         app_password,
-        &from,
-        &to,
-        raw,
+        &req.from,
+        &recipients,
+        &data,
     )
     .await
     {
@@ -168,9 +199,9 @@ pub async fn send_gmail(email: &str, app_password: &str, raw: &[u8]) -> Result<(
                     true,
                     email,
                     app_password,
-                    &from,
-                    &to,
-                    raw,
+                    &req.from,
+                    &recipients,
+                    &data,
                 )
                 .await
             } else {
@@ -180,8 +211,26 @@ pub async fn send_gmail(email: &str, app_password: &str, raw: &[u8]) -> Result<(
     }
 }
 
+fn recipients_or_error(recipients: &[String]) -> Result<Vec<lettre::Address>, SiftError> {
+    let mut out = Vec::with_capacity(recipients.len());
+    for r in recipients {
+        let addr: lettre::Address = r.parse().map_err(|_| {
+            SiftError::app("bad_recipient", format!("invalid recipient: {r}"), false)
+        })?;
+        out.push(addr);
+    }
+    if out.is_empty() {
+        return Err(SiftError::app(
+            "bad_recipient",
+            "the message has no deliverable recipient",
+            false,
+        ));
+    }
+    Ok(out)
+}
+
 /// Single-attempt send to an explicit host/port. `starttls` selects explicit
-/// STARTTLS (port 587); otherwise implicit TLS. Test-only callers pass
+/// STARTTLS (port 587); otherwise implicit TLS. Test-only callers use
 /// `plaintext=true` via [`send_test`].
 #[allow(clippy::too_many_arguments)]
 async fn send_one(
@@ -191,7 +240,7 @@ async fn send_one(
     email: &str,
     app_password: &str,
     from: &str,
-    to: &[String],
+    to: &[lettre::Address],
     raw: &[u8],
 ) -> Result<(), SiftError> {
     use lettre::transport::smtp::authentication::Credentials;
@@ -219,11 +268,7 @@ async fn send_one(
     let from_addr: lettre::Address = from
         .parse()
         .map_err(|_| SiftError::app("bad_id", "bad From address", false))?;
-    let to_addrs: Vec<lettre::Address> = to.iter().filter_map(|r| r.parse().ok()).collect();
-    if to_addrs.is_empty() {
-        return Err(SiftError::app("bad_id", "no recipients", false));
-    }
-    let envelope = lettre::address::Envelope::new(Some(from_addr), to_addrs)
+    let envelope = lettre::address::Envelope::new(Some(from_addr), to.to_vec())
         .map_err(|_| SiftError::app("bad_id", "no recipients", false))?;
     transport
         .send_raw(&envelope, raw)
@@ -234,18 +279,23 @@ async fn send_one(
 
 /// Test-only send to a plaintext fake (no TLS). Mirrors production envelope
 /// handling so tests assert the same bytes Gmail would receive.
+#[allow(clippy::too_many_arguments)] // host/port/credentials/raw/envelope: the production shape
 pub async fn send_test(
     host: &str,
     port: u16,
     email: &str,
     app_password: &str,
     raw: &[u8],
+    from: &str,
+    recipients: &[String],
+    bcc_count: usize,
 ) -> Result<(), SiftError> {
     use lettre::transport::smtp::authentication::Credentials;
     use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
     crate::install_crypto_provider();
 
-    let (from, to) = envelope_from_raw(raw, email);
+    let data = smtp_data(raw, bcc_count)?;
+    let to = recipients_or_error(recipients)?;
     let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
         .port(port)
         .timeout(Some(SMTP_TIMEOUT))
@@ -257,19 +307,13 @@ pub async fn send_test(
             app_password.to_string(),
         ))
         .build();
+    let from_addr: lettre::Address = from
+        .parse()
+        .map_err(|_| SiftError::app("bad_id", "bad From", false))?;
+    let envelope = lettre::address::Envelope::new(Some(from_addr), to)
+        .map_err(|_| SiftError::app("bad_id", "bad envelope", false))?;
     transport
-        .send_raw(
-            &{
-                let from_addr: lettre::Address = from
-                    .parse()
-                    .map_err(|_| SiftError::app("bad_id", "bad From", false))?;
-                let to_addrs: Vec<lettre::Address> =
-                    to.iter().filter_map(|r| r.parse().ok()).collect();
-                lettre::address::Envelope::new(Some(from_addr), to_addrs)
-                    .map_err(|_| SiftError::app("bad_id", "bad envelope", false))?
-            },
-            raw,
-        )
+        .send_raw(&envelope, &data)
         .await
         .map_err(|e| map_smtp_err(&e.to_string()))?;
     Ok(())
@@ -280,12 +324,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn envelope_parses_addrs() {
-        let raw = b"From: Alice <alice@example.com>\r\nTo: Bob <bob@example.com>, carol@example.com\r\nSubject: hi\r\n\r\nbody";
-        let (from, to) = envelope_from_raw(raw, "fallback@example.com");
-        assert_eq!(from, "alice@example.com");
-        assert!(to.contains(&"bob@example.com".to_string()));
-        assert!(to.contains(&"carol@example.com".to_string()));
+    fn envelope_parses_addrs_without_comma_splitting() {
+        let raw = b"From: Alice <alice@example.com>\r\nTo: \"Doe, Jane\" <jane@example.com>, carol@example.com\r\nSubject: hi\r\n\r\nbody";
+        let e = envelope_from_raw(raw, "fallback@example.com").unwrap();
+        assert_eq!(e.from, "alice@example.com");
+        assert_eq!(
+            e.recipients,
+            vec!["jane@example.com".to_string(), "carol@example.com".to_string()]
+        );
+        assert_eq!(e.bcc_count, 0);
+    }
+
+    #[test]
+    fn envelope_never_falls_back_to_the_sender() {
+        // No recipient at all: a hard failure, not "send it to myself".
+        let raw = b"From: Alice <alice@example.com>\r\nSubject: hi\r\n\r\nbody";
+        let err = envelope_from_raw(raw, "alice@example.com").unwrap_err();
+        assert_eq!(serde_json::to_value(&err).unwrap()["code"], "bad_recipient");
+        // A header that exists but holds no usable address is the same.
+        let raw = b"From: Alice <alice@example.com>\r\nTo: undeliverable\r\n\r\nbody";
+        let err = envelope_from_raw(raw, "alice@example.com").unwrap_err();
+        assert_eq!(serde_json::to_value(&err).unwrap()["code"], "bad_recipient");
+    }
+
+    #[test]
+    fn envelope_keeps_bcc_recipients_and_counts_their_header() {
+        let raw = b"From: a@example.com\r\nTo: b@example.com\r\nBcc: c@example.com, b@example.com\r\n\r\nbody";
+        let e = envelope_from_raw(raw, "x@example.com").unwrap();
+        assert_eq!(
+            e.recipients,
+            vec!["b@example.com".to_string(), "c@example.com".to_string()]
+        );
+        assert_eq!(e.bcc_count, 1, "only the address unique to Bcc counts");
+    }
+
+    #[test]
+    fn smtp_data_drops_bcc_and_refuses_when_it_cannot() {
+        let raw = b"From: a@example.com\r\nTo: b@example.com\r\nBcc: c@example.com\r\n\r\nbody";
+        let data = smtp_data(raw, 1).unwrap();
+        assert!(!String::from_utf8_lossy(&data).contains("Bcc"));
+        assert!(String::from_utf8_lossy(&data).contains("body"));
+        // Claims a Bcc header that is not there: refuse rather than leak.
+        let raw = b"From: a@example.com\r\nTo: b@example.com\r\n\r\nbody";
+        let err = smtp_data(raw, 1).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&err).unwrap()["code"],
+            "bcc_strip_failed"
+        );
     }
 
     #[test]
@@ -298,6 +383,7 @@ mod tests {
         let e = map_smtp_err("552-5.3.4 message too large");
         assert_eq!(serde_json::to_value(&e).unwrap()["code"], "too_large");
         let e = map_smtp_err("421-4.4.1 busy");
-        assert!(serde_json::to_value(&e).unwrap()["code"] == "imap_transient");
+        assert_eq!(serde_json::to_value(&e).unwrap()["code"], "imap_transient");
+        assert!(e.is_retryable());
     }
 }

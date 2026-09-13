@@ -104,9 +104,6 @@ impl SiftError {
             false,
         )
     }
-    pub fn too_large() -> Self {
-        Self::app("too_large", "Attachments exceed 25 MB", false)
-    }
 }
 
 #[cfg(test)]

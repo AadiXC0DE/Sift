@@ -20,6 +20,11 @@ pub mod outbox;
 pub mod settings;
 pub mod threads;
 
+/// The schema version this build ships: the count of applied migrations.
+/// Tests assert against this instead of a hardcoded number, which is what made
+/// adding a migration break an unrelated assertion.
+pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
+
 static MIGRATIONS: &[(&str, &str)] = &[
     ("0001_init", include_str!("migrations/0001_init.sql")),
     (
@@ -46,6 +51,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
     (
         "0008_account_scoping",
         include_str!("migrations/0008_account_scoping.sql"),
+    ),
+    (
+        "0009_draft_lifecycle",
+        include_str!("migrations/0009_draft_lifecycle.sql"),
     ),
 ];
 
@@ -340,7 +349,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, SCHEMA_VERSION);
         for t in [
             "accounts",
             "labels",
@@ -510,7 +519,7 @@ mod tests {
             let v: i64 = conn
                 .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(v, 8);
+            assert_eq!(v, SCHEMA_VERSION);
             let violations: i64 = conn
                 .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
                 .unwrap();
@@ -536,7 +545,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, SCHEMA_VERSION);
         let auth_cols: i64 = conn
             .query_row(
                 "SELECT count(*) FROM pragma_table_info('accounts') WHERE name='auth_kind'",
@@ -614,7 +623,7 @@ mod tests {
         let v: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, SCHEMA_VERSION);
         let acc: String = conn
             .query_row(
                 "SELECT account_id FROM attachments WHERE id='att1'",

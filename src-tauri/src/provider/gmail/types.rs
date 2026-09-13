@@ -140,6 +140,44 @@ pub struct DraftMsg {
     pub id: String,
     pub message: Message,
 }
+
+/// A draft as the Gmail REST API reports it (P5.2). `message.id` changes when
+/// the draft's content is replaced, which is how a remote edit is detected
+/// while the draft id stays stable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftResource {
+    pub id: String,
+    #[serde(default)]
+    pub message: Option<DraftResourceMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DraftResourceMessage {
+    pub id: String,
+    #[serde(rename = "threadId", default)]
+    pub thread_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DraftListResponse {
+    #[serde(default)]
+    pub drafts: Option<Vec<DraftResource>>,
+    #[serde(rename = "nextPageToken", default)]
+    pub next_page_token: Option<String>,
+}
+
+/// Request body for `drafts.create` / `drafts.update`.
+#[derive(Debug, Clone, Serialize)]
+pub struct DraftWrite<'a> {
+    pub message: DraftWriteMessage<'a>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DraftWriteMessage<'a> {
+    pub raw: &'a str,
+    #[serde(rename = "threadId", skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<&'a str>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Userinfo {
     pub email: String,
