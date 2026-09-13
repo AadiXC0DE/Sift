@@ -195,6 +195,10 @@ export function App() {
     const onEsc = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (composeOpen) {
+        // The composer owns Escape while one of its dismissible layers (for
+        // example the recipient suggestion list) is open: that layer closes
+        // itself and clears the attribute, so the next Escape closes the sheet.
+        if (document.querySelector('[data-compose-escape="1"]')) return;
         e.preventDefault();
         e.stopPropagation();
         setComposeOpen(null);
