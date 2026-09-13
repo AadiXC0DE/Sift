@@ -35,3 +35,9 @@ fixtures/mailbox-100k/*.db
 
 # Logs
 *.log
+
+# Local reliability audit and execution plan
+/SIFT_RELIABILITY_RESEARCH.md
+
+# Generated release staging (latest.json, SHA256SUMS and copied artifacts)
+/release-assets/

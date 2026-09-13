@@ -36,3 +36,12 @@ screenshots:
 
 check-dto:
   pnpm tsx scripts/check-dto-sync.ts
+
+check-versions:
+  pnpm exec tsx scripts/check-versions.ts
+
+release-dryrun:
+  pnpm exec tsx scripts/updater-dryrun.ts
+
+verify-release:
+  bash scripts/verify-release.sh --selftest

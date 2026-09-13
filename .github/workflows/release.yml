@@ -2,6 +2,8 @@ name: release
 on:
   push:
     tags: ['v*']
+permissions:
+  contents: write
 jobs:
   build-release:
     runs-on: macos-14
@@ -14,8 +16,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: aarch64-apple-darwin,x86_64-apple-darwin }
       - run: pnpm install --frozen-lockfile
+      # Every gate below fails the job; nothing is masked with `|| true`.
+      - name: versions agree (package.json, Cargo.toml, tauri.conf.json, CHANGELOG)
+        run: pnpm exec tsx scripts/check-versions.ts --tag "${{ github.ref_name }}"
       - run: pnpm build
-      - run: pnpm tauri build --target universal-apple-darwin
+      - name: build signed universal app (updater artifacts included)
+        run: pnpm tauri build --target universal-apple-darwin
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -27,17 +33,53 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           SIFT_GOOGLE_CLIENT_ID: ${{ secrets.SIFT_GOOGLE_CLIENT_ID }}
           SIFT_GOOGLE_CLIENT_SECRET: ${{ secrets.SIFT_GOOGLE_CLIENT_SECRET }}
-      - run: bash scripts/check-bundle.sh
-      - run: codesign -dv --verbose=4 "src-tauri/target/universal-apple-darwin/release/bundle/macos/Sift.app" || true
-      - run: spctl -a -vv "src-tauri/target/universal-apple-darwin/release/bundle/macos/Sift.app" || true
-      - name: release
+      - name: bundle budget on the universal artifact (DMG <=12 MiB, eager JS <=250 KiB gzip)
+        run: |
+          bash scripts/check-bundle.sh \
+            --target-dir src-tauri/target/universal-apple-darwin/release \
+            --require-artifacts --max-js-kib 250 --max-dmg-mib 12
+      - name: code signature, notarization and artifact gate
+        run: |
+          bash scripts/verify-release.sh --mode strict \
+            --bundle-dir src-tauri/target/universal-apple-darwin/release/bundle
+      # Fails while tauri.conf.json still holds the placeholder updater key.
+      - name: generate latest.json and SHA256SUMS
+        run: |
+          pnpm exec tsx scripts/release-metadata.ts \
+            --bundle-dir src-tauri/target/universal-apple-darwin/release/bundle \
+            --out-dir release-assets \
+            --repo "${{ github.repository }}" --tag "${{ github.ref_name }}"
+      - name: verify staged metadata against the staged bytes
+        run: |
+          pnpm exec tsx scripts/release-metadata.ts --verify release-assets \
+            --repo "${{ github.repository }}" --tag "${{ github.ref_name }}"
+      - name: updater failure modes (staged fixture endpoint)
+        run: pnpm exec tsx scripts/updater-dryrun.ts
+      - name: previous release still carries a rollback installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/verify-release.sh --rollback-check \
+            --repo "${{ github.repository }}" --tag "${{ github.ref_name }}"
+      # Draft until every gate above passed; nothing is public yet.
+      - name: create draft release and upload artifacts
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz*
-            latest.json
-            SHA256SUMS
+          draft: true
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: release-assets/*
+      - name: verify uploaded bytes, checksums and urls while still a draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pnpm exec tsx scripts/release-metadata.ts --verify-remote \
+            --out-dir release-assets \
+            --repo "${{ github.repository }}" --tag "${{ github.ref_name }}"
+      - name: publish (un-draft) only after every gate passed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false
       - name: rebuild site
         uses: peter-evans/repository-dispatch@v3
         with:

@@ -1,17 +1,32 @@
 // Keep package.json, Cargo.toml, tauri.conf.json versions equal.
-import { readFileSync, writeFileSync } from 'node:fs';
+// The source list lives in scripts/lib/version-sources.ts and is shared with
+// scripts/check-versions.ts, so both agree on which files carry the version.
+import { readFileSync } from 'node:fs';
+import {
+  CHANGELOG_PATH,
+  VERSION_SOURCES,
+  changelogVersion,
+  parseVersion,
+  writeSourceVersion,
+} from './lib/version-sources';
+
 const v = process.argv[2];
 if (!v) {
   console.error('usage: bump-version <x.y.z>');
   process.exit(1);
 }
-const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
-pkg.version = v;
-writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-let cargo = readFileSync('src-tauri/Cargo.toml', 'utf8');
-cargo = cargo.replace(/^version\s*=\s*".*"/m, `version = "${v}"`);
-writeFileSync('src-tauri/Cargo.toml', cargo);
-let conf = readFileSync('src-tauri/tauri.conf.json', 'utf8');
-conf = conf.replace(/"version":\s*".*?"/, `"version": "${v}"`);
-writeFileSync('src-tauri/tauri.conf.json', conf);
+try {
+  parseVersion(v);
+} catch (err) {
+  console.error(`bump-version: ${(err as Error).message}`);
+  process.exit(1);
+}
+for (const source of VERSION_SOURCES) {
+  writeSourceVersion(source, v);
+  console.log(`wrote ${source.path}`);
+}
+const documented = changelogVersion(readFileSync(CHANGELOG_PATH, 'utf8'));
+if (documented !== v) {
+  console.log(`${CHANGELOG_PATH}: add a "## v${v}" heading (currently ${documented ? `v${documented}` : 'missing'})`);
+}
 console.log(`bumped to ${v}`);

@@ -15,6 +15,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm lint
+      - name: versions agree (package.json, Cargo.toml, tauri.conf.json, CHANGELOG)
+        run: pnpm exec tsx scripts/check-versions.ts
+      - name: updater failure modes (staged fixture endpoint, no signed artifacts)
+        run: pnpm exec tsx scripts/updater-dryrun.ts
       - run: pnpm test
       - run: pnpm e2e
   rust:
@@ -41,4 +45,6 @@ jobs:
       # Debug smoke build: skip updater artifacts (signing needs the release
       # private key, which PR builds don't have). Release signing is unchanged.
       - run: pnpm tauri build --debug --config src-tauri/tauri.ci.json
-      - run: bash scripts/check-bundle.sh || true
+      # Budget gate on the debug artifact: the eager-JS ceiling is enforced, the
+      # DMG ceiling is skipped because this is not a signed release build.
+      - run: bash scripts/check-bundle.sh

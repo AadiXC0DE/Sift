@@ -34,7 +34,7 @@
     "createUpdaterArtifacts": true
   },
   "plugins": {
-    "updater": { "active": true, "endpoints": ["https://github.com/AadiXC0DE/Sift/releases/latest/download/latest.json"], "dialog": false, "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IHJlcGxhY2Ugd2l0aCByZWFsIHVwZGF0ZXIgcHVibGljIGtleQ==" },
+    "updater": { "active": true, "endpoints": ["https://github.com/AadiXC0DE/Sift/releases/latest/download/latest.json"], "dialog": false, "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IFNJRlQgUExBQ0VIT0xERVIgdXBkYXRlciBrZXkuIFJlcGxhY2UgaXQ6IHBucG0gdGF1cmkgc2lnbmVyIGdlbmVyYXRlIC13IH4vLnRhdXJpL3NpZnQua2V5OyBwbnBtIGV4ZWMgdHN4IHNjcmlwdHMvc2V0LXVwZGF0ZXItcHVia2V5LnRzIH4vLnRhdXJpL3NpZnQua2V5LnB1Yg==" },
     "deep-link": { "desktop": { "schemes": ["com.aadixc0de.sift", "mailto"] } }
   }
 }
