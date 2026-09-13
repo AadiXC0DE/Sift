@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sift (E2E fixture)</title>
+    <script>
+      // The fixture renders relative timestamps and row dates; pin the clock so
+      // list order, formatted dates and screenshots are reproducible.
+      (function () {
+        var FIXED = 1768478400000; // 2026-01-15T12:00:00Z, matches dataset.ts
+        Date.now = function () {
+          return FIXED;
+        };
+        window.__SIFT_E2E__ = true;
+      })();
+    </script>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
