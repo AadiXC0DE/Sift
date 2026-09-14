@@ -1356,8 +1356,7 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
               onClick={() => void send()}
               disabled={sendBlocked}
               style={{
-                padding: '8px 20px',
-                height: 36,
+                padding: '0 16px',
                 fontWeight: 600,
                 // The caret beside it is the other half of one control (P8.1).
                 borderTopRightRadius: 0,

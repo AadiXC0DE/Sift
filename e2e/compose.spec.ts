@@ -8,6 +8,26 @@ async function openComposer(page: Page): Promise<void> {
   await expect(page.getByLabel('To recipients')).toBeVisible();
 }
 
+test('compose: footer buttons align and the send dropdown stays attached', async ({ page, app }) => {
+  await app.gotoApp();
+  await openComposer(page);
+  const send = page.getByRole('button', { name: 'Send ⌘↵', exact: true });
+  const dropdown = page.getByTestId('send-later-trigger');
+  const controls = [
+    send,
+    dropdown,
+    page.getByRole('button', { name: 'Send & archive', exact: true }),
+    page.getByRole('button', { name: 'Attach', exact: true }),
+  ];
+  const boxes = await Promise.all(controls.map((control) => control.boundingBox()));
+  for (const box of boxes) {
+    expect(box).not.toBeNull();
+    expect(box!.height).toBe(32);
+    expect(Math.abs(box!.y - boxes[0]!.y)).toBeLessThan(1);
+  }
+  expect(Math.abs(boxes[1]!.x - (boxes[0]!.x + boxes[0]!.width))).toBeLessThanOrEqual(1);
+});
+
 /** Every archive gesture the app issued, so a dependent archive is visible. */
 async function archiveCalls(page: Page): Promise<Record<string, unknown>[]> {
   const calls = await fixtureCalls(page, 'threads_action');
