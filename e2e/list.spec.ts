@@ -76,7 +76,9 @@ test('list: the unread filter only returns unread threads', async ({ page, app }
   await app.gotoApp();
   await app.ready();
 
-  await page.getByRole('button', { name: 'Unread' }).click();
+  // Exact: a row can also carry an accessible "Mark unread" action (P9.5), and
+  // the toolbar control's own name is exactly "Unread".
+  await page.getByRole('button', { name: 'Unread', exact: true }).click();
   await expect.poll(async () => (await fixtureCalls(page, 'threads_query')).length).toBeGreaterThan(1);
 
   const queries = await fixtureCalls(page, 'threads_query');

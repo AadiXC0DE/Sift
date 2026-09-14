@@ -37,21 +37,30 @@ export async function showsUnreadDot(row: Locator): Promise<boolean> {
   );
 }
 
+/**
+ * The scroller is the listbox's container, not the listbox itself (P9.5): the
+ * row actions live in an overlay layer that must sit outside the `listbox` role
+ * to keep axe clean, so scrolling and viewport geometry belong to the parent.
+ */
+export function listScroller(page: Page): Locator {
+  return page.locator('[data-testid="list-scroller"]');
+}
+
 /** The virtualizer's sized container height / row height = loaded row count. */
 export async function loadedRowCount(page: Page, rowHeight = 40): Promise<number> {
   const height = await page
-    .locator('[role="listbox"] [style*="position: relative"]')
+    .locator('[data-testid="list-scroller"] [role="listbox"] [style*="position: relative"]')
     .first()
     .evaluate((el) => (el as HTMLElement).offsetHeight);
   return Math.round(height / rowHeight);
 }
 
 export async function listScrollTop(page: Page): Promise<number> {
-  return page.locator('[role="listbox"]').evaluate((el) => el.scrollTop);
+  return listScroller(page).evaluate((el) => el.scrollTop);
 }
 
 export async function topVisibleRowId(page: Page): Promise<string> {
-  return page.locator('[role="listbox"]').evaluate((el) => {
+  return listScroller(page).evaluate((el) => {
     const rows = [...el.querySelectorAll<HTMLElement>('[data-testid^="row-"]')];
     const top = rows
       .map((r) => ({ id: r.dataset.testid ?? '', top: r.getBoundingClientRect().top }))
@@ -70,7 +79,7 @@ export async function revealRow(page: Page, threadId: string): Promise<Locator> 
 }
 
 export async function scrollListTo(page: Page, fraction: number): Promise<void> {
-  await page.locator('[role="listbox"]').evaluate((el, f) => {
+  await listScroller(page).evaluate((el, f) => {
     el.scrollTop = (el.scrollHeight - el.clientHeight) * f;
   }, fraction);
   await page.waitForTimeout(120);

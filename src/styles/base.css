@@ -52,7 +52,13 @@ select:focus-visible,
   height: 6px;
 }
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in oklab, var(--n6) 50%, transparent);
+  /* P9.5 — WebKit floor. Safari 16.0/16.1 has no color-mix(), so the thumb is a
+     flat neutral here; the tinted value lives in the @supports block at the end
+     of this file. It cannot simply be the second declaration in this rule: an
+     unsupported color-mix() that contains var() is not rejected at parse time,
+     so it wins the cascade and leaves the property unset (no thumb at all)
+     instead of restoring the neutral below. */
+  background: var(--n5);
   border-radius: 99px;
 }
 ::-webkit-scrollbar-thumb:hover {
@@ -66,7 +72,9 @@ select:focus-visible,
 }
 * {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklab, var(--n6) 55%, transparent) transparent;
+  /* P9.5 — flat neutral for WebKit without color-mix(); the tinted value is the
+     @supports override at the end of this file (same reason as the thumb). */
+  scrollbar-color: var(--n5) transparent;
 }
 ::selection {
   background: var(--accent-soft);
@@ -150,11 +158,51 @@ select:focus-visible,
 }
 .sift-chip-btn[aria-pressed='true'] {
   background: var(--accent-soft);
-  border-color: color-mix(in oklab, var(--accent) 35%, var(--border));
+  /* P9.5 — plain outline on WebKit without color-mix(); the accent-tinted
+     border is the @supports override at the end of this file. */
+  border-color: var(--border-strong);
   color: var(--fg);
 }
 .sift-iconbtn:hover {
   background: var(--n3);
+}
+/*
+ * Reading/list divider (P9.5). It is a focusable separator, so it keeps a
+ * visible hit area and shows the same accent on hover/focus as other controls;
+ * the cursor itself is set inline because it depends on the pane orientation.
+ */
+.sift-divider {
+  position: relative;
+  background: transparent;
+  flex-shrink: 0;
+}
+.sift-divider::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  background: transparent;
+  transition: background-color 80ms ease;
+}
+.sift-divider[aria-orientation='vertical']::after {
+  width: 2px;
+  height: 100%;
+}
+.sift-divider[aria-orientation='horizontal']::after {
+  width: 100%;
+  height: 2px;
+}
+.sift-divider:hover::after,
+.sift-divider:focus-visible::after {
+  background: color-mix(in oklab, var(--accent) 55%, transparent);
+}
+@supports not (color: color-mix(in oklab, red, blue)) {
+  /* Safari 16.0/16.1: a var()-bearing color-mix() would leave the affordance
+     invisible, so the divider falls back to the plain accent. */
+  .sift-divider:hover::after,
+  .sift-divider:focus-visible::after {
+    background: var(--accent);
+  }
 }
 .sift-row {
   overflow: hidden;
@@ -204,5 +252,24 @@ select:focus-visible,
   *::after {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+  }
+}
+/* P9.5 — the accent-tinted values behind the flat neutrals above, applied only
+   where color-mix() is understood. They have to be guarded rather than written
+   as a second declaration next to the fallback: a color-mix() containing var()
+   is not validated at parse time, so in an engine without color-mix() it wins
+   the cascade and leaves the property unset — scrollbar-color: auto, a
+   border-color of currentColor, a transparent background — instead of letting
+   the fallback through. The three selectors are repeated verbatim so their
+   specificity is unchanged and they simply come later in the cascade. */
+@supports (color: color-mix(in oklab, red, blue)) {
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--n6) 50%, transparent);
+  }
+  * {
+    scrollbar-color: color-mix(in oklab, var(--n6) 55%, transparent) transparent;
+  }
+  .sift-chip-btn[aria-pressed='true'] {
+    border-color: color-mix(in oklab, var(--accent) 35%, var(--border));
   }
 }

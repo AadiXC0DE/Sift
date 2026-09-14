@@ -9,7 +9,8 @@ import type { Locator, Page } from '@playwright/test';
  * leave rows that were never rendered in the collected set.
  */
 async function renderedIds(page: Page): Promise<Set<string>> {
-  const list: Locator = page.locator('[role="listbox"]');
+  // The scroller is the listbox's container (P9.5).
+  const list: Locator = page.locator('[data-testid="list-scroller"]');
   const seen = new Set<string>();
   let top = 0;
   let lastMax = -1;

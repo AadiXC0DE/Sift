@@ -1,4 +1,4 @@
-import React, { memo, useState } from 'react';
+import React, { memo } from 'react';
 import type { ThreadRow as Row } from '../../app/ipc/types';
 import { Avatar } from '../../ui/Avatar';
 import { Chip } from '../../ui/Chip';
@@ -9,6 +9,7 @@ import { accentHex } from '../../lib/colors';
 import { useSettings } from '../../stores/settingsStore';
 import { decodeRfc2047 } from '../../lib/rfc2047';
 import { rowHeightForDensity } from './rowHeight';
+import { rowKey } from './threadWindow';
 import { Archive, BellOff, Clock, Mail, MailOpen, Star, Paperclip, Trash2 } from 'lucide-react';
 
 export type RowAction = 'archive' | 'trash' | 'read' | 'star' | 'snooze' | 'unsnooze';
@@ -25,9 +26,15 @@ interface Props {
   row: Row;
   focused: boolean;
   selected: boolean;
+  /** The pointer is over this row (tracked by the list, so the row actions can
+   * be rendered outside the listbox; see RowActions). */
+  hovered: boolean;
   accountColor?: string;
   accountLabel?: string;
   showStripe: boolean;
+  /** Position in the listbox and the size of the list, when known (P9.5). */
+  posInSet?: number;
+  setSize?: number;
   onFocus: () => void;
   onToggleSelect: (e: React.MouseEvent) => void;
   onOpen: () => void;
@@ -60,16 +67,27 @@ const SR_ONLY: React.CSSProperties = {
   border: 0,
 };
 
-function HoverActions({
+/**
+ * The row's pointer actions (archive/trash/read/snooze).
+ *
+ * They are rendered by the *list*, not by the row, for one reason (P9.5): a
+ * focusable control inside a listbox option trips `nested-interactive`, and a
+ * focusable control beside the option but inside the listbox trips
+ * `aria-required-children`. Both are axe serious/critical. The list therefore
+ * draws them as an overlay layer that is a sibling of the listbox, aligned with
+ * the hovered or keyboard-active row.
+ */
+export function RowActions({
   row,
   onAction,
   surface,
+  focused,
 }: {
   row: Row;
-  onAction?: (kind: RowAction) => void;
+  onAction: (kind: RowAction) => void;
   surface: string;
+  focused: boolean;
 }) {
-  if (!onAction) return null;
   const btn: React.CSSProperties = {
     width: 26,
     height: 26,
@@ -83,44 +101,77 @@ function HoverActions({
     color: 'var(--fg)',
     flexShrink: 0,
   };
+  // Only the active row's actions are in the tab order (P9.5). The list itself
+  // stays a single tab stop; pressing Tab from it reaches the actions of the
+  // row the keyboard is on, instead of walkable buttons on every rendered row.
+  const tabIndex = focused ? 0 : -1;
   const stop = (fn: () => void) => (e: React.MouseEvent) => {
     e.stopPropagation();
     fn();
   };
+  const readLabel = row.unreadCount > 0 ? 'Mark read' : 'Mark unread';
   return (
     <span
       style={{
-        position: 'absolute',
-        right: 8,
-        top: 0,
-        bottom: 0,
         display: 'inline-flex',
         alignItems: 'center',
         gap: 2,
         paddingLeft: 16,
         background: `linear-gradient(to right, transparent, ${surface} 12px)`,
-        zIndex: 1,
       }}
     >
-      <button title="Archive (e)" style={btn} onClick={stop(() => onAction('archive'))}>
+      {/* Row actions are shortcuts' pointer equivalents, so every one carries an
+          accessible name (the row itself is a single `option`, not a button). */}
+      <button
+        type="button"
+        aria-label="Archive"
+        title="Archive (e)"
+        tabIndex={tabIndex}
+        style={btn}
+        onClick={stop(() => onAction('archive'))}
+      >
         <Archive size={14} />
       </button>
-      <button title="Trash (#)" style={btn} onClick={stop(() => onAction('trash'))}>
+      <button
+        type="button"
+        aria-label="Trash"
+        title="Trash (#)"
+        tabIndex={tabIndex}
+        style={btn}
+        onClick={stop(() => onAction('trash'))}
+      >
         <Trash2 size={14} />
       </button>
       <button
-        title={row.unreadCount > 0 ? 'Mark read' : 'Mark unread'}
+        type="button"
+        aria-label={readLabel}
+        title={readLabel}
+        tabIndex={tabIndex}
         style={btn}
         onClick={stop(() => onAction('read'))}
       >
         {row.unreadCount > 0 ? <MailOpen size={14} /> : <Mail size={14} />}
       </button>
       {row.snoozedUntil ? (
-        <button title="Unsnooze — move back to Inbox" style={btn} onClick={stop(() => onAction('unsnooze'))}>
+        <button
+          type="button"
+          aria-label="Unsnooze — move back to Inbox"
+          title="Unsnooze — move back to Inbox"
+          tabIndex={tabIndex}
+          style={btn}
+          onClick={stop(() => onAction('unsnooze'))}
+        >
           <BellOff size={14} />
         </button>
       ) : (
-        <button title="Snooze (h)" style={btn} onClick={stop(() => onAction('snooze'))}>
+        <button
+          type="button"
+          aria-label="Snooze"
+          title="Snooze (h)"
+          tabIndex={tabIndex}
+          style={btn}
+          onClick={stop(() => onAction('snooze'))}
+        >
           <Clock size={14} />
         </button>
       )}
@@ -128,7 +179,7 @@ function HoverActions({
   );
 }
 
-function rowSurface(focused: boolean, selected: boolean, hover: boolean): string {
+export function rowSurface(focused: boolean, selected: boolean, hover: boolean): string {
   if (focused) return 'var(--bg-row-focus)';
   if (selected) return 'var(--bg-row-selected)';
   if (hover) return 'var(--bg-row-hover)';
@@ -142,12 +193,14 @@ export const ThreadRowView = memo(function ThreadRowView({
   accountColor,
   accountLabel,
   showStripe,
+  hovered,
+  posInSet,
+  setSize,
   onFocus,
   onToggleSelect,
   onOpen,
   onAction,
 }: Props) {
-  const [hover, setHover] = useState(false);
   const avatars = useSettings((s) => s.settings.avatarsInList);
   const density = useSettings((s) => s.settings.density);
   const h = rowHeightForDensity(density);
@@ -170,7 +223,7 @@ export const ThreadRowView = memo(function ThreadRowView({
     (row.labelIds.includes('SENT') && !row.labelIds.includes('INBOX') && accountLabel
       ? recipientsLabel(row.participants, [accountLabel])
       : null) ?? participantsLabel(row.participants, row.messageCount);
-  const surface = rowSurface(focused, selected, hover);
+  const surface = rowSurface(focused, selected, hovered);
   const shell: React.CSSProperties = {
     height: h,
     maxHeight: h,
@@ -199,15 +252,22 @@ export const ThreadRowView = memo(function ThreadRowView({
     onOpen();
   };
 
+  // Row actions are drawn by the list as an overlay (P9.5); `onAction` stays in
+  // the props so a row can still be used standalone in tests.
+  void onAction;
+  // Truncated rows carry the full text as a tooltip; ellipsis alone loses it.
+  const headlineTitle = `${headline} — ${decodeRfc2047(row.subject)}`;
+
   if (density === 'compact') {
     return (
       <div
         role="option"
         id={rowDomId(row)}
         aria-selected={selected}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
+        aria-posinset={posInSet}
+        aria-setsize={setSize}
         onClick={onClick}
+        data-row-key={rowKey(row)}
         style={shell}
         className="sift-row"
         data-testid={`row-${row.id}`}
@@ -233,6 +293,7 @@ export const ThreadRowView = memo(function ThreadRowView({
           />
         )}
         <span
+          title={headlineTitle}
           style={{
             fontWeight: unread ? 600 : 400,
             whiteSpace: 'nowrap',
@@ -276,7 +337,6 @@ export const ThreadRowView = memo(function ThreadRowView({
         <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-row-meta)', flexShrink: 0 }}>
           {formatRowDate(row.lastMessageAt)}
         </span>
-        {hover && onAction ? <HoverActions row={row} onAction={onAction} surface={surface} /> : null}
       </div>
     );
   }
@@ -286,9 +346,10 @@ export const ThreadRowView = memo(function ThreadRowView({
       role="option"
       id={rowDomId(row)}
       aria-selected={selected}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      aria-posinset={posInSet}
+      aria-setsize={setSize}
       onClick={onClick}
+      data-row-key={rowKey(row)}
       style={shell}
       className="sift-row"
       data-testid={`row-${row.id}`}
@@ -311,6 +372,7 @@ export const ThreadRowView = memo(function ThreadRowView({
       <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
           <span
+            title={headlineTitle}
             style={{
               fontWeight: unread ? 600 : 400,
               fontSize: 13,
@@ -373,7 +435,6 @@ export const ThreadRowView = memo(function ThreadRowView({
           {overflow > 0 && <span style={{ fontSize: 11, color: 'var(--fg-row-meta)' }}>+{overflow}</span>}
         </div>
       </div>
-      {hover && onAction ? <HoverActions row={row} onAction={onAction} surface={surface} /> : null}
     </div>
   );
 });

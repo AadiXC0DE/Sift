@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Dialog as BaseDialog } from '@base-ui-components/react/dialog';
 import { X } from 'lucide-react';
+import { pushSurface } from './overlayStack';
 
 export function Dialog({
   open,
@@ -15,6 +16,12 @@ export function Dialog({
   children: React.ReactNode;
   width?: number;
 }) {
+  // Base UI already dismisses on Escape and restores focus to the trigger; the
+  // stack entry only tells the app-level handler to let that happen (P9.5).
+  useEffect(() => {
+    if (!open) return;
+    return pushSurface({ kind: 'native' });
+  }, [open]);
   return (
     <BaseDialog.Root
       open={open}

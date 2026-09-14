@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { useSync } from '../../stores/syncStore';
 import { useAccounts } from '../../stores/accountsStore';
+import { COLOR_MIX_SUPPORTED } from '../../lib/css';
 
 export interface SyncProgress {
   active: boolean;
@@ -123,7 +124,7 @@ export function SyncInlineBar({ progress }: { progress: SyncProgress }) {
         padding: '6px 12px',
         borderBottom: '1px solid var(--border)',
         flexShrink: 0,
-        background: 'color-mix(in oklab, var(--accent) 5%, transparent)',
+        background: COLOR_MIX_SUPPORTED ? 'color-mix(in oklab, var(--accent) 5%, transparent)' : 'var(--n1)',
       }}
     >
       <span style={{ fontSize: 12, color: 'var(--fg-2)', whiteSpace: 'nowrap' }}>Downloading mail</span>

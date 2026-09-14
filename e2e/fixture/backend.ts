@@ -87,6 +87,16 @@ const delays: Record<string, (args: Args) => number> = {};
 let failAppPassword = false;
 /** Remaining `drafts_upsert` calls the fixture must reject (P5.1 storage failure). */
 let failDraftSaves = 0;
+/**
+ * Remaining `message_body` rejections per `${accountId}:${messageId}` (P9.2):
+ * a provider can fail the same message twice before it answers.
+ */
+const bodyFailures: Record<string, number> = {};
+/**
+ * Every body the app actually fetched over IPC, in order. Bodies are cached in
+ * the app, so this is the evidence that a cache hit costs nothing (P9.2).
+ */
+const bodyFetches: { accountId: string; messageId: string; at: number }[] = [];
 
 /**
  * Connectivity (P4.6), mirroring `connectivity.rs`: the host hint is only a
@@ -780,18 +790,32 @@ const handlers: Record<string, (args: Args) => unknown> = {
   thread_get: (args) => threadDetail(String(args.accountId), String(args.threadId)),
   message_body: (args) => {
     const id = String(args.messageId);
-    const m = database().messages.find((x) => x.id === id);
-    if (!m) throw new Error('message_not_found');
-    return {
-      messageId: m.id,
+    const accountId = typeof args.accountId === 'string' ? args.accountId : '';
+    // The account is part of the lookup: two accounts can hold the same
+    // provider message id, and a body must never leak across them (P9.2).
+    const owned = accountId
+      ? database().messages.find((x) => x.accountId === accountId && x.id === id)
+      : database().messages.find((x) => x.id === id);
+    if (!owned) throw new Error('message_not_found');
+    const key = `${owned.accountId}:${owned.id}`;
+    if ((bodyFailures[key] ?? 0) > 0) {
+      bodyFailures[key] -= 1;
+      throw new Error('provider offline');
+    }
+    bodyFetches.push({ accountId: owned.accountId, messageId: owned.id, at: Date.now() });
+    const body: MessageBody = {
+      messageId: owned.id,
       state: 'ready',
-      html: m.html,
-      text: m.text,
+      text: owned.text,
       remoteImageCount: 0,
       trackerCount: 0,
       darkSafe: true,
       remoteImagesAllowed: true,
-    } satisfies MessageBody;
+    };
+    // A message with no HTML part must reach the reader without one, so a
+    // plain-only body renders as text rather than an empty frame (P9.2).
+    if (owned.html !== '') body.html = owned.html;
+    return body;
   },
   message_raw_source: (args) => {
     const id = String(args.messageId);
@@ -1278,6 +1302,14 @@ export interface FixtureControl {
     drafts: () => FixtureDraft[];
     /** Reject the next N draft saves, to exercise the storage-failure path. */
     failDraftSaves: (times: number) => void;
+    /**
+     * Reject the next `times` body fetches of one message, so the reader's
+     * provider-error path is reachable (P9.2). Defaults to the first account,
+     * which is the account the seed's long thread belongs to.
+     */
+    failBody: (messageId: string, times: number, accountId?: string) => void;
+    /** Body fetches the app made over IPC, in order — cache hits never appear. */
+    bodyCalls: () => { accountId: string; messageId: string; at: number }[];
     outbox: () => {
       op_id: number;
       state: string;
@@ -1334,6 +1366,11 @@ export function installControl(): void {
       failDraftSaves: (times) => {
         failDraftSaves = Math.max(0, Math.floor(times));
       },
+      failBody: (messageId, times, accountId) => {
+        const account = accountId ?? database().accounts[0]?.id ?? ACCOUNT_A;
+        bodyFailures[`${account}:${messageId}`] = Math.max(0, Math.floor(times));
+      },
+      bodyCalls: () => bodyFetches.map((c) => ({ ...c })),
       outbox: () =>
         database().outbox.map((o) => ({
           op_id: o.op_id,
@@ -1461,6 +1498,8 @@ export function installControl(): void {
       },
       reset: () => {
         for (const k of Object.keys(delays)) delete delays[k];
+        for (const k of Object.keys(bodyFailures)) delete bodyFailures[k];
+        bodyFetches.length = 0;
         callLog.length = 0;
         unimplemented.length = 0;
         saveAsCalls.length = 0;

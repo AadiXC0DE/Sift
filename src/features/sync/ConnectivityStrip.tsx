@@ -4,6 +4,7 @@ import type { ConnectivityState } from '../../app/ipc/types';
 import { useAccounts } from '../../stores/accountsStore';
 import { useSync } from '../../stores/syncStore';
 import { relativeTime } from '../../lib/dates';
+import { COLOR_MIX_SUPPORTED } from '../../lib/css';
 import { AlertTriangle, CloudOff, KeyRound, RefreshCw } from 'lucide-react';
 
 export interface ScopedConnectivityRow {
@@ -94,7 +95,7 @@ export function ConnectivityStrip({
       data-testid="connectivity-strip"
       style={{
         borderBottom: '1px solid var(--border)',
-        background: 'color-mix(in oklab, var(--warning) 8%, transparent)',
+        background: COLOR_MIX_SUPPORTED ? 'color-mix(in oklab, var(--warning) 8%, transparent)' : 'var(--n1)',
         padding: '6px 12px',
         display: 'flex',
         flexDirection: 'column',

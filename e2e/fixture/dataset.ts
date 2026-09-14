@@ -27,6 +27,15 @@ export const FIXED_NOW = 1768478400000;
 export const ACCOUNT_A = 'acc-a';
 export const ACCOUNT_B = 'acc-b';
 
+/**
+ * The reader's long conversation (P9.2): 200 messages, enough to page the
+ * reader's body fetches and prove newest-first ordering. The four highest
+ * message numbers carry the rendering cases the reader expands first — RTL,
+ * CJK, a message with no HTML part, and a message with no body at all.
+ */
+const LONG_THREAD_ID = 'long-0';
+const LONG_THREAD_MESSAGES = 200;
+
 export type Scenario = 'default' | 'empty';
 
 /** A message row plus the rendered body the fixture serves for it. */
@@ -204,7 +213,7 @@ function threadSpecs(): ThreadSpec[] {
   // Group 2 — interleaved accounts, so unified rows alternate stripes.
   for (let i = 0; i < 40; i++) {
     const a = i % 2 === 0 ? ACCOUNT_B : ACCOUNT_A;
-    const from = a === ACCOUNT_A ? ADA : bFrom;
+    const from = a === ACCOUNT_A ? ADA : BEN;
     push({
       accountId: a,
       id: `mixed-${String(i).padStart(2, '0')}`,
@@ -218,10 +227,11 @@ function threadSpecs(): ThreadSpec[] {
     });
   }
 
-  // Group 3 — filler that brings the inbox to exactly 400 rows.
+  // Group 3 — filler that brings the inbox to 400 rows before the reader's
+  // long conversation (P9.2) adds one more.
   for (let i = 0; i < 79; i++) {
     const a = i % 2 === 0 ? ACCOUNT_B : ACCOUNT_A;
-    const from = a === ACCOUNT_A ? ADA : bFrom;
+    const from = a === ACCOUNT_A ? ADA : BEN;
     push({
       accountId: a,
       id: `fill-${String(i).padStart(2, '0')}`,
@@ -239,7 +249,7 @@ function threadSpecs(): ThreadSpec[] {
   // only when the cursor carries the full (timestamp, account, id) tuple.
   for (let i = 0; i < 251; i++) {
     const a = i < 126 ? ACCOUNT_A : ACCOUNT_B;
-    const from = a === ACCOUNT_A ? ADA : bFrom;
+    const from = a === ACCOUNT_A ? ADA : BEN;
     const n = String(a === ACCOUNT_A ? i : i - 126).padStart(3, '0');
     push({
       accountId: a,
@@ -264,8 +274,8 @@ function threadSpecs(): ThreadSpec[] {
       lastMessageAt: FIXED_NOW - (200 + i) * 60_000,
       labelIds: ['ARCHIVE', ...(i === 0 ? ['Label_A_Client'] : [])],
       unread: false,
-      from: i % 2 ? bFrom.e : ADA.e,
-      fromName: i % 2 ? bFrom.n! : ADA.n!,
+      from: i % 2 ? BEN.e : ADA.e,
+      fromName: i % 2 ? BEN.n! : ADA.n!,
     });
   }
 
@@ -292,8 +302,8 @@ function threadSpecs(): ThreadSpec[] {
       lastMessageAt: FIXED_NOW - (400 + i) * 60_000,
       labelIds: ['TRASH'],
       unread: false,
-      from: i % 2 ? bFrom.e : ADA.e,
-      fromName: i % 2 ? bFrom.n! : ADA.n!,
+      from: i % 2 ? BEN.e : ADA.e,
+      fromName: i % 2 ? BEN.n! : ADA.n!,
     });
   }
   for (let i = 0; i < 3; i++) {
@@ -371,6 +381,21 @@ function threadSpecs(): ThreadSpec[] {
     fromName: ADA.n!,
     extra: [{ labelIds: ['TRASH'], from: ADA, unread: false }],
   });
+
+  // The reader's long conversation (P9.2). Deliberately old: `blue-00` stays
+  // the newest Inbox row the reading spec asserts on first paint, and the
+  // 200-message body is generated in `seedDatabase`.
+  push({
+    accountId: ACCOUNT_A,
+    id: LONG_THREAD_ID,
+    subject: 'Long thread 00',
+    snippet: 'Two hundred messages',
+    lastMessageAt: FIXED_NOW - 900 * 60_000,
+    labelIds: ['INBOX'],
+    unread: false,
+    from: ADA.e,
+    fromName: ADA.n!,
+  });
   return specs;
 }
 
@@ -419,6 +444,130 @@ function attachmentSet(accountId: string, messageId: string): FixtureAttachment[
   ];
 }
 
+function longMessageBody(n: number): { html: string; text: string } {
+  // Message numbers 200…197 are the four newest, which the reader expands by
+  // default: RTL, CJK, no HTML part, and no body at all.
+  switch (n) {
+    case 200:
+      // Right-to-left: the reader must honour the message's own direction.
+      return {
+        html: '<p dir="rtl" lang="ar">رسالة عربية طويلة لاختبار الاتجاه من اليمين إلى اليسار.</p>',
+        text: 'رسالة عربية طويلة لاختبار الاتجاه من اليمين إلى اليسار.',
+      };
+    case 199:
+      return {
+        html: '<p lang="ja">日本語のメッセージ本文です。</p>',
+        text: '日本語のメッセージ本文です。',
+      };
+    // No HTML part: the reader renders text only rather than an empty frame.
+    case 198:
+      return { html: '', text: 'Plain-only body with no HTML part.' };
+    case 197:
+      return { html: '', text: '' };
+    // Distinct per message, so a mis-indexed render cannot pass by accident.
+    default:
+      return { html: `<p>Long thread message ${n}.</p>`, text: `Long thread message ${n}` };
+  }
+}
+
+/**
+ * The reader's long conversation (P9.2), in the order the reader renders it:
+ * `long-0-m1` … `long-0-m200`, one minute apart, senders alternating.
+ */
+function longThreadConversation(spec: ThreadSpec): FixtureMessage[] {
+  const conversation: FixtureMessage[] = [];
+  for (let n = 1; n <= LONG_THREAD_MESSAGES; n++) {
+    const body = longMessageBody(n);
+    conversation.push({
+      id: `${spec.id}-m${n}`,
+      threadId: spec.id,
+      accountId: spec.accountId,
+      internalDate: spec.lastMessageAt + n * 60_000,
+      from: n % 2 === 1 ? ADA : BEN,
+      to: [addr(spec.accountId === ACCOUNT_A ? ADA.e : BEN.e)],
+      cc: [],
+      bcc: [],
+      subject: spec.subject,
+      snippet: spec.snippet,
+      isUnread: false,
+      isStarred: false,
+      isDraft: false,
+      isSentByMe: false,
+      labelIds: ['INBOX'],
+      hasAttachments: false,
+      attachments: [],
+      bodyState: 'fetched',
+      html: body.html,
+      text: body.text,
+    });
+  }
+  return conversation;
+}
+
+/** Every message a spec describes, in ascending `internalDate` order. */
+function conversationFor(spec: ThreadSpec): FixtureMessage[] {
+  const messageId = `${spec.id}-m1`;
+  const attachments: AttachmentMeta[] = (
+    spec.id === 'blue-00' ? attachmentSet(spec.accountId, messageId) : []
+  ).map((a) => ({
+    id: a.id,
+    filename: a.filename,
+    mime: a.mime,
+    size: a.size,
+    isInline: a.isInline,
+    downloaded: a.downloaded,
+  }));
+  const bodyHtml =
+    spec.blocksHtml ??
+    `<p>${spec.subject} — body for ${spec.id}.</p>` +
+      (spec.id === 'blue-00' ? '<script>window.__sift_xss=1</script>' : '');
+  const first: FixtureMessage = {
+    id: messageId,
+    threadId: spec.id,
+    accountId: spec.accountId,
+    internalDate: spec.lastMessageAt,
+    from: addr(spec.from, spec.fromName),
+    to: [addr(spec.accountId === ACCOUNT_A ? 'ada@example.test' : 'ben@example.test')],
+    cc: [],
+    bcc: [],
+    subject: spec.subject,
+    snippet: spec.snippet,
+    isUnread: spec.unread,
+    isStarred: !!spec.starred,
+    isDraft: spec.labelIds.includes('DRAFT'),
+    isSentByMe: spec.labelIds.includes('SENT'),
+    labelIds: [...spec.labelIds],
+    hasAttachments: attachments.length > 0,
+    attachments,
+    bodyState: 'fetched',
+    html: bodyHtml,
+    text: `${spec.subject} — body text`,
+    ...(spec.id === 'mixed-04'
+      ? { listUnsubscribe: { url: 'https://lists.example.test/u', oneClick: true } }
+      : {}),
+  };
+  const conversation = [first];
+  for (const [i, extra] of (spec.extra ?? []).entries()) {
+    conversation.push({
+      ...first,
+      id: `${spec.id}-m${i + 2}`,
+      internalDate: spec.lastMessageAt + (i + 1) * 60_000,
+      from: extra.from,
+      isUnread: extra.unread,
+      isStarred: false,
+      isDraft: false,
+      isSentByMe: false,
+      labelIds: [...extra.labelIds],
+      hasAttachments: false,
+      attachments: [],
+      html: `<p>${spec.subject} — later message.</p>`,
+      text: `${spec.subject} — later message`,
+      listUnsubscribe: undefined,
+    });
+  }
+  return conversation;
+}
+
 export function seedDatabase(scenario: Scenario = 'default'): FixtureDb {
   const accounts =
     scenario === 'empty'
@@ -433,65 +582,7 @@ export function seedDatabase(scenario: Scenario = 'default'): FixtureDb {
 
   for (const spec of threadSpecs()) {
     if (scenario === 'empty') break;
-    const messageId = `${spec.id}-m1`;
-    const attachments: AttachmentMeta[] = (
-      spec.id === 'blue-00' ? attachmentSet(spec.accountId, messageId) : []
-    ).map((a) => ({
-      id: a.id,
-      filename: a.filename,
-      mime: a.mime,
-      size: a.size,
-      isInline: a.isInline,
-      downloaded: a.downloaded,
-    }));
-    const bodyHtml =
-      spec.blocksHtml ??
-      `<p>${spec.subject} — body for ${spec.id}.</p>` +
-        (spec.id === 'blue-00' ? '<script>window.__sift_xss=1</script>' : '');
-    const first: FixtureMessage = {
-      id: messageId,
-      threadId: spec.id,
-      accountId: spec.accountId,
-      internalDate: spec.lastMessageAt,
-      from: addr(spec.from, spec.fromName),
-      to: [addr(spec.accountId === ACCOUNT_A ? 'ada@example.test' : 'ben@example.test')],
-      cc: [],
-      bcc: [],
-      subject: spec.subject,
-      snippet: spec.snippet,
-      isUnread: spec.unread,
-      isStarred: !!spec.starred,
-      isDraft: spec.labelIds.includes('DRAFT'),
-      isSentByMe: spec.labelIds.includes('SENT'),
-      labelIds: [...spec.labelIds],
-      hasAttachments: attachments.length > 0,
-      attachments,
-      bodyState: 'fetched',
-      html: bodyHtml,
-      text: `${spec.subject} — body text`,
-      ...(spec.id === 'mixed-04'
-        ? { listUnsubscribe: { url: 'https://lists.example.test/u', oneClick: true } }
-        : {}),
-    };
-    const conversation = [first];
-    for (const [i, extra] of (spec.extra ?? []).entries()) {
-      conversation.push({
-        ...first,
-        id: `${spec.id}-m${i + 2}`,
-        internalDate: spec.lastMessageAt + (i + 1) * 60_000,
-        from: extra.from,
-        isUnread: extra.unread,
-        isStarred: false,
-        isDraft: false,
-        isSentByMe: false,
-        labelIds: [...extra.labelIds],
-        hasAttachments: false,
-        attachments: [],
-        html: `<p>${spec.subject} — later message.</p>`,
-        text: `${spec.subject} — later message`,
-        listUnsubscribe: undefined,
-      });
-    }
+    const conversation = spec.id === LONG_THREAD_ID ? longThreadConversation(spec) : conversationFor(spec);
     messages.push(...conversation);
     // Participants are the senders in date order, as the Rust aggregate builds
     // them — so a conversation with a reply names the reply's sender too.
@@ -509,7 +600,7 @@ export function seedDatabase(scenario: Scenario = 'default'): FixtureDb {
       messageCount: conversation.length,
       unreadCount: conversation.filter((m) => m.isUnread).length,
       isStarred: !!spec.starred,
-      hasAttachments: attachments.length > 0,
+      hasAttachments: conversation.some((m) => m.hasAttachments),
       labelIds: [...new Set(conversation.flatMap((m) => m.labelIds))],
       ...(spec.id === 'snoozed-0' ? { snoozedUntil: FIXED_NOW + 86_400_000 } : {}),
       searchText: `${spec.subject} ${spec.snippet} ${conversation

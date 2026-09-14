@@ -27,7 +27,13 @@ import type {
   ThreadDetail,
   ThreadsPage,
   ThreadsQuery,
+  SearchPage,
+  SavedSearch,
+  SavedSearchCount,
+  SavedSearchInput,
   SetupProgress,
+  UnsubscribeResult,
+  RemoteContentPolicy,
 } from './types';
 
 export async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -124,8 +130,20 @@ export const api = {
   compose_limits: () => call<ComposeLimits>('compose_limits'),
   contacts_suggest: (account_id: string, q: string, limit: number) =>
     call<Contact[]>('contacts_suggest', { accountId: account_id, q, limit }),
-  search: (account_ids: string[], q: string, scope: 'local' | 'server') =>
-    call<ThreadsPage>('search', { accountIds: account_ids, q, scope }),
+  search: (
+    account_ids: string[],
+    q: string,
+    scope: 'local' | 'server',
+    cursor?: string | null,
+    limit?: number,
+  ) => call<SearchPage>('search', { accountIds: account_ids, q, scope, cursor, limit }),
+  // P7.4 saved searches: local Smart Mailboxes over the stored query + scope.
+  saved_search_list: () => call<SavedSearch[]>('saved_search_list'),
+  saved_search_upsert: (search: SavedSearchInput) => call<SavedSearch>('saved_search_upsert', { search }),
+  saved_search_delete: (id: string) => call<void>('saved_search_delete', { id }),
+  saved_search_count: (id: string) => call<SavedSearchCount>('saved_search_count', { id }),
+  saved_search_open: (a: { id: string; cursor?: string | null; limit?: number }) =>
+    call<SearchPage>('saved_search_open', a),
   attachments_open: (a: { accountId: string; attachmentId: string; confirmedExecutable?: boolean }) =>
     call<void>('attachments_open', a),
   attachments_save_as: (a: AttachmentRefKey) => call<SaveAsResult>('attachments_save_as', a),
@@ -141,12 +159,21 @@ export const api = {
     attachmentId: string;
     draftId: string;
   }) => call<AttachmentRef>('attachments_stage_from_message', a),
-  remote_images_load: (account_id: string, message_id: string, remember_sender: boolean) =>
-    call<MessageBody>('remote_images_load', {
+  // P9.1: permission for one message. `rememberSender` persists an
+  // account-scoped "always for sender"; without it the grant lasts only for
+  // this run of the app.
+  remote_content_allow: (account_id: string, message_id: string, remember_sender: boolean) =>
+    call<MessageBody>('remote_content_allow', {
       accountId: account_id,
       messageId: message_id,
       rememberSender: remember_sender,
     }),
+  remote_content_policy_get: (account_id: string) =>
+    call<RemoteContentPolicy>('remote_content_policy_get', { accountId: account_id }),
+  remote_content_policy_set: (account_id: string, mode: 'block' | 'ask' | 'allow') =>
+    call<RemoteContentPolicy>('remote_content_policy_set', { accountId: account_id, mode }),
+  remote_content_sender_revoke: (account_id: string, sender: string) =>
+    call<RemoteContentPolicy>('remote_content_sender_revoke', { accountId: account_id, sender }),
   settings_get: () => call<Settings>('settings_get'),
   settings_set: (p: Partial<Settings>) => call<Settings>('settings_set', { patch: p }),
   // P10.4 Storage: metering plus a clear action, both returning measured totals.
@@ -155,7 +182,7 @@ export const api = {
   app_set_badge: (count: number) => call<void>('app_set_badge', { count }),
   app_open_url: (url: string) => call<void>('app_open_url', { url }),
   unsubscribe: (account_id: string, message_id: string) =>
-    call<{ method: string; done: boolean }>('unsubscribe', {
+    call<UnsubscribeResult>('unsubscribe', {
       accountId: account_id,
       messageId: message_id,
     }),

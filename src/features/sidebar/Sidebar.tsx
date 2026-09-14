@@ -22,6 +22,7 @@ import {
   Settings,
 } from 'lucide-react';
 import { useLabels } from '../../stores/labelsStore';
+import { COLOR_MIX_SUPPORTED } from '../../lib/css';
 
 const views = [
   { kind: 'inbox', label: 'Inbox', icon: Inbox },
@@ -155,7 +156,11 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
                 borderRadius: 'var(--r-md)',
                 border: 'none',
                 cursor: 'pointer',
-                background: active ? 'color-mix(in oklab, var(--accent) 12%, transparent)' : undefined,
+                background: active
+                  ? COLOR_MIX_SUPPORTED
+                    ? 'color-mix(in oklab, var(--accent) 12%, transparent)'
+                    : 'var(--bg-row-selected)'
+                  : undefined,
                 color: active ? 'var(--fg)' : 'var(--fg-2)',
                 fontSize: 13,
               }}
@@ -316,7 +321,11 @@ function LabelRow({
         borderRadius: 'var(--r-md)',
         border: 'none',
         cursor: 'pointer',
-        background: active ? 'color-mix(in oklab, var(--accent) 12%, transparent)' : undefined,
+        background: active
+          ? COLOR_MIX_SUPPORTED
+            ? 'color-mix(in oklab, var(--accent) 12%, transparent)'
+            : 'var(--bg-row-selected)'
+          : undefined,
         color: 'var(--fg-2)',
         fontSize: 13,
       }}

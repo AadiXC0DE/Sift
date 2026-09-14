@@ -1,30 +1,23 @@
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MessageMeta, ThreadDetail } from '../../app/ipc/types';
+import type { MessageBody, MessageMeta, ThreadDetail } from '../../app/ipc/types';
 import { defaultSettings } from '../../app/ipc/types';
 import { useSettings } from '../../stores/settingsStore';
 import { useSelection } from '../../stores/selectionStore';
 import { useView } from '../../stores/viewStore';
 import { resolveCommandTargets } from '../thread-list/listCommands';
+import { cacheReset } from './bodyCache';
 import { ThreadView } from './ThreadView';
 
 const threadGet = vi.fn<(accountId: string, threadId: string) => Promise<ThreadDetail>>();
-const messageBody = vi.fn(async (id: string) => ({
-  messageId: id,
-  state: 'ready' as const,
-  text: 'body',
-  remoteImageCount: 0,
-  trackerCount: 0,
-  darkSafe: true,
-  remoteImagesAllowed: false,
-}));
+const messageBody = vi.fn<(accountId: string, messageId: string) => Promise<MessageBody>>();
 const labelsList = vi.fn(async () => []);
 const dispatchAction = vi.fn(async () => ({ undo_group: 'u1' }));
 
 vi.mock('../../app/ipc/commands', () => ({
   api: {
     thread_get: (accountId: string, threadId: string) => threadGet(accountId, threadId),
-    message_body: (id: string) => messageBody(id),
+    message_body: (accountId: string, messageId: string) => messageBody(accountId, messageId),
     labels_list: () => labelsList(),
   },
 }));
@@ -48,10 +41,22 @@ vi.mock('../../app/ipc/events', () => ({
   },
 }));
 
-function message(id: string, isUnread: boolean): MessageMeta {
+function readyBody(id: string, text: string): MessageBody {
+  return {
+    messageId: id,
+    state: 'ready',
+    text,
+    remoteImageCount: 0,
+    trackerCount: 0,
+    darkSafe: true,
+    remoteImagesAllowed: false,
+  };
+}
+
+function message(id: string, isUnread: boolean, internalDate = 0): MessageMeta {
   return {
     id,
-    internalDate: 0,
+    internalDate,
     from: { e: 'a@x', n: 'A' },
     to: [],
     cc: [],
@@ -97,12 +102,18 @@ function open(ref: { accountId: string; threadId: string }) {
   });
 }
 
+function messageHeaders(): Element[] {
+  return [...document.querySelectorAll('[data-testid^="msg-"]')];
+}
+
 beforeEach(() => {
   threadGet.mockReset();
-  messageBody.mockClear();
+  messageBody.mockReset();
+  messageBody.mockImplementation(async (_accountId, messageId) => readyBody(messageId, `body ${messageId}`));
   labelsList.mockClear();
   dispatchAction.mockClear();
   listeners.clear();
+  cacheReset();
   useSettings.setState({ settings: { ...defaultSettings, markAsRead: 'after-2s' } });
   useSelection.setState({ focusedKey: null, selectedIds: new Set(), anchorKey: null });
   useView.setState({ openThread: null, accountScope: 'all', view: { kind: 'inbox' } });
@@ -112,28 +123,204 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('P5-T07 expansion + remote images autoload', () => {
-  it('5 messages with 2 unread -> unread + last expanded', () => {
-    const msgs = [
-      { id: 'm1', isUnread: false },
-      { id: 'm2', isUnread: false },
-      { id: 'm3', isUnread: true },
-      { id: 'm4', isUnread: false },
-      { id: 'm5', isUnread: false },
-    ];
-    const exp: Record<string, boolean> = {};
-    msgs.forEach((m, i) => {
-      exp[m.id] = m.isUnread || i === msgs.length - 1;
+describe('P5-T07 expansion', () => {
+  it('opens the newest page with only the newest unread messages expanded', async () => {
+    const messages = Array.from({ length: 200 }, (_, i) => message(`m${i + 1}`, i >= 150, i + 1));
+    threadGet.mockResolvedValue({
+      accountId: 'a',
+      id: 't1',
+      subject: 'Long',
+      labelIds: ['INBOX'],
+      messages,
     });
-    expect(exp).toEqual({ m1: false, m2: false, m3: true, m4: false, m5: true });
+
+    renderView();
+    open({ accountId: 'a', threadId: 't1' });
+    await act(async () => {});
+
+    // One page of metadata is rendered, not the whole conversation (P9.2).
+    expect(messageHeaders()).toHaveLength(50);
+    expect(screen.getByRole('button', { name: /Show earlier \(150\)/ })).toBeInTheDocument();
+
+    // Fifty unread messages must not open fifty bodies: the burst stops at the
+    // newest ten, and it starts from the newest.
+    const expanded = messageHeaders().filter((el) => el.getAttribute('aria-expanded') === 'true');
+    expect(expanded).toHaveLength(10);
+    expect(expanded[expanded.length - 1]?.getAttribute('data-testid')).toBe('msg-m200');
+    expect(messageBody.mock.calls.map(([, id]) => id)).toEqual([
+      'm200',
+      'm199',
+      'm198',
+      'm197',
+      'm196',
+      'm195',
+      'm194',
+      'm193',
+      'm192',
+      'm191',
+    ]);
   });
-  it('remote images load by default: no per-message banner', () => {
-    // Like any other email client, images render without a "Load" gate.
-    // The backend returns remoteImagesAllowed:true unless the user opted
-    // into Settings → Privacy → Never, so the thread view never banners.
-    const body = { remoteImageCount: 2, remoteImagesAllowed: true };
-    const showsBanner = body.remoteImageCount > 0 && !body.remoteImagesAllowed;
-    expect(showsBanner).toBe(false);
+
+  it('reveals older messages a page at a time', async () => {
+    const messages = Array.from({ length: 60 }, (_, i) => message(`m${i + 1}`, false, i + 1));
+    threadGet.mockResolvedValue({
+      accountId: 'a',
+      id: 't1',
+      subject: 'Long',
+      labelIds: ['INBOX'],
+      messages,
+    });
+
+    renderView();
+    open({ accountId: 'a', threadId: 't1' });
+    await act(async () => {});
+
+    expect(messageHeaders()).toHaveLength(50);
+    expect(screen.getByRole('button', { name: /Show earlier \(10\)/ })).toBeInTheDocument();
+
+    await act(async () => {
+      screen.getByRole('button', { name: /Show earlier/ }).click();
+    });
+    expect(messageHeaders()).toHaveLength(60);
+    expect(screen.queryByRole('button', { name: /Show earlier/ })).toBeNull();
+  }, 20_000);
+
+  it('expands unread messages and the newest one in a short conversation', async () => {
+    threadGet.mockResolvedValue({
+      accountId: 'a',
+      id: 't1',
+      subject: 'Short',
+      labelIds: ['INBOX'],
+      messages: [1, 2, 3, 4, 5].map((n) => message(`m${n}`, n === 3, n)),
+    });
+
+    renderView();
+    open({ accountId: 'a', threadId: 't1' });
+    await act(async () => {});
+
+    const expanded = messageHeaders()
+      .filter((el) => el.getAttribute('aria-expanded') === 'true')
+      .map((el) => el.getAttribute('data-testid'));
+    expect(expanded).toEqual(['msg-m3', 'msg-m5']);
+  });
+});
+
+describe('P9.2 reader recovery and isolation', () => {
+  it('shows a retry surface instead of the provider text, and recovers on retry', async () => {
+    vi.useFakeTimers();
+    threadGet.mockResolvedValue(detail('a', 't1', 'Subject'));
+    // A transient failure: the backend keeps reporting `loading` with its own
+    // wording, which must never be rendered as the message.
+    messageBody.mockResolvedValue({
+      messageId: 'a:t1:m1',
+      state: 'loading',
+      text: 'Could not reach imap.example.test',
+      remoteImageCount: 0,
+      trackerCount: 0,
+      darkSafe: true,
+      remoteImagesAllowed: false,
+    });
+
+    renderView();
+    open({ accountId: 'a', threadId: 't1' });
+    // Step the backoff out to its budget: the retry surface only appears once
+    // polling has given up, which is what stops an endless spinner.
+    for (let i = 0; i < 12; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+    }
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Couldn’t load this message.');
+    // The provider's wording may be shown *as* the labelled failure, never as
+    // the message body.
+    expect(document.querySelector('pre')?.textContent ?? '').not.toContain('Could not reach');
+
+    messageBody.mockImplementation(async (_accountId, messageId) => readyBody(messageId, 'the real body'));
+    await act(async () => {
+      screen.getByRole('button', { name: 'Retry' }).click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    vi.useRealTimers();
+    await act(async () => {});
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText('the real body')).toBeInTheDocument();
+  });
+
+  it('renders a cached ready body without another IPC round trip', async () => {
+    threadGet.mockResolvedValue(detail('a', 't1', 'Subject'));
+    renderView();
+    open({ accountId: 'a', threadId: 't1' });
+    await act(async () => {});
+    expect(screen.getByText('body a:t1:m1')).toBeInTheDocument();
+    const fetches = messageBody.mock.calls.length;
+
+    // Re-opening the same message uses the bounded cache instead of re-asking
+    // the backend (and re-shipping any embedded CID bytes over IPC).
+    open({ accountId: 'b', threadId: 'other' });
+    await act(async () => {});
+    open({ accountId: 'a', threadId: 't1' });
+    await act(async () => {});
+    expect(screen.getByText('body a:t1:m1')).toBeInTheDocument();
+    expect(messageBody.mock.calls.filter(([, id]) => id === 'a:t1:m1')).toHaveLength(fetches);
+  });
+
+  it('stops polling an abandoned thread before its next IPC call', async () => {
+    const gate = deferred<MessageBody>();
+    threadGet.mockImplementation(async (accountId, threadId) =>
+      detail(accountId, threadId, `Subject ${threadId}`),
+    );
+    let firstCallAborted = false;
+    messageBody.mockImplementation(async (_accountId, messageId) => {
+      if (messageId.startsWith('a:t1')) {
+        const body = await gate.promise;
+        firstCallAborted = true;
+        return body;
+      }
+      return readyBody(messageId, `body ${messageId}`);
+    });
+
+    renderView();
+    open({ accountId: 'a', threadId: 't1' });
+    await act(async () => {});
+    const outstanding = messageBody.mock.calls.length;
+
+    // Navigate away while the fetch is in flight.
+    open({ accountId: 'b', threadId: 't2' });
+    await act(async () => {});
+    gate.resolve(readyBody('a:t1:m1', 'late body'));
+    await act(async () => {});
+
+    expect(firstCallAborted).toBe(true);
+    // The abandoned message was never retried, and its late body did not leak
+    // into the thread that is actually open.
+    expect(messageBody.mock.calls.filter(([, id]) => id.startsWith('a:t1')).length).toBe(outstanding);
+    expect(screen.queryByText('late body')).toBeNull();
+    expect(screen.getByText('body b:t2:m1')).toBeInTheDocument();
+  });
+
+  it('keeps the same message id in two accounts apart', async () => {
+    threadGet.mockImplementation(async (accountId, threadId) => ({
+      accountId,
+      id: threadId,
+      subject: `Subject ${accountId}`,
+      labelIds: ['INBOX'],
+      messages: [message('dup-m1', true, 1)],
+    }));
+    messageBody.mockImplementation(async (accountId, messageId) =>
+      readyBody(messageId, `body for ${accountId}`),
+    );
+
+    renderView();
+    open({ accountId: 'a', threadId: 't1' });
+    await act(async () => {});
+    expect(screen.getByText('body for a')).toBeInTheDocument();
+
+    open({ accountId: 'b', threadId: 't1' });
+    await act(async () => {});
+    expect(screen.getByText('body for b')).toBeInTheDocument();
+    expect(screen.queryByText('body for a')).toBeNull();
   });
 });
 

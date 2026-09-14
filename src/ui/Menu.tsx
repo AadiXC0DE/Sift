@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Menu as BaseMenu } from '@base-ui-components/react/menu';
 import { Kbd } from './Kbd';
+import { pushSurface } from './overlayStack';
 
 export interface MenuItem {
   label: string;
@@ -18,8 +19,15 @@ export function Menu({
   items: MenuItem[];
   label?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    // While a menu is open the list/reader shortcuts must not fire, and Escape
+    // belongs to the menu (P9.5).
+    return pushSurface({ kind: 'native' });
+  }, [open]);
   return (
-    <BaseMenu.Root>
+    <BaseMenu.Root onOpenChange={(next: boolean) => setOpen(next)}>
       <BaseMenu.Trigger render={trigger as never} />
       <BaseMenu.Portal>
         <BaseMenu.Positioner sideOffset={4}>

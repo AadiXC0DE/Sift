@@ -27,9 +27,12 @@ import { LabelPicker } from '../actions/LabelPicker';
 import { on } from '../../app/ipc/events';
 import type { Label } from '../../app/ipc/types';
 import { Button } from '../../ui/Button';
+import { hasBlockingSurface } from '../../ui/overlayStack';
 import { AttachmentStrip } from './AttachmentStrip';
 import { decodeRfc2047 } from '../../lib/rfc2047';
 import { labelKey, useLabels } from '../../stores/labelsStore';
+import { cacheGet } from './bodyCache';
+import { fetchBodiesNewestFirst, idsNewestFirst, pollBody, type BodyOutcome } from './bodyFetch';
 
 /**
  * Thread metadata is paginated at 50 messages (P9.2): a 200-message
@@ -38,6 +41,39 @@ import { labelKey, useLabels } from '../../stores/labelsStore';
  */
 const MESSAGE_PAGE = 50;
 
+/**
+ * Auto-expansion stops this many messages from the end. A conversation with
+ * fifty unread messages otherwise opened fifty bodies at once — "collapse old
+ * messages" in the P9.2 brief — while the newest unread ones still open by
+ * themselves the way a reader expects.
+ */
+const AUTO_EXPAND_LIMIT = 10;
+
+function autoExpandFloor(count: number): number {
+  return Math.max(0, count - AUTO_EXPAND_LIMIT);
+}
+
+/**
+ * A body held in component state for the *active* thread. `settled` records how
+ * polling ended, so a retryable failure becomes an explicit retry surface
+ * instead of an endless skeleton or a fabricated message body.
+ */
+interface BodyEntry {
+  body: MessageBody;
+  settled?: BodyOutcome;
+}
+
+/** A message we could not load at all: no content, and never cached. */
+function unloadedBody(messageId: string): MessageBody {
+  return {
+    messageId,
+    state: 'loading',
+    remoteImageCount: 0,
+    trackerCount: 0,
+    darkSafe: true,
+    remoteImagesAllowed: false,
+  };
+}
 
 export function ThreadView({
   onReply,
@@ -49,9 +85,14 @@ export function ThreadView({
 }) {
   const openThread = useView((s) => s.openThread);
   const [loaded, setLoaded] = useState<ThreadDetail | null>(null);
-  const [bodies, setBodies] = useState<Record<string, MessageBody>>({});
+  // Only the active thread's bodies live here (P9.2); the shared, budgeted
+  // cache in bodyCache.ts is what survives navigation.
+  const [bodies, setBodies] = useState<Record<string, BodyEntry>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [focusMsg, setFocusMsg] = useState(0);
+  // How many of the conversation's newest messages are rendered. Older ones are
+  // revealed a page at a time (P9.2).
+  const [visibleCount, setVisibleCount] = useState(MESSAGE_PAGE);
   const settings = useSettings((s) => s.settings);
   const markAsRead = settings.markAsRead;
   // Label names are indexed per account (P3.6); HeaderActions indexes the open
@@ -59,8 +100,14 @@ export function ThreadView({
   const labelNames = useLabels((s) => s.names);
 
   // Generation guards every async result for the open key (P3.2): a response
-  // for an older click can never overwrite the current one.
+  // for an older click can never overwrite the current one. The abort
+  // controller is the same guard for body polling (P9.2): navigating away
+  // aborts *before* the next IPC instead of letting an old poll write into the
+  // newly opened thread.
   const generationRef = useRef(0);
+  const bodyAbortRef = useRef<AbortController | null>(null);
+  /** Messages with a poll in flight, so re-rendering cannot double-fetch. */
+  const pollingRef = useRef<Set<string>>(new Set());
 
   // Only the detail belonging to the current key is ever displayed, so the
   // previous thread's account/subject cannot leak into a new click.
@@ -80,15 +127,26 @@ export function ThreadView({
 
   useEffect(() => {
     const generation = ++generationRef.current;
+    // Captured for the cleanup: reading a ref during cleanup can observe a
+    // different value than the one this effect actually operated on.
+    const polling = pollingRef.current;
     onOpenMarkedRef.current = null;
     clearReadTimer();
+    // Navigating away stops the previous thread's polling at the next check,
+    // and no in-flight callback can write into the new thread's state (P9.2).
+    bodyAbortRef.current?.abort();
+    bodyAbortRef.current = null;
+    pollingRef.current.clear();
     // Reset the displayed thread immediately: rows, bodies and expansion from
     // the previous key must not describe the newly clicked row.
     setLoaded(null);
     setBodies({});
     setExpanded({});
     setFocusMsg(0);
+    setVisibleCount(MESSAGE_PAGE);
     if (!openThread) return;
+    const controller = new AbortController();
+    bodyAbortRef.current = controller;
     const { accountId, threadId } = openThread;
     let cancelled = false;
     void (async () => {
@@ -100,7 +158,7 @@ export function ThreadView({
       setLoaded(d);
       const exp: Record<string, boolean> = {};
       d.messages.forEach((m, i) => {
-        exp[m.id] = m.isUnread || i === d.messages.length - 1;
+        exp[m.id] = i >= autoExpandFloor(d.messages.length) && (m.isUnread || i === d.messages.length - 1);
       });
       setExpanded(exp);
       const firstUnread = d.messages.findIndex((m) => m.isUnread);
@@ -110,6 +168,9 @@ export function ThreadView({
     })();
     return () => {
       cancelled = true;
+      controller.abort();
+      if (bodyAbortRef.current === controller) bodyAbortRef.current = null;
+      polling.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openThread?.accountId, openThread?.threadId, clearReadTimer]);
@@ -156,27 +217,77 @@ export function ThreadView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail, focusMsg, markAsRead, obscured, openThread?.accountId, openThread?.threadId, clearReadTimer]);
 
+  /**
+   * Fetch the expanded messages of the *active* thread, newest first, two at a
+   * time (P9.2). Messages whose body is already cached are not requested again,
+   * so a cached body paints immediately and never waits on a later CID or
+   * provider round trip. The abort signal is the thread's, so navigation stops
+   * the burst instead of letting it write into the next conversation.
+   */
   useEffect(() => {
     if (!detail) return;
-    let cancelled = false;
-    const ids = detail.messages.filter((m) => expanded[m.id]).map((m) => m.id);
-    void (async () => {
-      for (const id of ids) {
-        if (cancelled) return;
-        const cached = cacheGet(detail.accountId, id);
-        if (cached?.state === 'ready' || cached?.state === 'error') {
-          setBodies((p) => (p[id] ? p : { ...p, [id]: cached }));
-          continue;
-        }
-        await pollBody(detail.accountId, id, (b) => {
-          if (!cancelled) setBodies((p) => ({ ...p, [id]: b }));
-        });
-      }
-    })();
-    return () => {
-      cancelled = true;
+    const signal = bodyAbortRef.current?.signal;
+    if (!signal || signal.aborted) return;
+    const { accountId } = detail;
+    const pending = idsNewestFirst(detail.messages.filter((m) => expanded[m.id])).filter(
+      (id) => !pollingRef.current.has(id) && cacheGet(accountId, id) === undefined,
+    );
+    if (!pending.length) return;
+    for (const id of pending) pollingRef.current.add(id);
+    const settle = (messageId: string, outcome: BodyOutcome) => {
+      pollingRef.current.delete(messageId);
+      if (outcome === 'aborted') return;
+      setBodies((prev) => {
+        const current = prev[messageId];
+        if (current) return { ...prev, [messageId]: { ...current, settled: outcome } };
+        return { ...prev, [messageId]: { body: unloadedBody(messageId), settled: outcome } };
+      });
     };
+    void fetchBodiesNewestFirst(
+      accountId,
+      pending,
+      (messageId, body) => {
+        if (bodyAbortRef.current?.signal !== signal) return;
+        setBodies((prev) => ({ ...prev, [messageId]: { body } }));
+      },
+      settle,
+      signal,
+    );
   }, [detail, expanded]);
+
+  /**
+   * Explicit retry for one message (P9.2). It reuses the thread's signal, so a
+   * retry that outlives a navigation is aborted rather than delivered.
+   */
+  const retryBody = useCallback((messageId: string) => {
+    const thread = useView.getState().openThread;
+    const signal = bodyAbortRef.current?.signal;
+    if (!thread || !signal || signal.aborted) return;
+    if (pollingRef.current.has(messageId)) return;
+    pollingRef.current.add(messageId);
+    setBodies((prev) => {
+      const next = { ...prev };
+      delete next[messageId];
+      return next;
+    });
+    void pollBody(
+      thread.accountId,
+      messageId,
+      (body) => {
+        if (bodyAbortRef.current?.signal !== signal) return;
+        setBodies((prev) => ({ ...prev, [messageId]: { body } }));
+      },
+      signal,
+    ).then((outcome) => {
+      pollingRef.current.delete(messageId);
+      if (outcome === 'aborted') return;
+      setBodies((prev) => {
+        const current = prev[messageId];
+        if (current) return { ...prev, [messageId]: { ...current, settled: outcome } };
+        return { ...prev, [messageId]: { body: unloadedBody(messageId), settled: outcome } };
+      });
+    });
+  }, []);
 
   // Re-fetch the open thread when its rows change (actions, undo, sync).
   useEffect(() => {
@@ -231,12 +342,14 @@ export function ThreadView({
     : null;
   const stepMessage = (d: number) => {
     if (!detail) return;
-    setFocusMsg((v) => {
-      const n = Math.max(0, Math.min(detail.messages.length - 1, v + d));
-      const m = detail.messages[n];
-      if (m) setExpanded((ex) => ({ ...ex, [m.id]: true }));
-      return n;
-    });
+    const n = Math.max(0, Math.min(detail.messages.length - 1, focusMsg + d));
+    const m = detail.messages[n];
+    if (m) setExpanded((ex) => ({ ...ex, [m.id]: true }));
+    // Moving above the rendered page (p per the keymap) has to reveal that
+    // message, otherwise the cursor would sit on a row that is not on screen.
+    const start = Math.max(0, detail.messages.length - visibleCount);
+    if (n < start) setVisibleCount((v) => Math.min(detail.messages.length, v + (start - n)));
+    setFocusMsg(n);
   };
   const toggleMessage = () => {
     if (!detail) return;
@@ -309,6 +422,9 @@ export function ThreadView({
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      // An open menu/popover/dialog owns this Escape (P9.5); without this the
+      // key would clear the reader selection *and* dismiss that surface.
+      if (hasBlockingSurface()) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       const v = useView.getState();
@@ -321,6 +437,9 @@ export function ThreadView({
   }, []);
 
   const selected = useSelection((s) => s.selectedIds);
+  const windowStart = detail ? Math.max(0, detail.messages.length - visibleCount) : 0;
+  const visibleMessages = detail ? detail.messages.slice(windowStart) : [];
+  const olderCount = detail ? windowStart : 0;
   if (selected.size > 1) {
     return (
       <div
@@ -400,9 +519,21 @@ export function ThreadView({
         </div>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px 40px' }}>
-        {detail.messages.map((m, i) => {
+        {/* Older messages are collapsed behind one explicit page control
+            (P9.2): opening a 200-message conversation must not create 200
+            message rows, bodies or fetches. */}
+        {olderCount > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+            <button className="sift-chip-btn" onClick={() => setVisibleCount((v) => v + MESSAGE_PAGE)}>
+              Show earlier ({olderCount})
+            </button>
+          </div>
+        )}
+        {visibleMessages.map((m, offset) => {
+          const i = windowStart + offset;
           const open = !!expanded[m.id];
-          const body = bodies[m.id] ?? cacheGet(detail.accountId, m.id);
+          const entry = bodies[m.id];
+          const body = entry?.body ?? cacheGet(detail.accountId, m.id);
           return (
             <div
               key={m.id}
@@ -416,6 +547,8 @@ export function ThreadView({
             >
               <button
                 onClick={() => setExpanded((e) => ({ ...e, [m.id]: !e[m.id] }))}
+                aria-expanded={open}
+                data-testid={`msg-${m.id}`}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -471,8 +604,19 @@ export function ThreadView({
                       attachments={m.attachments}
                     />
                   )}
-                  {!body || body.state === 'loading' ? (
-                    body?.text ? (
+                  {/* A body is only ever rendered as content in the terminal
+                      `ready` state (P9.2): a retryable failure shows an
+                      explicit retry surface, never provider text dressed up as
+                      the message. */}
+                  {body?.state === 'ready' ? (
+                    body.html ? (
+                      <MailFrame
+                        messageId={m.id}
+                        html={body.html}
+                        allowed={body.remoteImagesAllowed}
+                        darkSafe={body.darkSafe}
+                      />
+                    ) : (
                       <pre
                         style={{
                           whiteSpace: 'pre-wrap',
@@ -481,44 +625,13 @@ export function ThreadView({
                           color: 'var(--fg)',
                         }}
                       >
-                        {body.text}
+                        {body.text || 'No content'}
                       </pre>
-                    ) : (
-                      <BodySkeleton />
                     )
-                  ) : body.state === 'error' ? (
-                    <div style={{ color: 'var(--danger)', fontSize: 13 }}>
-                      {body.text || "Couldn't load this message."}{' '}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() =>
-                          void pollBody(detail.accountId, m.id, (b) =>
-                            setBodies((p) => ({ ...p, [m.id]: b })),
-                          )
-                        }
-                      >
-                        Retry
-                      </Button>
-                    </div>
-                  ) : body.html ? (
-                    <MailFrame
-                      messageId={m.id}
-                      html={body.html}
-                      allowed={body.remoteImagesAllowed}
-                      dark={false}
-                    />
+                  ) : entry?.settled ? (
+                    <BodyError message={body?.text} onRetry={() => retryBody(m.id)} />
                   ) : (
-                    <pre
-                      style={{
-                        whiteSpace: 'pre-wrap',
-                        fontFamily: 'var(--font-ui)',
-                        fontSize: 14,
-                        color: 'var(--fg)',
-                      }}
-                    >
-                      {body.text || 'No content'}
-                    </pre>
+                    <BodySkeleton />
                   )}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     <button
@@ -674,7 +787,7 @@ function HeaderActions({ detail, onReply }: { detail: ThreadDetail; onReply: (mo
         open={snoozeOpen}
         onOpenChange={setSnoozeOpen}
         trigger={
-          <button style={iconBtn} title="Snooze (h)" data-testid="thread-snooze">
+          <button style={iconBtn} title="Snooze (h)" aria-label="Snooze" data-testid="thread-snooze">
             <Clock size={16} />
           </button>
         }
@@ -683,7 +796,7 @@ function HeaderActions({ detail, onReply }: { detail: ThreadDetail; onReply: (mo
         open={labelOpen}
         onOpenChange={setLabelOpen}
         trigger={
-          <button style={iconBtn} title="Label (l) / Move (v)">
+          <button style={iconBtn} title="Label (l) / Move (v)" aria-label="Label or move">
             <Tag size={16} />
           </button>
         }
@@ -699,7 +812,7 @@ function HeaderActions({ detail, onReply }: { detail: ThreadDetail; onReply: (mo
       </Popover>
       <Menu
         trigger={
-          <button style={iconBtn} title="More actions">
+          <button style={iconBtn} title="More actions" aria-label="More actions">
             <MoreHorizontal size={16} />
           </button>
         }
@@ -857,6 +970,46 @@ function UnsubPill({ accountId, messageId }: { accountId: string; messageId: str
     >
       Unsubscribe
     </button>
+  );
+}
+
+/**
+ * Explicit retry surface for a message body (P9.2). The provider's own wording
+ * may appear *here*, labelled as a failure; it is never rendered as the body.
+ */
+function BodyError({ message, onRetry }: { message?: string; onRetry: () => void }) {
+  return (
+    <div
+      role="alert"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '8px 0',
+        fontSize: 13,
+        color: 'var(--fg-2)',
+      }}
+    >
+      <span style={{ flex: 1, minWidth: 0 }}>
+        Couldn’t load this message.
+        {message ? (
+          <span
+            style={{
+              display: 'block',
+              marginTop: 2,
+              color: 'var(--fg-3)',
+              fontSize: 12,
+              overflowWrap: 'anywhere',
+            }}
+          >
+            {message}
+          </span>
+        ) : null}
+      </span>
+      <Button size="sm" variant="ghost" onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
   );
 }
 

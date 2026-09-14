@@ -147,6 +147,70 @@ export interface ThreadsPage {
   total?: number;
   generation: number;
 }
+
+/**
+ * One recoverable problem with a query (P7.1). `kind` is stable: an invalid
+ * date or over-nested group makes the query unmatchable, an unknown operator
+ * is preserved as literal text and reported here so the UI can offer
+ * "Search Gmail for full syntax".
+ */
+export interface QueryHint {
+  kind: string;
+  message: string;
+  token?: string;
+}
+
+/**
+ * One page of search results (P7.1/P7.3). A superset of `ThreadsPage`, so a
+ * caller that only reads rows keeps working.
+ */
+export interface SearchPage {
+  rows: ThreadRow[];
+  nextCursor?: string;
+  total?: number;
+  generation: number;
+  hints: QueryHint[];
+  query: string;
+  /** Accounts whose server search failed while others succeeded. */
+  failedAccounts: string[];
+  /** The result is limited to downloaded mail. */
+  localOnly: boolean;
+}
+
+/**
+ * A saved search (P7.4): a validated query plus an account scope. It never
+ * holds a copy of any message.
+ */
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: string;
+  /** An empty scope matches nothing; a scope is never widened to all accounts. */
+  accountScope: string[];
+  /** Scope entries whose account no longer exists, offered for editing. */
+  missingAccounts: string[];
+  sortOrder: number;
+  createdAt: number;
+  /** The AST version the stored query was validated against. */
+  astVersion: number;
+  /** Lazy count: absent until the mailbox is visible and asks for one. */
+  matchCount?: number;
+  countedAt?: number;
+}
+
+export interface SavedSearchInput {
+  id?: string;
+  name: string;
+  query: string;
+  accountScope: string[];
+  sortOrder?: number;
+}
+
+export interface SavedSearchCount {
+  id: string;
+  count: number;
+  computedAt: number;
+}
 export interface AttachmentMeta {
   id: string;
   filename?: string | null;
@@ -159,6 +223,33 @@ export interface ListUnsub {
   url?: string;
   mailto?: string;
   oneClick: boolean;
+  /** Every structured header entry, in header order (P9.4). Optional only so
+   * pre-P9.4 fixtures keep typechecking. */
+  targets?: UnsubscribeTarget[];
+}
+
+/** One parsed `List-Unsubscribe` entry (P9.4). */
+export interface UnsubscribeTarget {
+  /** `https` | `http` | `mailto` | `other`. */
+  scheme: string;
+  url: string;
+}
+
+/**
+ * Outcome of one user-initiated unsubscribe (P9.4). When the fields say Sift
+ * will not POST on the user's behalf, `reason`/`detail` explain why and `url`
+ * or `mailto` is the labelled fallback.
+ */
+export interface UnsubscribeResult {
+  /** `one_click` | `open_link` | `mailto` | `none`. */
+  method: string;
+  done: boolean;
+  url?: string;
+  mailto?: string;
+  reason?: string;
+  status?: number;
+  detail?: string;
+  targets: UnsubscribeTarget[];
 }
 export interface MessageMeta {
   id: string;
@@ -195,7 +286,33 @@ export interface MessageBody {
   remoteImageCount: number;
   trackerCount: number;
   darkSafe: boolean;
+  /** What the backend actually did for this read; never a policy request. */
   remoteImagesAllowed: boolean;
+  /**
+   * The effective policy used: `block` | `ask` | `allow` (P9.1). The backend
+   * always sends these four; they are optional here only so fixtures written
+   * before the policy existed still typecheck.
+   */
+  remoteContentMode?: string;
+  /** Bumped whenever this account's effective permission changes. */
+  privacyGeneration?: number;
+  /** Bumped when the sanitizer's output for the same input changes. */
+  renderVersion?: number;
+  /** Inline references that could not be resolved from cached parts. */
+  unresolvedInlineCount?: number;
+}
+
+/**
+ * The visible remote-content policy and the state the privacy panel needs
+ * (P9.1). `choicePending` is true while an upgraded database still has to
+ * answer the one-time compact privacy choice.
+ */
+export interface RemoteContentPolicy {
+  mode: string;
+  choicePending: boolean;
+  allowedSenders: string[];
+  generation: number;
+  privacyNotice: string;
 }
 /** Result of `attachments_open` (Rust `display_name`, `cache_basename`,
  * `decoded_size`, `requires_confirmation`). */
@@ -395,6 +512,10 @@ export interface Settings {
   sound: string;
   dockBadge: string;
   remoteImages: string;
+  /** `block` | `ask` | `allow`; new installations default to `ask` (P9.1). */
+  remoteContentMode: string;
+  /** True while the one-time upgrade privacy choice is unanswered. */
+  remoteContentChoicePending: boolean;
   stripTrackers: boolean;
   offlineBodyCache: string;
   attachmentCacheSize: string;
@@ -425,6 +546,8 @@ export const defaultSettings: Settings = {
   sound: 'subtle',
   dockBadge: 'unread',
   remoteImages: 'always',
+  remoteContentMode: 'ask',
+  remoteContentChoicePending: false,
   stripTrackers: true,
   offlineBodyCache: '2y',
   attachmentCacheSize: '512MB',

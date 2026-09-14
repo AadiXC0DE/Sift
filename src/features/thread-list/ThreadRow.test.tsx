@@ -25,6 +25,7 @@ describe('P4-T03 row renders', () => {
   it('unread dot, bold, chips ≤2 +n, paperclip', () => {
     const { container } = render(
       <ThreadRowView
+        hovered={false}
         row={base}
         focused={false}
         selected={false}
@@ -40,6 +41,7 @@ describe('P4-T03 row renders', () => {
   it('keeps a fixed height and does not expand on hover', () => {
     const { container } = render(
       <ThreadRowView
+        hovered={false}
         row={base}
         focused={false}
         selected={false}
@@ -64,6 +66,7 @@ describe('P4-T04 memo', () => {
       spy();
       return (
         <ThreadRowView
+          hovered={false}
           row={row}
           focused={false}
           selected={false}
@@ -102,6 +105,7 @@ describe('P3.6 row metadata', () => {
     ]);
     const { container } = render(
       <ThreadRowView
+        hovered={false}
         row={{ ...base, labelIds: ['INBOX', 'Label_A_Client'] }}
         focused={false}
         selected={false}
@@ -118,6 +122,7 @@ describe('P3.6 row metadata', () => {
   it('names the recipients on a conversation the reader sent', () => {
     const { container } = render(
       <ThreadRowView
+        hovered={false}
         row={{
           ...base,
           labelIds: ['SENT'],
@@ -152,6 +157,7 @@ describe('P3.1 account marker geometry', () => {
     useSettings.setState({ settings: { ...defaultSettings, density } });
     const { container, getByTestId } = render(
       <ThreadRowView
+        hovered={false}
         row={base}
         focused={false}
         selected={false}
@@ -181,6 +187,7 @@ describe('P3.1 account marker geometry', () => {
   it('hides the marker and names the account accessibly when shown', () => {
     const hidden = render(
       <ThreadRowView
+        hovered={false}
         row={base}
         focused={false}
         selected={false}
@@ -194,6 +201,7 @@ describe('P3.1 account marker geometry', () => {
 
     const { container, getByTestId } = render(
       <ThreadRowView
+        hovered={false}
         row={base}
         focused={false}
         selected={false}

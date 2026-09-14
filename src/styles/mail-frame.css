@@ -11,9 +11,6 @@ body.sift-mail {
     sans-serif;
   font-size: 14px;
   line-height: 1.5;
-  color: #1a1a1a;
-  background: #fff;
-  color-scheme: light;
   text-rendering: optimizeLegibility;
   -webkit-text-size-adjust: 100%;
   overflow-x: auto;
@@ -22,6 +19,32 @@ body.sift-mail {
      `word-break: break-word` / `overflow-wrap: anywhere`: they shrink table
      columns to one character and collapse headings like "Status" vertically. */
   overflow-wrap: break-word;
+}
+
+/*
+ * The frame's own surface (P9.2). A message that only paints white/transparent
+ * backgrounds may follow the app theme; a message with its own baked-in palette
+ * keeps a light surface, because inheriting a dark background under dark
+ * authored text is unreadable. The app's tokens are not available inside the
+ * iframe, so the two surfaces define the small set the shim and the quoted-text
+ * rules below use.
+ */
+body.sift-mail-light {
+  color: #1a1a1a;
+  background: #fff;
+  color-scheme: light;
+  --sift-mark: #dbe6ff;
+  --sift-quote: #666;
+  --sift-quote-summary: #888;
+}
+
+body.sift-mail-dark {
+  color: #ececea;
+  background: #161615;
+  color-scheme: dark;
+  --sift-mark: #2b3a5c;
+  --sift-quote: #b0b0aa;
+  --sift-quote-summary: #8a8a85;
 }
 
 /* Keep images inside the reading pane. Do not force `height:auto`: any 1x1
@@ -43,12 +66,12 @@ body.sift-mail .sift-plain {
 /* Collapsed quoted replies, matching Apple Mail / Gmail. */
 body.sift-mail details.sift-quote {
   margin: 8px 0 0;
-  color: #666;
+  color: var(--sift-quote);
 }
 
 body.sift-mail details.sift-quote > summary {
   cursor: pointer;
-  color: #888;
+  color: var(--sift-quote-summary);
   font-size: 12px;
   list-style: none;
   user-select: none;

@@ -1,9 +1,12 @@
 // Injected into email iframes (sandbox="allow-scripts", opaque origin).
-export function buildShim(nonce: string): string {
+export function buildShim(nonce: string, token: string): string {
   void nonce;
   return `
 (function(){
-  function post(m){ parent.postMessage({ __sift: true, ...m }, '*'); }
+  // Every message carries the frame's random token (P9.2): the parent rejects a
+  // payload that does not match the frame it was posted from.
+  var TOKEN = ${JSON.stringify(token)};
+  function post(m){ parent.postMessage({ __sift: true, token: TOKEN, ...m }, '*'); }
   function report(){
     var root = document.documentElement;
     var body = document.body;
@@ -73,6 +76,10 @@ export function buildShim(nonce: string): string {
   });
   window.addEventListener('blur', function(){ clearTimeout(hoverT); post({ type:'hover', href: '' }); });
   document.addEventListener('keydown', function(e){
+    // Navigation only, and only without modifiers: a modifier chord belongs to
+    // the app's own windows, not to mail HTML (P9.2).
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.isComposing || e.keyCode === 229) return;
     var map = {ArrowDown:'j', ArrowUp:'k'};
     var key = map[e.key] || e.key;
     if (['j','k','e','#','s','h','l','r','n','p','o','/'].includes(key)) {
@@ -97,7 +104,8 @@ export function buildShim(nonce: string): string {
       if (i >= 0 && n.parentElement.tagName !== 'MARK') {
         var mark = document.createElement('mark');
         mark.className = '__sift-hl';
-        mark.style.background = 'var(--accent-soft)';
+        mark.style.background = 'var(--sift-mark)';
+        mark.style.color = 'inherit';
         var mid = n.splitText(i);
         var end = mid.splitText(q.length);
         mid.parentNode.insertBefore(mark, end);

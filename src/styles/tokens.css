@@ -17,8 +17,18 @@
   --bg-elevated: var(--n0);
   --bg-raised: var(--n0);
   --bg-row-hover: var(--n2);
-  --bg-row-selected: color-mix(in oklab, var(--accent) 10%, var(--n0));
-  --bg-row-focus: color-mix(in oklab, var(--accent) 16%, var(--n0));
+  /* P9.5 — WebKit floor. Safari 16.0/16.1 (macOS 13 WKWebView) has no
+     color-mix(), so these four tokens carry the plain neutral there and the
+     @supports block below re-declares them with the accent tint where
+     color-mix() is understood. Hence they are NOT written as "fallback
+     declaration, color-mix last" in this block: a custom property does not
+     validate its value, so `color-mix()` still parses as a valid token stream,
+     the later declaration wins the cascade in every browser, and the
+     substitution only fails at the use site — where the property drops to its
+     initial value instead of reaching the fallback. The dark theme only
+     overrides the --nX tokens, so the neutrals follow the theme on their own. */
+  --bg-row-selected: var(--n2);
+  --bg-row-focus: var(--n3);
   --border: var(--n3);
   --border-strong: var(--n4);
   --fg: var(--n9);
@@ -32,8 +42,8 @@
   --fg-disabled: var(--n5);
   --fg-on-accent: #fff;
   --accent: #2f6df6;
-  --accent-hover: color-mix(in oklab, var(--accent) 88%, black);
-  --accent-soft: color-mix(in oklab, var(--accent) 12%, var(--n0));
+  --accent-hover: var(--accent);
+  --accent-soft: var(--n2);
   --danger: #d93b3b;
   --warning: #d98a1f;
   --success: #2c9a5a;
@@ -85,6 +95,17 @@
   --titlebar-h: 30px;
   --focus-ring: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--accent);
   color-scheme: light;
+}
+/* P9.5 — accent tints, only where color-mix() is understood. Everything else
+   (Safari 16.0/16.1, the macOS 13 WebKit floor) keeps the neutrals declared in
+   :root above: a real themed colour instead of a value that fails to compute. */
+@supports (color: color-mix(in oklab, red, blue)) {
+  :root {
+    --bg-row-selected: color-mix(in oklab, var(--accent) 10%, var(--n0));
+    --bg-row-focus: color-mix(in oklab, var(--accent) 16%, var(--n0));
+    --accent-hover: color-mix(in oklab, var(--accent) 88%, black);
+    --accent-soft: color-mix(in oklab, var(--accent) 12%, var(--n0));
+  }
 }
 :root[data-theme='dark'] {
   color-scheme: dark;

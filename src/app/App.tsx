@@ -18,6 +18,23 @@ import { activeKeyScopes } from '../keymap/scopes';
 import { undoLast } from '../features/actions/dispatch';
 import { Kbd } from '../ui/Kbd';
 import { Button } from '../ui/Button';
+import { handleEscape, hasBlockingSurface, pushSurface } from '../ui/overlayStack';
+import {
+  DEFAULT_PANE_SIZES,
+  DIVIDER_SIZE,
+  LIST_MAX_W,
+  LIST_MIN_H,
+  LIST_MIN_W,
+  READER_MIN_H,
+  READER_MIN_W,
+  clampListHeight,
+  clampListWidth,
+  panesFitSideBySide,
+  panesFitStacked,
+  readPaneSizes,
+  writePaneSizes,
+} from './paneSize';
+import type { PaneLayout } from '../stores/viewStore';
 
 // Overlays and optional utilities stay out of the startup bundle: TipTap, the
 // command palette and the settings panes must not be parsed or downloaded
@@ -65,6 +82,35 @@ export function App() {
   useEffect(() => {
     if (helpOpen) setHelpMounted(true);
   }, [helpOpen]);
+
+  /**
+   * The app-owned surfaces join the same ordered stack as the Base UI ones
+   * (P9.5), so Escape closes the surface the user actually sees on top. Each
+   * registration happens when its flag flips, which is also the order the
+   * surfaces were opened in. The composer additionally registers itself as a
+   * self-dismissing surface once its chunk has mounted, so the stack entry
+   * below it only covers the moment before that.
+   */
+  useEffect(() => {
+    if (!paletteOpen) return;
+    return pushSurface({ kind: 'managed', close: () => setPaletteOpen(false) });
+  }, [paletteOpen]);
+  useEffect(() => {
+    if (composeOpen == null) return;
+    return pushSurface({ kind: 'managed', close: () => setComposeOpen(null) });
+  }, [composeOpen]);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    return pushSurface({ kind: 'managed', close: () => setSettingsOpen(false) });
+  }, [settingsOpen]);
+  useEffect(() => {
+    if (!helpOpen) return;
+    return pushSurface({ kind: 'managed', close: () => setHelpOpen(false) });
+  }, [helpOpen]);
+  useEffect(() => {
+    if (!addAccountOpen) return;
+    return pushSurface({ kind: 'managed', close: () => setAddAccountOpen(false) });
+  }, [addAccountOpen]);
 
   // Warm the composer once the inbox has something to show and the engine is
   // idle, so `c` is instant without paying TipTap's parse cost at launch.
@@ -159,6 +205,10 @@ export function App() {
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      // A menu, popover or dialog owns the keyboard while it is open: no list
+      // shortcut, back-out or compose key may fire from underneath it (P9.5).
+      // IME composition is rejected by the engine itself.
+      if (hasBlockingSurface() || typing) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen((v) => !v);
@@ -173,7 +223,6 @@ export function App() {
       });
       // Sequences + scoped bindings first (engine ignores text inputs itself).
       if (engine.handle(e, scopes)) return;
-      if (typing) return;
       // Back out of a full-width thread to the list.
       if (
         (e.key === 'Escape' || e.key === 'u') &&
@@ -198,39 +247,16 @@ export function App() {
       if (e.key === 'c' && !e.metaKey && !e.ctrlKey) setComposeOpen({ mode: 'new' });
     };
     // Overlay Escape must beat WKWebView/macOS (which otherwise miniaturizes).
+    // The stack decides *which* surface is topmost; exactly one survives each
+    // Escape, and a surface that dismisses itself (Base UI dialog/popover/menu,
+    // the composer's own Escape layers) gets the key instead of its parent.
     const onEsc = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (composeOpen) {
-        // The composer owns Escape while one of its dismissible layers (for
-        // example the recipient suggestion list) is open: that layer closes
-        // itself and clears the attribute, so the next Escape closes the sheet.
-        if (document.querySelector('[data-compose-escape="1"]')) return;
-        // The sheet itself flushes the pending draft before it dismisses
-        // (P5.1), so this handler must not unsubscribe it. It only covers the
-        // moment before the lazy chunk has mounted.
-        if (document.querySelector('[data-compose-root]')) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setComposeOpen(null);
-        return;
-      }
-      if (paletteOpen) {
-        e.preventDefault();
-        e.stopPropagation();
-        setPaletteOpen(false);
-        return;
-      }
-      if (settingsOpen) {
-        e.preventDefault();
-        e.stopPropagation();
-        setSettingsOpen(false);
-        return;
-      }
-      if (helpOpen) {
-        e.preventDefault();
-        e.stopPropagation();
-        setHelpOpen(false);
-      }
+      const action = handleEscape();
+      if (action === 'none') return;
+      e.preventDefault();
+      if (action === 'pass') return;
+      e.stopPropagation();
     };
     window.addEventListener('keydown', onEsc, true);
     // Capture so the list/thread bindings beat in-page typeahead helpers, as
@@ -355,10 +381,85 @@ export function App() {
     };
   }, []);
 
-  const paneOffOpen = paneLayout === 'off' && openThread != null;
-  const bottom = paneLayout === 'bottom';
+  /**
+   * Pane geometry (P9.5). The columns row is measured rather than the window,
+   * so the sidebar (and its hidden state) is already accounted for. Until the
+   * first measurement the user's stored layout is trusted — forcing pane-off on
+   * a zero-width first paint would flash the wrong layout on every launch.
+   */
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  const [paneSizes, setPaneSizes] = useState(readPaneSizes);
+  const paneSizesRef = useRef(paneSizes);
+  paneSizesRef.current = paneSizes;
+  const [dragAxis, setDragAxis] = useState<'x' | 'y' | null>(null);
+  const dragOrigin = useRef({ pointer: 0, size: 0 });
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (rect) setBox({ w: Math.round(rect.width), h: Math.round(rect.height) });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const measured = box.w > 0 && box.h > 0;
+  const fits = !measured || (paneLayout === 'bottom' ? panesFitStacked(box.h) : panesFitSideBySide(box.w));
+  // Pane-off is a *fallback*, not a rewrite of the preference: the user's
+  // choice returns as soon as the window is wide enough again.
+  const layout: PaneLayout = paneLayout !== 'off' && !fits ? 'off' : paneLayout;
+  const listWidth = clampListWidth(paneSizes.listWidth, box.w || LIST_MAX_W + READER_MIN_W);
+  const listHeight = clampListHeight(paneSizes.listHeight, box.h || LIST_MIN_H + READER_MIN_H);
+
+  useEffect(() => {
+    if (!dragAxis) return;
+    const move = (e: PointerEvent) => {
+      const delta = (dragAxis === 'x' ? e.clientX : e.clientY) - dragOrigin.current.pointer;
+      setPaneSizes((sizes) =>
+        dragAxis === 'x'
+          ? { ...sizes, listWidth: clampListWidth(dragOrigin.current.size + delta, box.w) }
+          : { ...sizes, listHeight: clampListHeight(dragOrigin.current.size + delta, box.h) },
+      );
+    };
+    const finish = () => {
+      setDragAxis(null);
+      writePaneSizes(paneSizesRef.current);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish, { once: true });
+    window.addEventListener('pointercancel', finish, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+  }, [dragAxis, box.w, box.h]);
+
+  const beginResize = (axis: 'x' | 'y') => (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    dragOrigin.current = {
+      pointer: axis === 'x' ? e.clientX : e.clientY,
+      size: axis === 'x' ? paneSizes.listWidth : paneSizes.listHeight,
+    };
+    setDragAxis(axis);
+  };
+
+  const nudgeResize = (axis: 'x' | 'y', delta: number) => {
+    setPaneSizes((sizes) => {
+      const next =
+        axis === 'x'
+          ? { ...sizes, listWidth: clampListWidth(sizes.listWidth + delta, box.w) }
+          : { ...sizes, listHeight: clampListHeight(sizes.listHeight + delta, box.h) };
+      writePaneSizes(next);
+      return next;
+    });
+  };
+
+  const paneOffOpen = layout === 'off' && openThread != null;
+  const bottom = layout === 'bottom';
   const showList = !paneOffOpen;
-  const showThread = paneLayout !== 'off' || openThread != null;
+  const showThread = layout !== 'off' || openThread != null;
 
   if (window.location.hash === '#/kitchen-sink') {
     return <KitchenSink />;
@@ -389,6 +490,7 @@ export function App() {
           }}
         >
           <div
+            ref={rowRef}
             style={{
               display: 'flex',
               flexDirection: bottom ? 'column' : 'row',
@@ -402,12 +504,13 @@ export function App() {
               <div
                 data-tauri-drag-region
                 style={{
-                  width: bottom ? 'auto' : 'var(--list-w)',
-                  flex: bottom ? '0 0 38%' : '0 1 var(--list-w)',
+                  width: bottom ? 'auto' : listWidth,
+                  height: bottom ? listHeight : 'auto',
+                  flex: bottom ? `0 0 ${listHeight}px` : `0 0 ${listWidth}px`,
                   minWidth: 0,
                   minHeight: 0,
                   paddingTop: 'var(--titlebar-h)',
-                  maxWidth: bottom ? 'none' : 560,
+                  maxWidth: bottom ? 'none' : LIST_MAX_W,
                   borderRight: bottom ? 'none' : '1px solid var(--border)',
                   borderBottom: bottom ? '1px solid var(--border)' : 'none',
                   display: 'flex',
@@ -430,6 +533,45 @@ export function App() {
                   }
                 />
               </div>
+            )}
+            {showList && showThread && layout !== 'off' && (
+              <div
+                role="separator"
+                tabIndex={0}
+                aria-orientation={bottom ? 'horizontal' : 'vertical'}
+                aria-label={bottom ? 'Resize message list' : 'Resize reading pane'}
+                aria-valuemin={bottom ? LIST_MIN_H : LIST_MIN_W}
+                aria-valuemax={
+                  bottom
+                    ? Math.max(LIST_MIN_H, box.h - READER_MIN_H)
+                    : Math.max(LIST_MIN_W, box.w - READER_MIN_W)
+                }
+                aria-valuenow={bottom ? listHeight : listWidth}
+                data-testid="pane-divider"
+                onPointerDown={beginResize(bottom ? 'y' : 'x')}
+                onDoubleClick={() => {
+                  setPaneSizes({ ...DEFAULT_PANE_SIZES });
+                  writePaneSizes(DEFAULT_PANE_SIZES);
+                }}
+                onKeyDown={(e) => {
+                  // The handle is a real control: arrow keys resize it, so the
+                  // layout is adjustable without a pointer (P9.5).
+                  const axis = bottom ? 'y' : 'x';
+                  const decrease = bottom ? 'ArrowUp' : 'ArrowLeft';
+                  const increase = bottom ? 'ArrowDown' : 'ArrowRight';
+                  if (e.key !== decrease && e.key !== increase) return;
+                  e.preventDefault();
+                  nudgeResize(axis, e.key === increase ? 16 : -16);
+                }}
+                className="sift-divider"
+                style={{
+                  flex: `0 0 ${DIVIDER_SIZE}px`,
+                  cursor: bottom ? 'row-resize' : 'col-resize',
+                  background: 'transparent',
+                  touchAction: 'none',
+                  zIndex: 3,
+                }}
+              />
             )}
             {showThread && (
               <div

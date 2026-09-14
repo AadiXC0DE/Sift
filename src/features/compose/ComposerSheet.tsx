@@ -7,6 +7,7 @@ import { Bold, Italic, List, ListOrdered, Link2, Paperclip, Quote, X } from 'luc
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { toast } from 'sonner';
 import { Sheet } from '../../ui/Sheet';
+import { pushSurface, topSurface } from '../../ui/overlayStack';
 import { Button } from '../../ui/Button';
 import { Spinner } from '../../ui/Spinner';
 import { api } from '../../app/ipc/commands';
@@ -22,6 +23,7 @@ import type {
 } from '../../app/ipc/types';
 import { on } from '../../app/ipc/events';
 import { readSiftError } from '../../lib/siftError';
+import { COLOR_MIX_SUPPORTED } from '../../lib/css';
 import { useAccounts } from '../../stores/accountsStore';
 import { useSettings } from '../../stores/settingsStore';
 import { useView } from '../../stores/viewStore';
@@ -828,6 +830,15 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
   const pickAttachmentsRef = useRef(pickAttachments);
   pickAttachmentsRef.current = pickAttachments;
 
+  /**
+   * The composer dismisses itself (P9.5): its own capture handler owns Escape
+   * because a closed sheet has to flush the pending draft first, and any
+   * dismissible layer inside it (recipient suggestions, link popover) closes
+   * before the sheet does. Reporting itself as `native` keeps the app-level
+   * handler from unsubscribing the sheet out from under that flush.
+   */
+  useEffect(() => pushSurface({ kind: 'native', owner: 'compose' }), []);
+
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -847,8 +858,11 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
         return;
       }
       if (e.key === 'Escape') {
-        // An outer handler (App) consults `data-compose-escape`; dismiss the
-        // innermost layer here and let the next Escape close the sheet.
+        // A surface above the composer (a menu or popover opened from it) owns
+        // this Escape; only the composer's own layers/sheet react to it (P9.5).
+        if (topSurface()?.owner !== 'compose') return;
+        // The innermost dismissible layer closes first; the next Escape closes
+        // the sheet itself, after the pending draft has been flushed.
         if (layers.current.size) {
           e.preventDefault();
           e.stopPropagation();
@@ -1639,7 +1653,9 @@ function RecipientRow({
                   selected === i
                     ? 'var(--accent-soft, var(--n3))'
                     : invalid
-                      ? 'color-mix(in oklab, var(--danger) 12%, transparent)'
+                      ? COLOR_MIX_SUPPORTED
+                        ? 'color-mix(in oklab, var(--danger) 12%, transparent)'
+                        : 'var(--n2)'
                       : 'var(--n2)',
                 color: invalid ? 'var(--danger)' : 'var(--fg)',
                 boxShadow: selected === i ? '0 0 0 1px var(--accent)' : undefined,

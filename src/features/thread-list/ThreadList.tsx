@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useThreadsWindow, type ThreadsWindowResult } from './useThreadsWindow';
-import { ThreadRowView, rowDomId } from './ThreadRow';
+import { RowActions, ThreadRowView, rowDomId, rowSurface, type RowAction } from './ThreadRow';
 import { rowHeightForDensity, densityScrollTop } from './rowHeight';
 import { MAX_WINDOW, rowKey } from './threadWindow';
 import { resolveCommandTargets, runMailCommand, setListContext, type ListPickerKind } from './listCommands';
@@ -23,6 +23,7 @@ import { dispatchAction } from '../actions/dispatch';
 import { snoozeTargets, unsnoozeTargets } from '../snooze/snoozeActions';
 import { api } from '../../app/ipc/commands';
 import { Popover } from '../../ui/Popover';
+import { hasBlockingSurface } from '../../ui/overlayStack';
 import { LabelPicker } from '../actions/LabelPicker';
 import type { Label } from '../../app/ipc/types';
 import { useKeymap } from '../../keymap/engine';
@@ -96,6 +97,14 @@ export function ThreadList({
   const density = useSettings((s) => s.settings.density);
   const rowH = rowHeightForDensity(density);
   const parentRef = useRef<HTMLDivElement>(null);
+  // The listbox element itself (P9.5): it is the single tab stop, so activation
+  // and programmatic focus both target it, never an individual row.
+  const listRef = useRef<HTMLDivElement>(null);
+  // Which row shows its actions: the hovered one, or the keyboard-active one
+  // when the pointer is elsewhere (P9.5 — "hover actions also appear on
+  // keyboard focus"). Tracked here because the actions are rendered outside the
+  // listbox, not inside the row.
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const searchPending = view.kind === 'search' && search.loading;
 
   const keys = useMemo(() => rows.map(rowKey), [rows]);
@@ -152,6 +161,10 @@ export function ThreadList({
       // The opened row becomes the keyboard-active row (P3.2 #6).
       setFocus(rowKey(r));
       setOpenThread({ accountId: r.accountId, threadId: r.id });
+      // Activating a row hands the keyboard to the list (P9.5): the listbox is
+      // one tab stop, so a pointer or assistive-technology activation must land
+      // focus there, where `aria-activedescendant` names the row that was used.
+      listRef.current?.focus({ preventScroll: true });
     },
     [rows, setFocus, setOpenThread],
   );
@@ -222,6 +235,32 @@ export function ThreadList({
     void unsnoozeTargets(threadIds.map((threadId) => ({ accountId, threadId })));
   }, []);
 
+  /** One dispatch path for a row's action, used by the row and the overlay. */
+  const runRowAction = useCallback(
+    (r: (typeof rows)[number], kind: RowAction) => {
+      if (kind === 'snooze') {
+        snoozeTomorrow(r.accountId, [r.id]);
+      } else if (kind === 'unsnooze') {
+        unsnooze(r.accountId, [r.id]);
+      } else if (kind === 'read') {
+        void dispatchAction({
+          accountId: r.accountId,
+          threadIds: [r.id],
+          action: { kind: 'read', on: r.unreadCount === 0 },
+        });
+      } else if (kind === 'star') {
+        void dispatchAction({
+          accountId: r.accountId,
+          threadIds: [r.id],
+          action: { kind: 'star', on: !r.isStarred },
+        });
+      } else {
+        void dispatchAction({ accountId: r.accountId, threadIds: [r.id], action: { kind } });
+      }
+    },
+    [snoozeTomorrow, unsnooze],
+  );
+
   const openPicker = useCallback(
     (kind: ListPickerKind) => {
       const targets = resolveCommandTargets('list');
@@ -275,6 +314,9 @@ export function ThreadList({
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      // A menu, popover or dialog on top owns this Escape (P9.5): clearing the
+      // selection at the same time would dismiss two surfaces with one key.
+      if (hasBlockingSurface()) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (useSelection.getState().selectedIds.size === 0) return;
@@ -488,6 +530,15 @@ export function ThreadList({
   const firstRenderedIndex = Math.max(0, Math.floor(scrollOffset / rowH) - 1);
   const renderedItems = virtualItems.filter((vi) => vi.index >= firstRenderedIndex);
   const focusedRowIndex = focusedKey ? keys.indexOf(focusedKey) : -1;
+  /**
+   * The row whose actions are on screen: the hovered row if the pointer is over
+   * the list, otherwise the keyboard-active row. Only a row that is currently
+   * rendered can host the overlay (the virtualizer owns the row geometry, so
+   * `start` is the same value the row itself is translated to).
+   */
+  const actionKey = hoveredKey ?? focusedKey;
+  const actionIndex = actionKey ? keys.indexOf(actionKey) : -1;
+  const actionItem = renderedItems.find((vi) => vi.index === actionIndex);
   const activeDescendant =
     focusedRowIndex >= 0 && renderedItems.some((vi) => vi.index === focusedRowIndex)
       ? rowDomId(rows[focusedRowIndex])
@@ -598,100 +649,127 @@ export function ThreadList({
       )}
       <div
         ref={parentRef}
+        data-testid="list-scroller"
+        // The scroller and the listbox are separate elements (P9.5). The row
+        // actions are an overlay layer that has to live *outside* the listbox:
+        // a control inside an option is `nested-interactive`, and a control
+        // beside the option inside the listbox is `aria-required-children` —
+        // both axe serious/critical. The scroller still owns the scroll offset
+        // the virtualizer reads, so rows and overlay move together.
         style={{ flex: 1, overflowY: 'auto', position: 'relative' }}
-        role="listbox"
-        // One tab stop for the whole list (P9.5): the scrollable region is
-        // reachable from the keyboard and reports the active row through
-        // aria-activedescendant instead of holding focus on each row.
-        tabIndex={0}
-        aria-label={title}
-        aria-multiselectable
-        aria-activedescendant={activeDescendant}
+        onMouseLeave={() => setHoveredKey(null)}
       >
-        {rows.length === 0 ? (
-          error ? (
-            <QueryErrorState message={error} onRetry={retry} />
-          ) : progress.active || progress.failed ? (
-            <SyncPanel progress={progress} onRetry={retrySync} />
-          ) : initialLoading ? (
-            <DelayedSkeleton />
-          ) : view.kind === 'inbox' ? (
-            <div style={{ animation: 'sift-fade 400ms var(--ease-out)' }}>
-              <style>{'@keyframes sift-fade { from { opacity: 0; } }'}</style>
-              <EmptyState icon={<Sun size={24} />} line="You're all caught up." sub={emptySub} />
-            </div>
+        <div
+          ref={listRef}
+          role="listbox"
+          // One tab stop for the whole list (P9.5): the listbox is reachable from
+          // the keyboard and reports the active row through aria-activedescendant
+          // instead of holding focus on each row.
+          tabIndex={0}
+          aria-label={title}
+          aria-multiselectable
+          aria-activedescendant={activeDescendant}
+          onMouseOver={(e) => {
+            const option = (e.target as HTMLElement).closest?.('[role="option"]');
+            setHoveredKey(option?.getAttribute('data-row-key') ?? null);
+          }}
+        >
+          {rows.length === 0 ? (
+            error ? (
+              <QueryErrorState message={error} onRetry={retry} />
+            ) : progress.active || progress.failed ? (
+              <SyncPanel progress={progress} onRetry={retrySync} />
+            ) : initialLoading ? (
+              <DelayedSkeleton />
+            ) : view.kind === 'inbox' ? (
+              <div style={{ animation: 'sift-fade 400ms var(--ease-out)' }}>
+                <style>{'@keyframes sift-fade { from { opacity: 0; } }'}</style>
+                <EmptyState icon={<Sun size={24} />} line="You're all caught up." sub={emptySub} />
+              </div>
+            ) : (
+              <EmptyState
+                line="No conversations match."
+                sub={view.kind === 'search' ? 'Search Gmail instead ↩' : undefined}
+              />
+            )
           ) : (
-            <EmptyState
-              line="No conversations match."
-              sub={view.kind === 'search' ? 'Search Gmail instead ↩' : undefined}
-            />
-          )
-        ) : (
-          <div style={{ height: virtual.getTotalSize(), position: 'relative' }}>
-            {renderedItems.map((vi) => {
-              const r = rows[vi.index];
-              if (!r) return null;
-              const key = rowKey(r);
-              return (
-                <div
-                  key={key}
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    width: '100%',
-                    height: rowH,
-                    transform: `translateY(${vi.start}px)`,
-                  }}
-                >
-                  <ThreadRowView
-                    row={r}
-                    focused={vi.index === focusedIndex}
-                    selected={selectedIds.has(key)}
-                    accountColor={colorOf(r.accountId)}
-                    accountLabel={labelOf(r.accountId)}
-                    showStripe={showStripe}
-                    onFocus={() => setFocus(key)}
-                    onToggleSelect={(e) => {
-                      if (e.shiftKey) useSelection.getState().extendTo(key, keys);
-                      else useSelection.getState().toggle(key);
+            <div style={{ height: virtual.getTotalSize(), position: 'relative' }}>
+              {renderedItems.map((vi) => {
+                const r = rows[vi.index];
+                if (!r) return null;
+                const key = rowKey(r);
+                return (
+                  <div
+                    key={key}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: rowH,
+                      transform: `translateY(${vi.start}px)`,
                     }}
-                    onOpen={() => openRow(vi.index)}
-                    onAction={(kind) => {
-                      if (kind === 'snooze') {
-                        snoozeTomorrow(r.accountId, [r.id]);
-                      } else if (kind === 'unsnooze') {
-                        unsnooze(r.accountId, [r.id]);
-                      } else if (kind === 'read') {
-                        void dispatchAction({
-                          accountId: r.accountId,
-                          threadIds: [r.id],
-                          action: { kind: 'read', on: r.unreadCount === 0 },
-                        });
-                      } else if (kind === 'star') {
-                        void dispatchAction({
-                          accountId: r.accountId,
-                          threadIds: [r.id],
-                          action: { kind: 'star', on: !r.isStarred },
-                        });
-                      } else {
-                        void dispatchAction({
-                          accountId: r.accountId,
-                          threadIds: [r.id],
-                          action: { kind },
-                        });
-                      }
-                    }}
-                  />
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {!initialLoading && nextCursor ? <ScrollSentinel onVisible={loadMore} /> : null}
-        {loadingMore && rows.length > 0 && (
-          <div style={{ padding: 8, display: 'flex', justifyContent: 'center' }}>
-            <Spinner size={12} />
+                  >
+                    <ThreadRowView
+                      row={r}
+                      focused={vi.index === focusedIndex}
+                      selected={selectedIds.has(key)}
+                      hovered={hoveredKey === key}
+                      accountColor={colorOf(r.accountId)}
+                      accountLabel={labelOf(r.accountId)}
+                      showStripe={showStripe}
+                      posInSet={vi.index + 1}
+                      setSize={rows.length}
+                      onFocus={() => setFocus(key)}
+                      onToggleSelect={(e) => {
+                        if (e.shiftKey) useSelection.getState().extendTo(key, keys);
+                        else useSelection.getState().toggle(key);
+                      }}
+                      onOpen={() => openRow(vi.index)}
+                      onAction={(kind) => runRowAction(r, kind)}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {!initialLoading && nextCursor ? <ScrollSentinel onVisible={loadMore} /> : null}
+          {loadingMore && rows.length > 0 && (
+            <div style={{ padding: 8, display: 'flex', justifyContent: 'center' }}>
+              <Spinner size={12} />
+            </div>
+          )}
+        </div>
+        {actionItem && rows[actionIndex] && (
+          <div
+            // The layer itself never takes the pointer: only its buttons do, so
+            // the row underneath keeps receiving hover and clicks.
+            style={{
+              position: 'absolute',
+              top: actionItem.start,
+              left: 0,
+              right: 0,
+              height: rowH,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              paddingRight: 8,
+              pointerEvents: 'none',
+              zIndex: 2,
+            }}
+          >
+            <span style={{ pointerEvents: 'auto', display: 'inline-flex' }}>
+              <RowActions
+                row={rows[actionIndex]}
+                focused={actionIndex === focusedRowIndex}
+                surface={rowSurface(
+                  actionIndex === focusedRowIndex,
+                  selectedIds.has(keys[actionIndex] ?? ''),
+                  hoveredKey != null,
+                )}
+                onAction={(kind) => runRowAction(rows[actionIndex], kind)}
+              />
+            </span>
           </div>
         )}
       </div>
