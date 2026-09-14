@@ -1,5 +1,13 @@
-import { defineConfig } from '@playwright/test';
+import { defineConfig, type Project } from '@playwright/test';
 import { E2E_ENTRY, E2E_PORT } from './e2e/fixture/entry';
+
+/** `PW_PROJECTS=chromium,webkit` narrows a run; unset means every engine. */
+const wantedProjects = process.env.PW_PROJECTS?.split(',').map((s) => s.trim());
+
+const allProjects: Project[] = [
+  { name: 'chromium', use: { browserName: 'chromium' } },
+  { name: 'webkit', use: { browserName: 'webkit' } },
+];
 
 /**
  * E2E runs the real frontend against a deterministic fixture backend served by
@@ -40,10 +48,9 @@ export default defineConfig({
   // engines run locally. CI selects one explicitly: Playwright's WebKit build
   // for macos-14 arm64 runners is frozen and every test there times out, so
   // PW_PROJECTS=chromium is set there and WebKit is verified on a real Mac.
-  projects: [
-    { name: 'chromium', use: { browserName: 'chromium' } },
-    { name: 'webkit', use: { browserName: 'webkit' } },
-  ].filter((p) => !process.env.PW_PROJECTS || process.env.PW_PROJECTS.split(',').includes(p.name)),
+  projects: allProjects.filter(
+    (p) => !wantedProjects || (p.name !== undefined && wantedProjects.includes(p.name)),
+  ),
   webServer: {
     // CI builds the fixture bundle in its own step (`pnpm e2e:bundle`) and
     // serves it statically here: dev mode transforms each module on demand and
