@@ -283,6 +283,8 @@ export const ThreadRowView = memo(function ThreadRowView({
         {showStripe && accountLabel ? <span style={SR_ONLY}>Account: {accountLabel}</span> : null}
         {
           <span
+            aria-hidden
+            data-testid="unread-indicator"
             style={{
               width: 4,
               height: 4,
@@ -365,6 +367,8 @@ export const ThreadRowView = memo(function ThreadRowView({
       {showStripe && accountLabel ? <span style={SR_ONLY}>Account: {accountLabel}</span> : null}
       {
         <span
+          aria-hidden
+          data-testid="unread-indicator"
           style={{
             width: 4,
             height: 4,

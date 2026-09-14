@@ -29,12 +29,13 @@ export async function sidebarLabel(page: Page, name: string, accountId: string):
 
 /** The 6px unread dot is the row's visible unread state. */
 export async function showsUnreadDot(row: Locator): Promise<boolean> {
-  return row.evaluate((el) =>
-    [...el.querySelectorAll('span')].some((s) => {
-      const r = s.getBoundingClientRect();
-      return Math.round(r.width) === 6 && Math.round(r.height) === 6;
-    }),
-  );
+  return row.evaluate((el) => {
+    const dot = el.querySelector('[data-testid="unread-indicator"]');
+    if (!dot) return false;
+    const box = dot.getBoundingClientRect();
+    const color = getComputedStyle(dot).backgroundColor;
+    return box.width > 0 && box.height > 0 && color !== 'transparent' && color !== 'rgba(0, 0, 0, 0)';
+  });
 }
 
 /**
