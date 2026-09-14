@@ -122,7 +122,8 @@ section 7.
 | Offline / reconnect (product) | `pending live Gmail` | "Second save works offline" is the P2.8 step in section 7; unrun. |
 | Sleep / wake | `pending native validation` | No test and no artifact covers sleep across a due wake. |
 | Fresh install / upgrade (offline migration) | `verified offline` | `v6_upgrade_preserves_bodies_bytes_fts_and_reports_orphans` (account_scoping.rs), `migration_0007_dedupes_and_preserves_richest_row` (attachment_lifecycle.rs). |
-| Fresh install / upgrade (installer + schema guard) | `not implemented` | No `db_schema_too_new` guard exists, so the "older app refuses a newer database" half cannot pass; no installer has been run. |
+| Older app refuses a newer database | `verified offline` | `db::tests::p10_t03_refuses_a_database_from_a_newer_app`: a fixture at `SCHEMA_VERSION + 1` fails to open, the message names the newer version, and the version row and account rows are unchanged. |
+| Fresh install / upgrade (real installer) | `pending native validation` | No installer has been run end to end; migration correctness is covered offline by `p4_t01_fresh_and_v1_fixtures_upgrade_cleanly`. |
 | Small mailbox (2k) | `verified offline` | `fixtures/mailbox-imap-2k.json` seeds the fake Gmail server used by the IMAP suites. |
 | Large mailbox (100k) | `not implemented` | `fixtures/mailbox-100k/` is empty and gitignored; the generator only prints a message. |
 
@@ -202,7 +203,7 @@ Statuses follow section 1. Rows split into `a`/`b` were partly satisfiable.
 | NATIVE-01a | Save As / Save All | `verified offline` | `save_all_writes_every_non_inline_attachment_and_avoids_collisions`, `save_all_needs_two_non_inline_attachments`; registered in `lib.rs`. |
 | NATIVE-01b | Startup mailto, attachment preview, print | `pending native validation` | No Quick Look/preview adapter and no print path exist; mailto handling is unverified. |
 | REL-01a | Bad update signature | `verified offline` | `updater-dryrun.ts` 13 scenarios and the updater unit tests. |
-| REL-01b | Older app refuses a newer database | `not implemented` | No schema guard; `docs/release.md` describes the required change. |
+| REL-01b | Older app refuses a newer database | `verified offline` | `p10_t03_refuses_a_database_from_a_newer_app` asserts refusal, the named versions and untouched rows. |
 
 ### Appendix B–adjacent tasks that are not single rows
 

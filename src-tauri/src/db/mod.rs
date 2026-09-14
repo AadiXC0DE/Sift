@@ -260,6 +260,15 @@ fn register_migration_functions(conn: &Connection) -> Result<()> {
 /// migration that would strand a child row fails and rolls back instead.
 fn apply_migrations(conn: &mut Connection, limit: i64, fail_after: Option<i64>) -> Result<()> {
     let mut current = schema_version(conn)?.unwrap_or(0);
+    // Defense in depth alongside the guard in `Db::open`: every writer path
+    // goes through here, and a newer schema must never be written through.
+    if current > SCHEMA_VERSION {
+        anyhow::bail!(
+            "This mailbox was opened by a newer version of Sift (database \
+             version {current}, this build understands {SCHEMA_VERSION}). \
+             Update Sift to open it; your mail has not been changed."
+        );
+    }
     for (idx, (name, sql)) in MIGRATIONS.iter().enumerate() {
         let version = (idx + 1) as i64;
         if version > limit {
@@ -326,6 +335,17 @@ impl Db {
         let mut boot = Connection::open(&path).with_context(|| "open sift.db")?;
         init_connection(&mut boot)?;
         let current = schema_version(&boot)?.unwrap_or(0);
+        // A database written by a newer app is refused rather than read with a
+        // schema this build does not understand: sync and writes against
+        // unknown columns are how an upgrade corrupts a mailbox (P10.3). The
+        // message names both versions so the fix is obvious to the user.
+        if current > SCHEMA_VERSION {
+            anyhow::bail!(
+                "This mailbox was opened by a newer version of Sift (database \
+                 version {current}, this build understands {SCHEMA_VERSION}). \
+                 Update Sift to open it; your mail has not been changed."
+            );
+        }
         if (current as usize) < MIGRATIONS.len() {
             if current > 0 {
                 backup_before_migration(&boot, dir, current)?;
@@ -648,6 +668,43 @@ mod tests {
             })
             .unwrap();
         assert_eq!(violations, 0);
+    }
+
+    #[test]
+    fn p10_t03_refuses_a_database_from_a_newer_app() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture_at(dir.path(), SCHEMA_VERSION)
+            .execute_batch(&format!(
+                "INSERT INTO accounts (id,email,created_at) VALUES ('a1','a@x.com',1);
+                 UPDATE schema_version SET version={};",
+                SCHEMA_VERSION + 1
+            ))
+            .unwrap();
+
+        let err = match Db::open(dir.path()) {
+            Err(e) => e,
+            Ok(_) => panic!("a newer database must be refused"),
+        };
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("newer version of Sift"),
+            "message was: {text}"
+        );
+        assert!(
+            text.contains(&(SCHEMA_VERSION + 1).to_string()),
+            "the message must name the database version: {text}"
+        );
+
+        // Refusing to open must not have touched the data or the version.
+        let conn = Connection::open(dir.path().join("sift.db")).unwrap();
+        let v: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION + 1);
+        let accounts: i64 = conn
+            .query_row("SELECT count(*) FROM accounts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(accounts, 1, "the refused database keeps its rows");
     }
 
     #[test]

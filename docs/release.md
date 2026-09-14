@@ -128,40 +128,28 @@ for inspecting an unsigned debug build and is never used by the workflow.
 ## Database compatibility and rollback
 
 An app must refuse to open a database written by a newer app instead of
-migrating or writing through it. `src-tauri/src/db/mod.rs` does not guard this
-today. `Db::open` reads `schema_version` and only calls `run_migrations` when the
-stored version is lower than `MIGRATIONS.len()`; a database from a newer app is
-left alone and the pool is opened against it, so the app runs with missing
-tables instead of refusing.
+migrating or writing through it. That guard is shipped: `SCHEMA_VERSION` is
+derived from `MIGRATIONS.len()` so it cannot drift, `Db::open` compares the
+stored `schema_version` against it on the bootstrap connection before the pool
+exists, and refuses with a message naming both versions and stating that the
+mail was not changed. `apply_migrations` repeats the check, so no writer path
+can reach a newer schema.
 
-The rest of the upgrade path is in place: migrations run on a dedicated
-bootstrap connection before the pool exists, each one inside `BEGIN IMMEDIATE`
-with the version update in the same transaction (rollback on failure, foreign
-keys disabled around the rebuild), a `foreign_key_check` runs once the sequence
-finishes so a migration that strands a child row aborts the open, and any upgrade
-from an existing database takes a `VACUUM INTO` snapshot under
-`<data dir>/backups/` before the first migration, pruning to the newest three.
+`db/mod.rs::p10_t03_refuses_a_database_from_a_newer_app` covers it: a fixture at
+`SCHEMA_VERSION + 1` must fail to open, the message must name the newer version,
+and both the version row and the account rows must be unchanged afterwards.
 
-Required change (Rust side, owned by the DB workstream):
+The rest of the upgrade path: migrations run on a dedicated bootstrap connection
+before the pool exists, each one inside `BEGIN IMMEDIATE` with the version update
+in the same transaction (rollback on failure, foreign keys disabled around the
+rebuild), a `foreign_key_check` runs once the sequence finishes so a migration
+that strands a child row aborts the open, and any upgrade from an existing
+database takes a `VACUUM INTO` snapshot under `<data dir>/backups/` before the
+first migration, pruning to the newest three.
 
-1. Add `pub const SCHEMA_VERSION: i64 = 8;` next to `MIGRATIONS` — the list
-   currently ends at `0008_account_scoping` — and bump it in the same commit as
-   any new migration, or derive it from `MIGRATIONS.len()` so it cannot drift.
-2. In `Db::open`, on the bootstrap connection, when the stored
-   `schema_version` is greater than `SCHEMA_VERSION`, return
-   `SiftError::App { code: "db_schema_too_new", retryable: false }` with a message
-   that names both versions and says the database was left untouched. Do this
-   before the pool is created (opening the write path at all touches the file).
-3. Repeat the same check inside `apply_migrations` after reading the current
-   version (defense in depth). The pre-migration snapshot already exists
-   (`backup_before_migration`), so this only needs the guard, not a second copy
-   of the database.
-4. Add a regression test: create a fixture database with
-   `INSERT INTO schema_version VALUES (999)`, assert `Db::open` fails with the
-   "newer version" message, and assert the file bytes are unchanged.
-
-Until (2) lands, the schema guard is unenforced: this document describes the
-required behaviour, not a shipped one.
+The remaining unverified half is operational, not code: no installer has been
+run end to end, so "old app opens a newer database" is verified against a fixture
+rather than against a real upgraded install.
 
 ### Rollback installer
 
