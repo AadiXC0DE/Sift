@@ -12,18 +12,18 @@ test('compose: footer buttons align and the send dropdown stays attached', async
   await app.gotoApp();
   await openComposer(page);
   const send = page.getByRole('button', { name: 'Send ⌘↵', exact: true });
-  const dropdown = page.getByTestId('send-later-trigger');
-  const controls = [
-    send,
-    dropdown,
-    page.getByRole('button', { name: 'Send & archive', exact: true }),
-    page.getByRole('button', { name: 'Attach', exact: true }),
-  ];
-  const boxes = await Promise.all(controls.map((control) => control.boundingBox()));
+  // Measure in one frame: the sheet can still be completing its entrance animation.
+  const boxes = await send.evaluate((button) =>
+    Array.from(button.parentElement!.parentElement!.querySelectorAll('button'), (control) => {
+      const { x, y, width, height } = control.getBoundingClientRect();
+      return { x, y, width, height };
+    }),
+  );
+  expect(boxes).toHaveLength(4);
   for (const box of boxes) {
     expect(box).not.toBeNull();
     expect(box!.height).toBe(32);
-    expect(Math.abs(box!.y - boxes[0]!.y)).toBeLessThan(1);
+    expect(box!.y).toBe(boxes[0]!.y);
   }
   expect(Math.abs(boxes[1]!.x - (boxes[0]!.x + boxes[0]!.width))).toBeLessThanOrEqual(1);
 });
