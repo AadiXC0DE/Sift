@@ -539,6 +539,16 @@ export interface Settings {
   attachmentCacheSize: string;
   pollFocused: number;
   pollBackground: number;
+  /** P11.1: run one network-only check per launch. Never downloads or installs. */
+  updatesAutoCheck: boolean;
+  /** P11.1: unix ms of the last completed check; 0 means never. */
+  updatesLastCheckAt: number;
+  /** P11.1: `''` (never) | `up-to-date` | `no-release` | `available` | `failed`. */
+  updatesLastCheckState: string;
+  /** P11.1: the version the last check found, empty when it found none. */
+  updatesLastCheckVersion: string;
+  /** P11.1: why the last check failed, empty when it did not. */
+  updatesLastCheckError: string;
 }
 export const defaultSettings: Settings = {
   theme: 'system',
@@ -573,6 +583,11 @@ export const defaultSettings: Settings = {
   attachmentCacheSize: '512MB',
   pollFocused: 15,
   pollBackground: 60,
+  updatesAutoCheck: true,
+  updatesLastCheckAt: 0,
+  updatesLastCheckState: '',
+  updatesLastCheckVersion: '',
+  updatesLastCheckError: '',
 };
 
 /** Counts the removal dialog shows before an account is deleted (P4.4). */

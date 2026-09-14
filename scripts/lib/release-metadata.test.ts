@@ -11,7 +11,8 @@ import { parseChecksums } from './release-artifacts';
 import { verifyArtifactSignature } from './updater';
 
 const REPO = 'AadiXC0DE/Sift';
-const TAG = 'v1.0.0';
+const VERSION = JSON.parse(readFileSync('package.json', 'utf8')).version as string;
+const TAG = `v${VERSION}`;
 const ARCHIVE = 'Sift.app.tar.gz';
 
 function run(args: string[], env: Record<string, string> = {}): { status: number; stdout: string; stderr: string } {
@@ -103,11 +104,11 @@ describe('release-metadata pipeline', () => {
     ]);
     expect(generated.stderr).toBe('');
     expect(generated.status).toBe(0);
-    expect(generated.stdout).toContain(`latest.json v1.0.0 -> ${TAG}`);
+    expect(generated.stdout).toContain(`latest.json v${VERSION} -> ${TAG}`);
 
     const manifest: unknown = JSON.parse(readFileSync(join(out, 'latest.json'), 'utf8'));
     const parsed = manifest as { version: string; platforms: Record<string, { signature: string; url: string }> };
-    expect(parsed.version).toBe('1.0.0');
+    expect(parsed.version).toBe(VERSION);
     expect(Object.keys(parsed.platforms).sort()).toEqual(['darwin-aarch64', 'darwin-universal', 'darwin-x86_64']);
     for (const platform of Object.values(parsed.platforms)) {
       expect(platform.url).toBe(`https://github.com/${REPO}/releases/download/${TAG}/${ARCHIVE}`);
@@ -117,7 +118,7 @@ describe('release-metadata pipeline', () => {
 
     const rows = parseChecksums(readFileSync(join(out, 'SHA256SUMS'), 'utf8'));
     expect(rows.map((row) => row.name).sort()).toEqual(
-      [`Sift_1.0.0_universal.dmg`, ARCHIVE, `${ARCHIVE}.sig`, 'latest.json'].sort(),
+      [`Sift_${VERSION}_universal.dmg`, ARCHIVE, `${ARCHIVE}.sig`, 'latest.json'].sort(),
     );
 
     const verified = run(['--verify', out, '--config', fixture.config, '--repo', REPO, '--tag', TAG]);

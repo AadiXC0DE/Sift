@@ -3,6 +3,7 @@ import { Toaster } from 'sonner';
 import { Tooltip } from '@base-ui-components/react/tooltip';
 import { useSettings } from '../stores/settingsStore';
 import { useAccounts } from '../stores/accountsStore';
+import { useUpdates } from '../features/updates/updatesStore';
 import { engine } from '../keymap/engine';
 import { defaultBindings } from '../keymap/defaults';
 
@@ -23,8 +24,15 @@ export function Providers({ children }: { children: React.ReactNode }) {
           b.scope === 'thread',
       ),
     );
-    load();
     refresh();
+    /*
+     * The one automatic update check (P11.1) rides on the settings load rather
+     * than racing it: the user's choice is in hand before anything is checked,
+     * it happens at most once per launch, and it is skipped while offline. It
+     * reads the release manifest and stops there — downloading and installing
+     * are the user's, from Settings -> Updates.
+     */
+    void load().then(() => useUpdates.getState().check({ automatic: true }));
     // matchMedia listener for system theme
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const h = () => {

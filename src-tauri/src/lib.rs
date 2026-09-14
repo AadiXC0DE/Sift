@@ -285,6 +285,7 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::system::labels_list,
             commands::system::app_set_badge,
             commands::system::app_open_url,
+            commands::system::app_relaunch,
             commands::system::diagnostics_export,
             commands::system::perf_mark,
             commands::threads::threads_query,

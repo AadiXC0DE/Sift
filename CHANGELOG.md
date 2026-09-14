@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased — reliability hardening (`fix/reliability-hardening`)
+## v1.1.0 (2026-09-14)
+
+- Preserve authored email body styles and size the reader when quoted content collapses.
+- Quieter account markers and aligned unread indicators without an extra blue focus stripe.
+- Settings → Updates: check, download, verify, install and restart with explicit controls.
+- This release is not Apple Developer ID signed or notarized. Updater signatures remain enforced.
+
+### Reliability hardening
 
 ### What changed
 

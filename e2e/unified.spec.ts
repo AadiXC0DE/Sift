@@ -44,8 +44,8 @@ test('UI-01 unified list: no connected account stripe across adjacent same-accou
     expect(row.rowHeight).toBe(40);
     if (row.markerHeight === null) continue;
     // An inset dash: shorter than the row and never touching either edge.
-    expect(row.markerHeight).toBe(12);
-    expect(row.markerWidth).toBe(3);
+    expect(row.markerHeight).toBe(8);
+    expect(row.markerWidth).toBe(2);
     expect(row.markerTop! - row.rowTop).toBeGreaterThanOrEqual(4);
     expect(row.rowBottom - row.markerBottom!).toBeGreaterThanOrEqual(4);
   }

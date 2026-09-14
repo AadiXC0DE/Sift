@@ -1,4 +1,5 @@
 import type { FixtureControl } from './backend';
+import type { UpdaterControl, UpdaterScenario } from './updater-scenario';
 
 declare global {
   // tsconfig targets ES2022, but every browser Playwright ships implements
@@ -17,6 +18,10 @@ declare global {
     /** The page's pinned clock (index.e2e.html); the single source of "now". */
     __SIFT_CLOCK__: { now: number };
     __siftFixture?: FixtureControl;
+    /** The scenario the updater stub answers from (P11.1); set before load. */
+    __SIFT_UPDATER__?: UpdaterScenario;
+    /** What the app asked the updater stub to do, for assertions. */
+    __siftUpdater?: UpdaterControl;
     __sift_xss?: number;
   }
 }

@@ -9,7 +9,12 @@ import SiteLayout from '../layouts/SiteLayout.astro';
 
   <div class="prose">
     <h2>What leaves your Mac</h2>
-    <p>Only the requests needed to read and send your mail, made directly to Google over TLS. Sift has no backend, no analytics endpoint, no crash reporter, and no ads.</p>
+    <p>Mail traffic goes only to Google, directly over TLS — the requests needed to read, sync and send your mail. Two other network paths exist, and neither is hidden:</p>
+    <ul>
+      <li><strong>Remote images.</strong> Sift does not load an image a sender hosts on their own server by default: the account's remote-content policy decides, and a new installation starts at <code>ask</code>, which fetches nothing on its own. <code>block</code> never fetches anything external.</li>
+      <li><strong>Update checks.</strong> Sift asks GitHub for the newest release manifest when it launches, so it can tell you a newer version exists. <strong>Settings → Updates</strong> turns the automatic check off, and the check by itself never downloads or installs anything.</li>
+    </ul>
+    <p>There is no Sift backend, no analytics endpoint, no crash reporter, and no ads.</p>
 
     <h2>What stays on your Mac</h2>
     <ul>
@@ -19,7 +24,7 @@ import SiteLayout from '../layouts/SiteLayout.astro';
     </ul>
 
     <h2>Remote images</h2>
-    <p>Like most mail clients, Sift loads remote images by default so messages look the way they were designed. If you prefer, set <strong>Settings → Privacy → Remote images</strong> to Never and they will be blocked before they reach the renderer.</p>
+    <p>An image a sender hosts on their own server is not fetched by default. A new installation keeps the account's remote-content policy at <code>ask</code>, so nothing external loads on its own; <code>block</code> never loads external content, and <code>allow</code> loads the HTTPS images a message needs without asking. Fetching a remote image would tell its sender that you opened the message, which is why it is not the default here.</p>
 
     <h2>Credentials</h2>
     <p>Sift authenticates with an app password or an OAuth refresh token. Tokens are held in the Keychain and only ever sent to Google. The local database never stores them.</p>

@@ -10,8 +10,10 @@ export function buildShim(nonce: string, token: string): string {
   function report(){
     var root = document.documentElement;
     var body = document.body;
-    var h = Math.max(root.scrollHeight, body ? body.scrollHeight : 0,
-                     root.getBoundingClientRect().height, body ? body.getBoundingClientRect().height : 0);
+    // Root scrollHeight is at least the iframe viewport, so using it prevents
+    // the frame shrinking after a quote closes or a responsive layout reflows.
+    var box = body ? body.getBoundingClientRect() : null;
+    var h = body ? Math.max(body.scrollHeight, body.offsetHeight, box.height) + Math.max(0, box.top) : 1;
     post({ type:'size', height: Math.max(1, Math.ceil(h)) });
   }
 

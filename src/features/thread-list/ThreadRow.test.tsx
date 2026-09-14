@@ -173,8 +173,8 @@ describe('P3.1 account marker geometry', () => {
     const rowEl = container.querySelector('[data-testid="row-t1"]') as HTMLElement;
     const marker = getByTestId('account-marker') as HTMLElement;
     expect(rowEl.style.height).toBe(`${ROW_HEIGHTS[density]}px`);
-    expect(marker.style.width).toBe('3px');
-    expect(marker.style.height).toBe('12px');
+    expect(marker.style.width).toBe('2px');
+    expect(marker.style.height).toBe('8px');
     expect(marker.style.pointerEvents).toBe('none');
     expect(marker.getAttribute('aria-hidden')).toBe('true');
     expect(marker.style.top).toBe('50%');

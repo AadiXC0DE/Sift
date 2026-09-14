@@ -5,7 +5,7 @@ body {
   min-width: 0;
 }
 
-body.sift-mail {
+:where(body.sift-mail) {
   font-family:
     -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, 'Segoe UI', Roboto, Helvetica, Arial,
     sans-serif;
@@ -13,6 +13,7 @@ body.sift-mail {
   line-height: 1.5;
   text-rendering: optimizeLegibility;
   -webkit-text-size-adjust: 100%;
+  display: flow-root;
   overflow-x: auto;
   overflow-y: hidden;
   /* Break only when a single token cannot fit (long URLs). Do NOT use
@@ -29,7 +30,7 @@ body.sift-mail {
  * iframe, so the two surfaces define the small set the shim and the quoted-text
  * rules below use.
  */
-body.sift-mail-light {
+:where(body.sift-mail-light) {
   color: #1a1a1a;
   background: #fff;
   color-scheme: light;
@@ -40,7 +41,7 @@ body.sift-mail-light {
   --sift-quote-summary: #888;
 }
 
-body.sift-mail-dark {
+:where(body.sift-mail-dark) {
   color: #ececea;
   background: #161615;
   color-scheme: dark;

@@ -173,7 +173,7 @@ pub fn sanitize(url_path: &str, raw_html: &str) -> SanitizeOut {
     // Re-apply the message's page background/colors as the first stylesheet so
     // the email's own <style> rules still win on equal specificity.
     if let Some(css) = body_css {
-        html = format!("<style>html,body{{{css}}}</style>{html}");
+        html = format!("<style>body{{{css}}}</style>{html}");
     }
 
     let mut remote_images = 0i64;

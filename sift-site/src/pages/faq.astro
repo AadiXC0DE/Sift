@@ -3,7 +3,7 @@ import SiteLayout from '../layouts/SiteLayout.astro';
 const faqs = [
   {
     q: 'Is Sift free?',
-    a: 'Yes, free while in beta. Download the build, connect a Gmail account, and use it as your daily client.',
+    a: 'Yes, free while in beta. The source is public on GitHub, and there is no account to create.',
   },
   {
     q: 'Which accounts work?',
@@ -15,7 +15,7 @@ const faqs = [
   },
   {
     q: 'Why an app password instead of a Google sign in?',
-    a: 'An app password means you can install Sift and connect in about two minutes with no Google Cloud project and no review process. If you prefer the sign in button, developers can bake in an OAuth client as described in the docs.',
+    a: 'An app password means you can connect with no Google Cloud project and no review process. If you prefer the sign in button, developers can bake in an OAuth client as described in the docs.',
   },
   {
     q: 'Where are my credentials stored?',
@@ -31,7 +31,7 @@ const faqs = [
   },
   {
     q: 'How is HTML email handled?',
-    a: 'Messages are sanitized once when they arrive, then rendered in a sandboxed frame with the sender CSS, tables, and layout preserved. Scripts and event handlers are stripped. Trackers and remote images follow your privacy setting.',
+    a: 'Messages are sanitized once when they arrive, then rendered in a sandboxed frame with the sender CSS, tables, and layout preserved. Scripts and event handlers are stripped. Remote images are not loaded by default: an image a sender hosts on their own server is fetched only when the account\'s remote-content policy allows it.',
   },
   {
     q: 'Is there a Windows or Linux version?',

@@ -1,14 +1,23 @@
 ---
 import '../styles/global.css';
-const version = "v1.0.0";
-const size = "9.8 MB";
-const dmg = "https://github.com/AadiXC0DE/Sift/releases/download/v1.0.0/Sift_1.0.0_universal.dmg";
+import { RELEASES_PAGE, releaseState, releaseView } from '../lib/release';
+const release = releaseView(await releaseState(), 'macOS 13 or newer');
 const origin = new URL("https://usesift.xyz");
 const canonical = new URL("/", origin).href;
 const ogImage = new URL("/og.png", origin).href;
 const description =
-  "Sift is a fast, keyboard-first Gmail client for macOS. A Rust core and a local SQLite mirror keep every action under 100 ms, offline by default.";
+  "Sift is a keyboard-first Gmail client for macOS. A Rust core and a local SQLite mirror keep reading, search and triage on your own machine.";
 const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" width="15" height="15" aria-hidden="true" focusable="false"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>`;
+// One measured figure: the eager-JavaScript gate. Method and date are part of
+// the number — a size without its command is not a measurement (docs/acceptance-dossier.md §2.4).
+const eagerJs = {
+  value: "187.7",
+  unit: "KiB",
+  bytes: 192165,
+  ceilingKib: 250,
+  method: "node scripts/eager-js.mjs --dist dist --max-js-kib 250",
+  measured: "Apple M1, 2026-09-14, fix/reliability-hardening build",
+};
 const softwareLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
@@ -16,16 +25,21 @@ const softwareLd = {
   applicationCategory: "BusinessApplication",
   applicationSubCategory: "Email client",
   operatingSystem: "macOS 13+",
-  softwareVersion: "1.0.0",
   description,
   url: canonical,
-  downloadUrl: dmg,
-  screenshot: ogImage,
-  fileSize: "9.8MB",
   inLanguage: "en",
   isAccessibleForFree: true,
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
   author: { "@type": "Person", name: "Aaditya", url: "https://github.com/AadiXC0DE" },
+  // Version, download URL and file size are only stated when a published
+  // release API response backs them; see src/lib/release.ts.
+  ...(release.published && release.version && release.size
+    ? {
+        softwareVersion: release.version.replace(/^v/, ""),
+        downloadUrl: release.href,
+        fileSize: release.size,
+      }
+    : {}),
 };
 ---
 <html lang="en">
@@ -75,21 +89,24 @@ const softwareLd = {
       </nav>
       <span class="nav-spacer"></span>
       <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
-      <a class="btn btn-primary btn-sm" id="download-nav" href={dmg}><span set:html={appleLogo} />Download for Mac</a>
+      <a class="btn btn-primary btn-sm" id="download-nav" href={release.href}><span set:html={appleLogo} />{release.label}</a>
     </div>
   </header>
 
   <div class="hero-stage">
     <section class="hero">
       <div>
-        <p class="eyebrow rise">macOS 13+ · Gmail · Rust core · 9.8 MB</p>
+        <p class="eyebrow rise">macOS 13+ · Gmail · Rust core{release.size && <> · {release.size}</>}</p>
         <h1 class="rise rise-1">Email that keeps up <span class="thin">with you.</span></h1>
-        <p class="sub rise rise-2">A fast, keyboard-first Gmail client for Mac. Every action under 100 ms. Your mail lives on your machine.</p>
+        <p class="sub rise rise-2">A keyboard-first Gmail client for Mac. Your mail is mirrored to your own machine, so the interface never waits on the network.</p>
         <div class="hero-ctas rise rise-2">
-          <a class="btn btn-primary" id="download-hero" href={dmg}><span set:html={appleLogo} />Download for Mac</a>
-          <a class="btn btn-secondary" href="/benchmarks">See the benchmarks</a>
+          <a class="btn btn-primary" id="download-hero" href={release.href}><span set:html={appleLogo} />{release.label}</a>
+          <a class="btn btn-secondary" href="/benchmarks">See what's measured</a>
         </div>
-        <p class="hero-spec rise rise-3"><span>9.8 MB download</span><span class="sep"></span><span>~35 MB idle</span><span class="sep"></span><span>no Electron</span><span class="sep"></span><span>local-first SQLite</span></p>
+        <p class="hero-spec rise rise-3">
+          {release.size && <><span>{release.size} download</span><span class="sep"></span></>}
+          <span>no bundled browser</span><span class="sep"></span><span>local-first SQLite</span><span class="sep"></span><span>macOS 13+</span>
+        </p>
       </div>
       <div class="preview rise rise-2" id="preview" data-density="comfortable" tabindex="0" aria-label="Sift inbox preview. Focus and press j or k to move.">
         <div class="preview-bar">
@@ -142,30 +159,30 @@ const softwareLd = {
     </section>
   </div>
 
-  <section class="metrics" aria-label="Benchmarks" id="numbers">
+  <section class="metrics" aria-label="Measured size" id="numbers">
     <div class="metrics-inner">
       <div class="metric">
         <div class="metric-top">
-          <span class="metric-num">0.31 <span class="unit">s</span></span>
-          <span class="metric-label">Cold start to usable inbox</span>
-          <span class="metric-method">measured · <a href="/benchmarks">methodology</a></span>
+          <span class="metric-num">{eagerJs.value} <span class="unit">{eagerJs.unit}</span></span>
+          <span class="metric-label">Eager JavaScript, gzip — measured</span>
+          <span class="metric-method">measured · <a href="/benchmarks">how</a></span>
         </div>
         <div class="bars">
-          <div class="bar-row"><span class="bar-name"><strong>Sift</strong></span><span class="bar-track"><span class="bar-fill sift" style="--w:16%"></span></span><span class="bar-val">0.31 s</span></div>
-          <div class="bar-row"><span class="bar-name">Apple Mail</span><span class="bar-track"><span class="bar-fill rival" style="--w:100%"></span></span><span class="bar-val">1.9 s</span></div>
+          <div class="bar-row"><span class="bar-name"><strong>Sift</strong></span><span class="bar-track"><span class="bar-fill sift" style={`--w:${Math.round((eagerJs.bytes / (eagerJs.ceilingKib * 1024)) * 100)}%`}></span></span><span class="bar-val">{eagerJs.value} KiB</span></div>
+          <div class="bar-row"><span class="bar-name">Ceiling</span><span class="bar-track"><span class="bar-fill rival" style="--w:100%"></span></span><span class="bar-val">{eagerJs.ceilingKib} KiB</span></div>
         </div>
-        <p class="metric-foot">Six times quicker to a working inbox. The rest is measured the same way. <a href="/benchmarks">Read the methodology</a>.</p>
+        <p class="metric-foot">Every chunk the first paint pulls in, gzip level 9, walked through <code>dist/.vite/manifest.json</code>: <code>{eagerJs.method}</code> · {eagerJs.measured}. The 250 KiB line is the ceiling that command fails above, not a measurement. <a href="/benchmarks">Read the method</a>.</p>
       </div>
       <div class="bench-pair">
         <div class="bench-card">
-          <div class="metric-num">14 <span class="unit">ms</span></div>
-          <div class="metric-label">Open a thread</div>
-          <p class="metric-foot">Metadata first, body streams in. The list never waits on the network.</p>
+          <div class="metric-num">≤ {eagerJs.ceilingKib} <span class="unit">KiB</span></div>
+          <div class="metric-label">Eager-JS ceiling, gzip</div>
+          <p class="metric-foot">A target, not a measurement: the release job fails above it. Lazy chunks sit outside it by construction.</p>
         </div>
         <div class="bench-card">
-          <div class="metric-num">22 <span class="unit">ms</span></div>
-          <div class="metric-label">Archive with undo</div>
-          <p class="metric-foot">Optimistic local write, synced later. Undo window included.</p>
+          <div class="metric-num">≤ 12 <span class="unit">MiB</span></div>
+          <div class="metric-label">DMG ceiling</div>
+          <p class="metric-foot">A target, not a measurement: <code>scripts/check-bundle.sh --max-dmg-mib 12</code> fails a universal build whose disk image is larger.</p>
         </div>
       </div>
     </div>
@@ -176,48 +193,48 @@ const softwareLd = {
     <p class="lede">Sift is a native Mac app, not a browser in a trench coat. It draws the interface with the WebView macOS already ships, and keeps your mail in a local SQLite file. No bundled Chromium, no second copy of V8, no cloud in the middle.</p>
     <div class="fp-grid">
       <div class="fp-card fp-hero">
-        <div class="fp-num">9.8 <span class="unit">MB</span></div>
-        <div class="fp-label">Download</div>
-        <div class="fp-bars">
-          <div class="fp-bar">
-            <span class="fp-name"><strong>Sift</strong></span>
-            <span class="fp-track"><span class="fp-fill sift" style="--w:6%"></span></span>
-            <span class="fp-val">9.8 MB</span>
-          </div>
-          <div class="fp-bar">
-            <span class="fp-name">Typical Electron mail app</span>
-            <span class="fp-track"><span class="fp-fill rival" style="--w:100%"></span></span>
-            <span class="fp-val">~180 MB</span>
-          </div>
-        </div>
+        {
+          release.published && release.sizeParts ? (
+            <>
+              <div class="fp-num">{release.sizeParts.value} <span class="unit">{release.sizeParts.unit}</span></div>
+              <div class="fp-label">Download, as published on GitHub</div>
+              <div class="fp-bars">
+                <div class="fp-bar">
+                  <span class="fp-name"><strong>Sift {release.version}</strong></span>
+                  <span class="fp-track"><span class="fp-fill sift" style={`--w:${Math.min(100, Math.round(((release.sizeBytes ?? 0) / (12 * 1024 * 1024)) * 100))}%`}></span></span>
+                  <span class="fp-val">{release.size}</span>
+                </div>
+                <div class="fp-bar">
+                  <span class="fp-name">Ceiling</span>
+                  <span class="fp-track"><span class="fp-fill rival" style="--w:100%"></span></span>
+                  <span class="fp-val">12 MiB</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div class="fp-num">12 <span class="unit">MiB</span></div>
+              <div class="fp-label">The download ceiling the release pipeline enforces</div>
+            </>
+          )
+        }
+        <p class="metric-foot">{release.status} The 12 MiB line is a target the pipeline fails a build above, not a measurement.</p>
       </div>
       <div class="fp-card">
-        <div class="fp-num">35 <span class="unit">MB</span></div>
         <div class="fp-label">Idle memory</div>
-        <div class="fp-bars">
-          <div class="fp-bar">
-            <span class="fp-name"><strong>Sift</strong></span>
-            <span class="fp-track"><span class="fp-fill sift" style="--w:10%"></span></span>
-            <span class="fp-val">~35 MB</span>
-          </div>
-          <div class="fp-bar">
-            <span class="fp-name">Typical Electron mail app</span>
-            <span class="fp-track"><span class="fp-fill rival" style="--w:100%"></span></span>
-            <span class="fp-val">~350 MB</span>
-          </div>
-        </div>
+        <p class="metric-foot">Not published. Idle memory has not been measured on a released build, so there is no figure here to quote.</p>
       </div>
       <div class="fp-card fp-stack">
         <div class="fp-label">Under the hood</div>
         <ul class="fp-list">
           <li><span class="fp-tech">Rust</span><span>Sync engine, MIME parsing, sanitizing, FTS indexing. Compiled once, then never in your way.</span></li>
-          <li><span class="fp-tech">Tauri 2</span><span>A 9.8 MB shell around the system WebView. Signing, updates, Keychain, notifications.</span></li>
+          <li><span class="fp-tech">Tauri 2</span><span>A thin Rust shell around the WebView macOS already ships. Signing, Keychain, notifications, and an update check that installs nothing until you click.</span></li>
           <li><span class="fp-tech">SQLite</span><span>Every mailbox mirrored locally with WAL and FTS5. Search is a query, not a network round trip.</span></li>
           <li><span class="fp-tech">WKWebView</span><span>The same engine Safari uses, sandboxed per message for HTML mail.</span></li>
         </ul>
       </div>
     </div>
-    <p class="metric-foot">Idle and download figures are Sift's own measurements on Apple Silicon. Electron comparison is typical, not a single app. <a href="/benchmarks">See the full methodology</a>.</p>
+    <p class="metric-foot">Sift publishes no launch-time, idle-memory or per-action latency figures, because none has been measured on a released build. The only measured numbers on this page are the eager-JavaScript bundle above and, once a release is published, the DMG bytes GitHub reports for it. <a href="/benchmarks">What is measured</a>.</p>
   </section>
 
   <section class="section" aria-label="Feel it">
@@ -225,7 +242,7 @@ const softwareLd = {
     <p class="lede">Every action has a key. The palette does the rest. Hover a card, or just press the keys.</p>
     <div class="feel">
       <div class="feel-card"><div class="feel-keys"><kbd>j</kbd><kbd>k</kbd></div><p>Glide through the list. No scrolling to think about.</p></div>
-      <div class="feel-card"><div class="feel-keys"><kbd>e</kbd></div><p>Archive in 22 ms. Undo if you blinked.</p></div>
+      <div class="feel-card"><div class="feel-keys"><kbd>e</kbd></div><p>Archive, and undo it if you blinked.</p></div>
       <div class="feel-card"><div class="feel-keys"><kbd>⌘</kbd><kbd>K</kbd></div><p>Jump anywhere: threads, labels, actions, accounts.</p></div>
       <div class="feel-card"><div class="feel-keys"><kbd>r</kbd></div><p>Reply from the thread. Send-and-archive in one go.</p></div>
     </div>
@@ -249,16 +266,16 @@ const softwareLd = {
       <div class="cell cell-2">
         <h3>Mistakes are cheap</h3>
         <p>Snooze, undo, undo send.</p>
-        <div class="mini"><span class="row">Archived · Undo 8s</span></div>
+        <div class="mini"><span class="row">Archived · Undo</span></div>
       </div>
       <div class="cell cell-2">
         <h3>Reads everything offline</h3>
-        <p>Your mail is on your Mac. Search is instant.</p>
+        <p>Your mail is on your Mac, and search runs against a local index.</p>
         <div class="mini"><span class="row">the whole archive · on this Mac</span></div>
       </div>
       <div class="cell cell-2">
         <h3>Private by design</h3>
-        <p>Tokens in Keychain. Nothing phones home.</p>
+        <p>Tokens live in the macOS Keychain. There is no Sift server.</p>
         <div class="mini"><span class="row">Keychain · no trackers · local-first</span></div>
       </div>
     </div>
@@ -298,29 +315,43 @@ const softwareLd = {
       <span class="flow-arrow" aria-hidden="true">→</span>
       <div class="flow-node"><span class="flow-k">Your screen</span><span class="flow-d">reads local, never waits</span></div>
     </div>
-    <p class="rust-cta">Sift is open source. <a href="https://github.com/AadiXC0DE/Sift">Read the code</a> · <a href="/benchmarks">see the methodology</a></p>
+    <p class="rust-cta">The source is public. <a href="https://github.com/AadiXC0DE/Sift">Read the code</a> · <a href="/benchmarks">see what is measured</a></p>
   </section>
 
   <section class="section" aria-label="Connect">
-    <h2>Two minutes to connected.</h2>
+    <h2>Connected in a few steps.</h2>
     <ol class="steps">
       <li><span class="step-n">1</span><p>Turn on 2-Step Verification (<a href="https://myaccount.google.com/signinoptions/two-step-verification">open settings</a>).</p></li>
       <li><span class="step-n">2</span><p>Create an app password named Sift (<a href="https://myaccount.google.com/apppasswords">open App passwords</a>).</p></li>
-      <li><span class="step-n">3</span><p>Paste the 16-letter password in Sift and press Connect.</p></li>
+      <li><span class="step-n">3</span><p>Paste the 16 letter password in Sift and press Connect.</p></li>
     </ol>
   </section>
 
   <section class="cta" aria-label="Download">
     <div class="cta-box">
       <h2>Clear your inbox today.</h2>
-      <p class="sub">Free while in beta. {version} · {size} · macOS 13+.</p>
+      <p class="sub">Free while in beta. {release.published ? `${release.version} · ${release.size} · macOS 13 or newer.` : 'macOS 13 or newer.'}</p>
+      {!release.published && <p class="metric-foot">{release.status}</p>}
       <div class="cta-row">
-        <a class="btn btn-primary" id="download-cta" href={dmg}><span set:html={appleLogo} />Download for Mac</a>
-        <a class="btn btn-secondary" href="/download">All versions</a>
+        <a class="btn btn-primary" id="download-cta" href={release.href}><span set:html={appleLogo} />{release.label}</a>
+        <a class="btn btn-secondary" href={RELEASES_PAGE}>All versions</a>
       </div>
       <details class="sha">
         <summary>Checksums and release notes</summary>
-        <p>Every release ships SHA-256 sums next to the DMG on <a href="https://github.com/AadiXC0DE/Sift/releases">GitHub</a>. The button always points at an immutable asset URL, so the hash you check is the file you get.</p>
+        {
+          release.sha ? (
+            <p>
+              SHA-256 of the DMG published in {release.version}: <code>{release.sha}</code> — read from that
+              release's <code>SHA256SUMS</code> asset rather than typed by hand. Every release ships sums next
+              to the DMG on <a href={RELEASES_PAGE}>GitHub</a>.
+            </p>
+          ) : (
+            <p>
+              Every release ships SHA-256 sums next to the DMG on <a href={RELEASES_PAGE}>GitHub</a>, generated
+              from the exact bytes the pipeline uploads. {release.status}
+            </p>
+          )
+        }
       </details>
     </div>
   </section>

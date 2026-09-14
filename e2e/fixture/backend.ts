@@ -1471,6 +1471,12 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return usageSnapshot();
   },
   app_set_badge: () => null,
+  /**
+   * P11.1: the restart after an install. A browser cannot restart itself, so
+   * this is a no-op; nothing reaches it without the user installing an update
+   * first, and the updater stub records whether an install ever happened.
+   */
+  app_relaunch: () => null,
   app_open_url: (args) => {
     openUrlCalls.push(String(args.url));
     return null;

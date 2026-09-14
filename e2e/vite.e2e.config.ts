@@ -25,6 +25,7 @@ export default defineConfig({
       { find: /^@tauri-apps\/api\/core$/, replacement: path.join(fixtureDir, 'tauri-core.ts') },
       { find: /^@tauri-apps\/api\/event$/, replacement: path.join(fixtureDir, 'tauri-event.ts') },
       { find: /^@tauri-apps\/plugin-dialog$/, replacement: path.join(fixtureDir, 'tauri-dialog.ts') },
+      { find: /^@tauri-apps\/plugin-updater$/, replacement: path.join(fixtureDir, 'tauri-updater.ts') },
     ],
   },
   server: {

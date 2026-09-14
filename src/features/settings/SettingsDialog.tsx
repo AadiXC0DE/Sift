@@ -9,6 +9,7 @@ import { Button } from '../../ui/Button';
 import { Kbd } from '../../ui/Kbd';
 import { defaultBindings } from '../../keymap/defaults';
 import { StoragePanel } from './StoragePanel';
+import { UpdatesPanel } from '../updates/UpdatesPanel';
 import { NotificationSettings } from '../notifications/NotificationSettings';
 import { VipPanel } from '../notifications/VipPanel';
 import { RulesPanel } from '../rules/RulesPanel';
@@ -165,6 +166,7 @@ export function SettingsDialog({
     'Shortcuts',
     'Privacy',
     'Storage',
+    'Updates',
     'Advanced',
   ];
   // Per-account panels name the account by its address, never by an opaque id.
@@ -431,6 +433,7 @@ export function SettingsDialog({
             </>
           )}
           {tab === 'Storage' && <StoragePanel />}
+          {tab === 'Updates' && <UpdatesPanel />}
           {tab === 'Advanced' && (
             <>
               <Row label="Offline body cache">

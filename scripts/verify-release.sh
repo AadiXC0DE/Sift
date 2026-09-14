@@ -19,7 +19,7 @@ SELFTEST=0
 ROLLBACK=0
 
 usage() {
-  echo "usage: verify-release.sh [--mode strict|local] [--bundle-dir DIR] [--repo owner/name] [--tag vX.Y.Z] [--selftest] [--rollback-check]" >&2
+  echo "usage: verify-release.sh [--mode strict|unnotarized|local] [--bundle-dir DIR] [--repo owner/name] [--tag vX.Y.Z] [--selftest] [--rollback-check]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -103,6 +103,12 @@ if [ "$MODE" = "local" ]; then
   echo "======================================================================"
 fi
 
+if [ "$MODE" != "strict" ] && [ "$MODE" != "unnotarized" ] && [ "$MODE" != "local" ]; then
+  usage; exit 2
+fi
+if [ "$MODE" = "unnotarized" ]; then
+  echo "UNNOTARIZED RELEASE: Apple Developer ID/notarization deferred; updater signatures remain required."
+fi
 VERSION=$(package_version)
 APP="$BUNDLE_DIR/macos/Sift.app"
 DMG=$(ls "$BUNDLE_DIR"/dmg/*.dmg 2>/dev/null | head -1)
@@ -110,24 +116,24 @@ ARCHIVE=$(ls "$BUNDLE_DIR"/macos/*.app.tar.gz 2>/dev/null | head -1)
 SIGNATURE="${ARCHIVE}.sig"
 
 if [ -z "$DMG" ]; then
-  if [ "$MODE" = "strict" ]; then fail "no DMG under $BUNDLE_DIR/dmg"; else skip "no DMG (local build without bundling)"; fi
+  if [ "$MODE" != "local" ]; then fail "no DMG under $BUNDLE_DIR/dmg"; else skip "no DMG (local build without bundling)"; fi
 else
   ok "DMG present: $(basename "$DMG")"
 fi
 if [ -z "$ARCHIVE" ]; then
-  if [ "$MODE" = "strict" ]; then fail "no *.app.tar.gz updater archive under $BUNDLE_DIR/macos"; else skip "no updater archive"; fi
+  if [ "$MODE" != "local" ]; then fail "no *.app.tar.gz updater archive under $BUNDLE_DIR/macos"; else skip "no updater archive"; fi
 else
   ok "updater archive present: $(basename "$ARCHIVE")"
   if [ -f "$SIGNATURE" ]; then ok "updater signature present: $(basename "$SIGNATURE")"; else fail "missing $SIGNATURE"; fi
-  if tar -tzf "$ARCHIVE" 2>/dev/null | grep -q '^Sift.app/Contents/MacOS/Sift$'; then
-    ok "archive contains Sift.app/Contents/MacOS/Sift"
+  if tar -tzf "$ARCHIVE" 2>/dev/null | grep '^Sift.app/Contents/MacOS/sift$' >/dev/null; then
+    ok "archive contains Sift.app/Contents/MacOS/sift"
   else
     fail "archive does not contain the Sift executable"
   fi
 fi
 
 if [ ! -d "$APP" ]; then
-  if [ "$MODE" = "strict" ]; then fail "no app bundle at $APP"; else skip "no app bundle to sign-check"; fi
+  if [ "$MODE" != "local" ]; then fail "no app bundle at $APP"; else skip "no app bundle to sign-check"; fi
 else
   if [ "$MODE" = "strict" ]; then
     run_check "codesign --verify --deep --strict" codesign --verify --deep --strict --verbose=2 "$APP"
@@ -141,10 +147,13 @@ else
         fail "spctl rejected the DMG"
       fi
     fi
+  elif [ "$MODE" = "unnotarized" ]; then
+    run_check "ad-hoc code signature integrity" codesign --verify --deep --strict --verbose=2 "$APP"
+    skip "Developer ID/notarization (explicit unnotarized release)"
   else
     skip "codesign/spctl/stapler (local mode)"
   fi
-  ARCHS=$(lipo -archs "$APP/Contents/MacOS/Sift" 2>/dev/null || echo "")
+  ARCHS=$(lipo -archs "$APP/Contents/MacOS/sift" 2>/dev/null || echo "")
   if printf '%s' "$ARCHS" | grep -q 'x86_64' && printf '%s' "$ARCHS" | grep -q 'arm64'; then
     ok "universal binary: $ARCHS"
   else

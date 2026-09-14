@@ -508,6 +508,18 @@ function longMessageBody(n: number): { html: string; text: string } {
       return { html: '', text: 'Plain-only body with no HTML part.' };
     case 197:
       return { html: '', text: '' };
+    case 196:
+      // A body far taller than any plausible initial frame height. The reader
+      // sizes the frame from what the message reports, so a fixed or stale
+      // height shows up here as an inner scrollbar with clipped text — which
+      // is exactly how a regression in that path looked in the running app.
+      return {
+        html: `<table width="600" cellpadding="6"><tbody>${Array.from(
+          { length: 60 },
+          (_, i) => `<tr><td>Row ${i + 1} of a long message body.</td><td>Value ${i + 1}</td></tr>`,
+        ).join('')}</tbody></table>`,
+        text: Array.from({ length: 60 }, (_, i) => `Row ${i + 1}`).join('\n'),
+      };
     // Distinct per message, so a mis-indexed render cannot pass by accident.
     default:
       return { html: `<p>Long thread message ${n}.</p>`, text: `Long thread message ${n}` };

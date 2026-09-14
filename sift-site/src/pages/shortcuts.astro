@@ -13,6 +13,7 @@ const groups = [
       { keys: ['⌘a'], desc: 'Select all' },
       { keys: ['⌘\\'], desc: 'Toggle the sidebar' },
       { keys: ['`'], desc: 'Cycle the reading pane' },
+      { keys: ['⌘f'], desc: 'Find in the conversation' },
     ],
   },
   {
@@ -36,7 +37,7 @@ const groups = [
       { keys: ['r'], desc: 'Reply' },
       { keys: ['a'], desc: 'Reply all' },
       { keys: ['f'], desc: 'Forward' },
-      { keys: ['c', '⌘n'], desc: 'Compose' },
+      { keys: ['c'], desc: 'Compose' },
       { keys: ['n', 'p'], desc: 'Next / previous message in a thread' },
       { keys: ['o'], desc: 'Collapse or expand a message' },
       { keys: [']', '['], desc: 'Archive and go next / previous' },
@@ -51,6 +52,7 @@ const groups = [
       { keys: ['g t'], desc: 'Sent' },
       { keys: ['g d'], desc: 'Drafts' },
       { keys: ['g a'], desc: 'Archive' },
+      { keys: ['g m'], desc: 'All Mail' },
     ],
   },
   {
@@ -61,16 +63,15 @@ const groups = [
       { keys: ['/'], desc: 'Search' },
       { keys: ['⌘k'], desc: 'Command palette' },
       { keys: ['⌘,'], desc: 'Settings' },
-      { keys: ['⌘r'], desc: 'Sync now' },
       { keys: ['?'], desc: 'Shortcut help' },
     ],
   },
 ];
 ---
-<SiteLayout title="Shortcuts" description="Every Sift keyboard shortcut, and how to remap them." path="/shortcuts">
+<SiteLayout title="Shortcuts" description="Every Sift keyboard shortcut, in one table." path="/shortcuts">
   <div class="page-head">
     <h1>Shortcuts</h1>
-    <p>Every action has a key. The palette covers the rest. Bindings are remappable in Settings.</p>
+    <p>Every action has a key. The palette covers the rest.</p>
   </div>
 
   <div class="prose">

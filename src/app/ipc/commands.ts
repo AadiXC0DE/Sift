@@ -181,6 +181,12 @@ export const api = {
   storage_clear_attachment_cache: () => call<StorageUsage>('storage_clear_attachment_cache'),
   app_set_badge: (count: number) => call<void>('app_set_badge', { count }),
   app_open_url: (url: string) => call<void>('app_open_url', { url }),
+  /**
+   * P11.1: restart into a freshly installed build. The command replies before
+   * the event loop tears the window down, so the promise settles rather than
+   * hanging if the restart takes a moment.
+   */
+  app_relaunch: () => call<void>('app_relaunch'),
   unsubscribe: (account_id: string, message_id: string) =>
     call<UnsubscribeResult>('unsubscribe', {
       accountId: account_id,

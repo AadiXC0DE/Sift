@@ -105,4 +105,75 @@ mod tests {
         let db2 = Db::open(dir.path()).unwrap();
         assert_eq!(db2.settings_get().await.unwrap().theme, "dark");
     }
+
+    /// A database written before the updater settings existed must load as
+    /// stored. Without a serde default per new field the whole document fails
+    /// to deserialize, `settings_get` falls back to `Settings::default()`, and
+    /// the user silently loses every preference they had set (P11.1).
+    #[tokio::test]
+    async fn p11_t01_legacy_settings_document_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        // A document as an older build wrote it: every field it knew about,
+        // and no `updates*` key at all.
+        let mut legacy = serde_json::to_value(Settings::default()).unwrap();
+        legacy["theme"] = serde_json::json!("dark");
+        legacy["accent"] = serde_json::json!("green");
+        let map = legacy.as_object_mut().unwrap();
+        for key in [
+            "updatesAutoCheck",
+            "updatesLastCheckAt",
+            "updatesLastCheckState",
+            "updatesLastCheckVersion",
+            "updatesLastCheckError",
+        ] {
+            map.remove(key);
+        }
+        db.write(move |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO settings (key,value) VALUES ('settings',?)",
+                rusqlite::params![legacy.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let s = db.settings_get().await.unwrap();
+        assert_eq!(s.theme, "dark");
+        assert_eq!(s.accent, "green");
+        // Automatic checks are on for a fresh install and for an upgrade alike,
+        // and nothing has been checked yet.
+        assert!(s.updates_auto_check);
+        assert_eq!(s.updates_last_check_at, 0);
+        assert_eq!(s.updates_last_check_state, "");
+        assert_eq!(s.updates_last_check_version, "");
+        assert_eq!(s.updates_last_check_error, "");
+    }
+
+    /// Recording a check result is a patch. It must not become a second way to
+    /// set the user's preference, and it must not reset anything else.
+    #[tokio::test]
+    async fn p11_t02_recording_a_check_leaves_the_rest_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        db.settings_set(serde_json::json!({ "theme": "dark", "updatesAutoCheck": false }))
+            .await
+            .unwrap();
+
+        let s = db
+            .settings_set(serde_json::json!({
+                "updatesLastCheckAt": 1_700_000_000_000i64,
+                "updatesLastCheckState": "available",
+                "updatesLastCheckVersion": "1.4.0",
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(s.theme, "dark");
+        assert!(!s.updates_auto_check, "a check result is not a preference");
+        assert_eq!(s.updates_last_check_at, 1_700_000_000_000);
+        assert_eq!(s.updates_last_check_state, "available");
+        assert_eq!(s.updates_last_check_version, "1.4.0");
+    }
 }

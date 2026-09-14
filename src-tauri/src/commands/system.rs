@@ -283,6 +283,20 @@ pub async fn app_open_url(app: tauri::AppHandle, url: String) -> Result<(), Sift
     crate::opener::open(&app, &url).map_err(|e| SiftError::app("open", e.to_string(), false))
 }
 
+/// Restart after an update has been installed.
+///
+/// `tauri-plugin-updater` replaces the app bundle in place; the running process
+/// is still the old binary, so the new version only takes effect after a
+/// restart. This is the only relaunch path in the app: nothing calls it on its
+/// own, and the updater never installs without the user asking.
+#[tauri::command]
+pub async fn app_relaunch(app: tauri::AppHandle) -> Result<(), SiftError> {
+    // `request_restart` returns, so the IPC reply is written before the event
+    // loop tears the window down; the frontend is not left with a hung promise.
+    app.request_restart();
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn diagnostics_export(
     state: State<'_, AppState>,

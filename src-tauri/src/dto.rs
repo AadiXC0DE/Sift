@@ -1187,6 +1187,30 @@ pub struct Settings {
     pub poll_focused: i64,
     #[serde(rename = "pollBackground")]
     pub poll_background: i64,
+    /// P11.1: check for a newer release once per launch. The check is network
+    /// only — it never downloads or installs anything — so the switch governs
+    /// a read, not an install.
+    #[serde(rename = "updatesAutoCheck", default = "settings_true")]
+    pub updates_auto_check: bool,
+    /// P11.1: unix ms of the last completed check, 0 when there has never been
+    /// one. Persisted so "last checked" survives a restart instead of resetting.
+    #[serde(rename = "updatesLastCheckAt", default)]
+    pub updates_last_check_at: i64,
+    /// P11.1: `''` (never checked) | `up-to-date` | `available` | `failed`.
+    #[serde(rename = "updatesLastCheckState", default)]
+    pub updates_last_check_state: String,
+    /// P11.1: the version the last check found, empty when it found none.
+    #[serde(rename = "updatesLastCheckVersion", default)]
+    pub updates_last_check_version: String,
+    /// P11.1: the exact reason the last check failed, empty when it did not.
+    #[serde(rename = "updatesLastCheckError", default)]
+    pub updates_last_check_error: String,
+}
+
+/// A `bool` setting that defaults to on. `#[serde(default)]` alone would make
+/// it off for every database written before the field existed.
+fn settings_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -1224,6 +1248,11 @@ impl Default for Settings {
             attachment_cache_size: "512MB".into(),
             poll_focused: 15,
             poll_background: 60,
+            updates_auto_check: true,
+            updates_last_check_at: 0,
+            updates_last_check_state: String::new(),
+            updates_last_check_version: String::new(),
+            updates_last_check_error: String::new(),
         }
     }
 }

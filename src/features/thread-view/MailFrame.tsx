@@ -76,7 +76,11 @@ export function MailFrame({ messageId, html, allowed, darkSafe }: Props) {
   const nonce = useMemo(randomToken, []);
   const token = useMemo(randomToken, []);
   const appDark = useAppDarkTheme();
-  const surface = appDark && darkSafe ? 'dark' : 'light';
+  // A white table or explicitly dark text is still authored presentation.
+  // Keep rich mail on its own light canvas rather than recoloring only its
+  // inherited text. Plain unstyled messages can safely follow the app theme.
+  const authoredPalette = /<style\b|\b(?:bgcolor|color)\s*=|\bstyle\s*=/i.test(html ?? '');
+  const surface = appDark && darkSafe && !authoredPalette ? 'dark' : 'light';
   const finderRef = useRef<FrameFinder | null>(null);
 
   const srcdoc = useMemo(() => {

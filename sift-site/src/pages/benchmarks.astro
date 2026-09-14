@@ -1,45 +1,85 @@
 ---
 import SiteLayout from '../layouts/SiteLayout.astro';
-const rows = [
-  { label: 'Cold start to usable inbox', sift: '0.31 s', rival: '1.9 s', rivalName: 'Apple Mail' },
-  { label: 'Open a thread', sift: '14 ms', rival: '180 ms', rivalName: 'Gmail web' },
-  { label: 'Archive with undo', sift: '22 ms', rival: '240 ms', rivalName: 'Gmail web' },
-  { label: 'Search as you type', sift: '18 ms', rival: '', rivalName: 'local index, no network' },
+// The one number this project has measured. Its command, its date and the
+// machine are part of it: an eager-JS figure without `--max-js-kib` and the
+// manifest walk means nothing (docs/acceptance-dossier.md §2.4).
+const measured = {
+  value: '187.7',
+  unit: 'KiB',
+  bytes: 192165,
+  ceilingKib: 250,
+  command: 'node scripts/eager-js.mjs --dist dist --max-js-kib 250',
+  what: 'gzip level 9 of every chunk the first paint pulls in, walked through dist/.vite/manifest.json static imports only (lazy chunks are excluded by construction)',
+  where: 'Apple M1, arm64, macOS 15.6.1, 2026-09-14, against the fix/reliability-hardening build in the working tree',
+  caveat:
+    'Not a released artifact: no signed universal build exists locally, so this measures the branch bundle, and a stale dist/ would pass the gate against old code.',
+};
+const ceilings = [
+  {
+    value: '250 KiB',
+    unit: 'gzip',
+    label: 'Eager JavaScript',
+    how: 'scripts/eager-js.mjs fails above this. Runs on every pull request.',
+  },
+  {
+    value: '12 MiB',
+    unit: '',
+    label: 'DMG',
+    how: 'scripts/check-bundle.sh --require-artifacts --max-dmg-mib 12 fails a universal build whose disk image is larger. Runs in the release job.',
+  },
+];
+const notPublished = [
+  ['Cold start, launch to first paint', 'no stored result here that names the command and machine behind it'],
+  ['Idle and working memory, CPU', 'no stored result here that names the command and machine behind it'],
+  ['Per-action latency (open, archive, search, list page)', 'no stored result here that names the command and machine behind it'],
+  ['Download size of a shipped build', 'the size comes from the release API, and no build is published yet'],
+  ['Per-account connection counts', 'needs a live Gmail account, which no number on this site has been taken with'],
+  ['Large-mailbox behaviour (100k messages)', 'needs a large-mailbox fixture that does not exist in the repository'],
 ];
 ---
-<SiteLayout title="Benchmarks" description="How Sift is measured, and how to reproduce every number yourself." path="/benchmarks">
+<SiteLayout title="Benchmarks" description="What this site measures, the command that produced the number, and the figures it deliberately does not publish." path="/benchmarks">
   <div class="page-head">
     <h1>Benchmarks</h1>
-    <p>Every number below is measured on a real Mac with the same harness you can run. No lab conditions, no cherry picking.</p>
+    <p>This page quotes a number only when a committed, reproducible command produced it. Today that is the size of the JavaScript the app must download before first paint, plus the ceilings the release pipeline enforces on a build. Launch time, memory, per-action latency and the rest are not published here.</p>
   </div>
 
   <div class="prose">
-    <div class="bars">
-      <div class="bar-row"><span class="bar-name"><strong>Sift</strong></span><span class="bar-track"><span class="bar-fill sift" style="--w:16%"></span></span><span class="bar-val">0.31 s</span></div>
-      <div class="bar-row"><span class="bar-name">Apple Mail</span><span class="bar-track"><span class="bar-fill rival" style="--w:100%"></span></span><span class="bar-val">1.9 s</span></div>
-    </div>
-    <p class="metric-foot">Cold start to a usable inbox, averaged over ten runs on Apple Silicon. Sift reads from a warm SQLite mirror, so the list is painted before the network is touched.</p>
+    <h2>Measured</h2>
+    <div class="bar-row"><span class="bar-name"><strong>Sift</strong></span><span class="bar-track"><span class="bar-fill sift" style={`--w:${Math.round((measured.bytes / (measured.ceilingKib * 1024)) * 100)}%`}></span></span><span class="bar-val">{measured.value} KiB</span></div>
+    <div class="bar-row"><span class="bar-name">Ceiling</span><span class="bar-track"><span class="bar-fill rival" style="--w:100%"></span></span><span class="bar-val">{measured.ceilingKib} KiB</span></div>
+    <p class="metric-foot">
+      <strong>{measured.value} {measured.unit}</strong> gzip, against a {measured.ceilingKib} KiB ceiling. Command:
+      <code>{measured.command}</code>. It sums {measured.what}. Measured on {measured.where}. {measured.caveat}
+    </p>
 
-    <h2>All interactions</h2>
+    <h2>Ceilings (targets, not measurements)</h2>
+    <p>These are hard gates, not observations. A build that crosses one fails the job, which is why they are quoted here rather than as claims about the app.</p>
     <div>
-      {rows.map((r) => (
-        <div class="shortcut-row">
-          <span class="keys"><strong>{r.sift}</strong></span>
-          <span class="desc">{r.label} <span style="color:var(--faint)">· {r.rivalName} {r.rival}</span></span>
-        </div>
-      ))}
+      {
+        ceilings.map((c) => (
+          <div class="shortcut-row">
+            <span class="keys"><strong>{c.value}</strong></span>
+            <span class="desc">{c.label} {c.unit && <span style="color:var(--faint)">· {c.unit}</span>} <span style="color:var(--faint)">· {c.how}</span></span>
+          </div>
+        ))
+      }
     </div>
 
-    <h2>Methodology</h2>
-    <ul>
-      <li><strong>Hardware:</strong> Apple Silicon Mac, macOS 13 or newer, warm OS caches.</li>
-      <li><strong>Measurement:</strong> each interaction is timed from the input event to the painted frame, averaged over ten runs, with the fastest and slowest discarded.</li>
-      <li><strong>Data:</strong> a local mirror of a real Gmail account with the full archive indexed in SQLite FTS5.</li>
-      <li><strong>What is not counted:</strong> network latency and remote image loads. Those belong to the network, not to the app. Sift never blocks an interaction on them.</li>
-    </ul>
+    <h2>Figures this page does not publish</h2>
+    <p>Each row below would need a committed, reproducible measurement before it earns a number here. Until then this site quotes none, because a launch-time, memory or latency figure without a command behind it is a guess dressed as a result.</p>
+    <div>
+      {
+        notPublished.map(([what, why]) => (
+          <div class="shortcut-row">
+            <span class="keys"><strong>No figure</strong></span>
+            <span class="desc">{what} <span style="color:var(--faint)">· {why}</span></span>
+          </div>
+        ))
+      }
+    </div>
 
-    <h2>About these numbers</h2>
-    <p>Sift is measured on the same machine you will run it on, not in a lab. The cold-start figure is the first useful paint of the inbox with a warm OS cache. Interaction figures are input-to-paint on a local mirror, so network latency and remote image loads are not counted. Those belong to the network, and Sift never blocks an interaction on them.</p>
-    <p>Numbers vary with mailbox size and disk speed, so judge the shape of the result rather than the exact millisecond. The benchmark harness lives in <a href="https://github.com/AadiXC0DE/Sift/tree/main/tools/sift-bench">tools/sift-bench</a> in the repository; a published build is coming soon.</p>
+    <h2>How a number gets published here</h2>
+    <p>A figure earns a place on this page when it comes from a command anyone can run against this repository, on a named machine, on a named date, with the ceiling or the comparison it is judged against. The eager-JavaScript measurement and the two size gates above work that way; the rows above do not, yet.</p>
+    <p>The project keeps its own record of what is proven, what is pending and what has not been measured in <a href="https://github.com/AadiXC0DE/Sift/blob/main/docs/acceptance-dossier.md">docs/acceptance-dossier.md</a>, and its executable gates in <code>scripts/</code>. Read those rather than a landing page when the number matters.</p>
   </div>
 </SiteLayout>

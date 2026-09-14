@@ -49,8 +49,8 @@ const ACCOUNT_DASH: React.CSSProperties = {
   left: 3,
   top: '50%',
   transform: 'translateY(-50%)',
-  width: 3,
-  height: 12,
+  width: 2,
+  height: 8,
   borderRadius: 999,
   pointerEvents: 'none',
 };
@@ -233,7 +233,7 @@ export const ThreadRowView = memo(function ThreadRowView({
     gap: 8,
     padding: density === 'compact' ? '0 12px 0 10px' : '4px 12px 4px 10px',
     background: surface,
-    borderLeft: focused ? '2px solid var(--accent)' : '2px solid transparent',
+    borderLeft: '2px solid transparent',
     cursor: 'default',
     position: 'relative',
     boxSizing: 'border-box',
@@ -277,21 +277,21 @@ export const ThreadRowView = memo(function ThreadRowView({
           <span
             aria-hidden
             data-testid="account-marker"
-            style={{ ...ACCOUNT_DASH, background: accentHex(accountColor ?? 'blue'), opacity: 0.85 }}
+            style={{ ...ACCOUNT_DASH, background: accentHex(accountColor ?? 'blue'), opacity: 0.55 }}
           />
         )}
         {showStripe && accountLabel ? <span style={SR_ONLY}>Account: {accountLabel}</span> : null}
-        {unread && (
+        {
           <span
             style={{
-              width: 6,
-              height: 6,
+              width: 4,
+              height: 4,
               borderRadius: '50%',
-              background: 'var(--unread-dot)',
+              background: unread ? 'var(--unread-dot)' : 'transparent',
               flexShrink: 0,
             }}
           />
-        )}
+        }
         <span
           title={headlineTitle}
           style={{
@@ -359,15 +359,21 @@ export const ThreadRowView = memo(function ThreadRowView({
         <span
           aria-hidden
           data-testid="account-marker"
-          style={{ ...ACCOUNT_DASH, background: accentHex(accountColor ?? 'blue'), opacity: 0.85 }}
+          style={{ ...ACCOUNT_DASH, background: accentHex(accountColor ?? 'blue'), opacity: 0.55 }}
         />
       )}
       {showStripe && accountLabel ? <span style={SR_ONLY}>Account: {accountLabel}</span> : null}
-      {unread && (
+      {
         <span
-          style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--unread-dot)', flexShrink: 0 }}
+          style={{
+            width: 4,
+            height: 4,
+            borderRadius: '50%',
+            background: unread ? 'var(--unread-dot)' : 'transparent',
+            flexShrink: 0,
+          }}
         />
-      )}
+      }
       {avatars && <Avatar email={row.participants[0]?.e ?? '?'} name={row.participants[0]?.n} size={24} />}
       <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>

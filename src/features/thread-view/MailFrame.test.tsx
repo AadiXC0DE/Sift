@@ -170,3 +170,16 @@ describe('P9.2 message surface', () => {
     expect(srcdocOf(container)).toContain('class="sift-mail sift-mail-light"');
   });
 });
+
+it('keeps authored white-table mail readable in a dark app', () => {
+  document.documentElement.dataset.theme = 'dark';
+  const { container } = render(
+    <MailFrame
+      messageId="newsletter"
+      html='<table bgcolor="#ffffff"><tr><td>Invoice</td></tr></table>'
+      allowed
+      darkSafe
+    />,
+  );
+  expect(srcdocOf(container)).toContain('class="sift-mail sift-mail-light"');
+});

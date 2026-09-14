@@ -20,8 +20,8 @@ jobs:
       - name: versions agree (package.json, Cargo.toml, tauri.conf.json, CHANGELOG)
         run: pnpm exec tsx scripts/check-versions.ts --tag "${{ github.ref_name }}"
       - run: pnpm build
-      - name: build signed universal app (updater artifacts included)
-        run: pnpm tauri build --target universal-apple-darwin
+      - name: build unnotarized universal app (signed updater artifacts)
+        run: pnpm tauri build --target universal-apple-darwin --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -38,9 +38,9 @@ jobs:
           bash scripts/check-bundle.sh \
             --target-dir src-tauri/target/universal-apple-darwin/release \
             --require-artifacts --max-js-kib 250 --max-dmg-mib 12
-      - name: code signature, notarization and artifact gate
+      - name: ad-hoc signature and artifact gate (Apple notarization deferred)
         run: |
-          bash scripts/verify-release.sh --mode strict \
+          bash scripts/verify-release.sh --mode unnotarized \
             --bundle-dir src-tauri/target/universal-apple-darwin/release/bundle
       # Fails while tauri.conf.json still holds the placeholder updater key.
       - name: generate latest.json and SHA256SUMS
@@ -68,6 +68,9 @@ jobs:
           draft: true
           fail_on_unmatched_files: true
           generate_release_notes: true
+          body: |
+            Sift 1.1.0 is an unnotarized macOS release. Apple Developer ID signing and notarization are not included. If macOS blocks opening it, use System Settings → Privacy & Security → Open Anyway after verifying SHA256SUMS.
+            The updater archive is cryptographically signed with Sift's updater key.
           files: release-assets/*
       - name: verify uploaded bytes, checksums and urls while still a draft
         env:
@@ -80,8 +83,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false
-      - name: rebuild site
-        uses: peter-evans/repository-dispatch@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          event-type: sift-release
+      # The site is a separate Vercel project and Vercel only rebuilds on
+      # branch pushes, so a release tag does not redeploy it. A Deploy Hook is
+      # the supported trigger: the maintainer creates one in the project
+      # (Settings -> Git -> Deploy Hooks) and stores its URL as
+      # VERCEL_DEPLOY_HOOK_URL. This runs last, after the release is published,
+      # so the site is built from a release that exists.
+      - name: rebuild the site (Vercel deploy hook)
+        env:
+          DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$DEPLOY_HOOK" ]; then
+            curl -fsS -X POST "$DEPLOY_HOOK" > /dev/null
+          else
+            echo "Site deploy hook not configured; deploy the site separately."
+          fi

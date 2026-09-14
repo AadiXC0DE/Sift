@@ -1,0 +1,525 @@
+{
+  "generated_at": "2026-09-14T06:48:02Z",
+  "git_head": "0f0204f1db56350cb1b7c871e27c0f5b0e5862eb",
+  "host": {
+    "cores": 8,
+    "cpu": "Apple M1",
+    "memory_gib": 16.0,
+    "model": "MacBookAir10,1",
+    "os": "macOS 15.6.1 (24G90)"
+  },
+  "idle_cpu": {
+    "attribution_verified": true,
+    "binary": {
+      "bytes": 38399248,
+      "mtime": "2026-09-14T06:22:53Z",
+      "path": "src-tauri/target/release/sift",
+      "profile": "release",
+      "sha256": "643ed89f0737ff5a"
+    },
+    "budget_percent": 0.5,
+    "cpu_seconds": 5.83,
+    "data_dir": "/var/folders/lh/40fwyyf12hj2k3t1y6dwgbxc0000gn/T//sift-bench-data",
+    "history": [
+      {
+        "budget": 0.5,
+        "detail": "window=60.0s max_interval=9.822%",
+        "load_average": {
+          "15m": 13.67,
+          "1m": 8.74,
+          "5m": 11.58
+        },
+        "measured_at": "2026-09-14T06:35:26Z",
+        "unit": "percent_of_one_core",
+        "value": 8.3277
+      },
+      {
+        "budget": 0.5,
+        "detail": "outbox=empty(0) window=60.2s max_interval=1.597%",
+        "load_average": {
+          "15m": 15.89,
+          "1m": 20.84,
+          "5m": 16.39
+        },
+        "measured_at": "2026-09-14T06:46:29Z",
+        "unit": "percent_of_one_core",
+        "value": 0.349
+      },
+      {
+        "budget": 0.5,
+        "detail": "outbox=pending(10) window=60.1s max_interval=12.655%",
+        "load_average": {
+          "15m": 16.11,
+          "1m": 13.31,
+          "5m": 16.54
+        },
+        "measured_at": "2026-09-14T06:48:02Z",
+        "unit": "percent_of_one_core",
+        "value": 9.708
+      }
+    ],
+    "intervals": [
+      {
+        "at": 10.02,
+        "cpu_seconds": 0.78,
+        "percent": 7.786
+      },
+      {
+        "at": 20.04,
+        "cpu_seconds": 0.87,
+        "percent": 8.682
+      },
+      {
+        "at": 30.06,
+        "cpu_seconds": 0.98,
+        "percent": 9.777
+      },
+      {
+        "at": 40.1,
+        "cpu_seconds": 1.07,
+        "percent": 10.664
+      },
+      {
+        "at": 50.13,
+        "cpu_seconds": 1.27,
+        "percent": 12.655
+      },
+      {
+        "at": 60.03,
+        "cpu_seconds": 0.85,
+        "percent": 8.583
+      }
+    ],
+    "leftover_helpers": [],
+    "load_average": {
+      "15m": 16.11,
+      "1m": 13.31,
+      "5m": 16.54
+    },
+    "max_interval_percent": 12.655,
+    "measured_at": "2026-09-14T06:48:02Z",
+    "method": "delta of cumulative CPU time (ps -o time=, user+sys) over the window, summed across the app and its WebKit helpers",
+    "metric": "window_average_percent",
+    "outbox": {
+      "mode": "pending",
+      "pending_rows": 10
+    },
+    "pass": false,
+    "processes": {
+      "app": 65567,
+      "webkit": [
+        65592,
+        65593,
+        65594
+      ]
+    },
+    "profile": "release",
+    "ps_percent_cpu_reference": {
+      "65567": 2.3,
+      "65592": 0.0,
+      "65593": 2.6,
+      "65594": 0.1
+    },
+    "recorded_runs": 3,
+    "settle_s": 30.0,
+    "unit": "percent_of_one_core",
+    "window_average_percent": 9.708,
+    "window_s": 60.054,
+    "worst_recorded_percent": 9.708
+  },
+  "launch": {
+    "binary": {
+      "bytes": 38399248,
+      "mtime": "2026-09-14T06:22:53Z",
+      "path": "src-tauri/target/release/sift",
+      "profile": "release",
+      "sha256": "643ed89f0737ff5a"
+    },
+    "budget_p95": 400.0,
+    "data_dir": "/var/folders/lh/40fwyyf12hj2k3t1y6dwgbxc0000gn/T//sift-bench-data",
+    "failed_launches": [
+      {
+        "exit_code": -15,
+        "latency_ms": null,
+        "markers": {
+          "window-shown": 1789367443538
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run1.log",
+        "run": 1
+      }
+    ],
+    "history": [
+      {
+        "budget": 400.0,
+        "detail": "n=10 p50=516.0ms max=1026.0ms metric=first-paint",
+        "load_average": {
+          "15m": 13.85,
+          "1m": 7.77,
+          "5m": 10.42
+        },
+        "measured_at": "2026-09-14T06:30:43Z",
+        "unit": "ms",
+        "value": 1026.0
+      },
+      {
+        "budget": 400.0,
+        "detail": "n=9 p50=746.0ms max=914.0ms metric=first-paint",
+        "load_average": {
+          "15m": 15.32,
+          "1m": 32.68,
+          "5m": 15.31
+        },
+        "measured_at": "2026-09-14T06:31:47Z",
+        "unit": "ms",
+        "value": 914.0
+      }
+    ],
+    "load_average": {
+      "15m": 15.32,
+      "1m": 32.68,
+      "5m": 15.31
+    },
+    "max": 914.0,
+    "mean": 722.333,
+    "measured_at": "2026-09-14T06:31:47Z",
+    "method": "app perf marker epoch-ms minus pre-spawn epoch-ms; nearest-rank percentile",
+    "metric": "first-paint",
+    "min": 484.0,
+    "n": 9,
+    "p50": 746.0,
+    "p95": 914.0,
+    "pass": false,
+    "percentile_method": "nearest-rank",
+    "profile": "release",
+    "recorded_runs": 2,
+    "runs": [
+      {
+        "exit_code": -15,
+        "latency_ms": null,
+        "markers": {
+          "window-shown": 1789367443538
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run1.log",
+        "run": 1
+      },
+      {
+        "exit_code": -15,
+        "latency_ms": 854.0,
+        "markers": {
+          "first-paint": 1789367477271,
+          "webview-loaded": 1789367477272,
+          "window-shown": 1789367476637
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run2.log",
+        "run": 2
+      },
+      {
+        "exit_code": -15,
+        "latency_ms": 484.0,
+        "markers": {
+          "first-paint": 1789367480776,
+          "webview-loaded": 1789367480779,
+          "window-shown": 1789367480494
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run3.log",
+        "run": 3
+      },
+      {
+        "exit_code": -15,
+        "latency_ms": 485.0,
+        "markers": {
+          "first-paint": 1789367484287,
+          "webview-loaded": 1789367484287,
+          "window-shown": 1789367483996
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run4.log",
+        "run": 4
+      },
+      {
+        "exit_code": -15,
+        "latency_ms": 842.0,
+        "markers": {
+          "first-paint": 1789367488172,
+          "webview-loaded": 1789367488173,
+          "window-shown": 1789367487618
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run5.log",
+        "run": 5
+      },
+      {
+        "exit_code": -15,
+        "latency_ms": 739.0,
+        "markers": {
+          "first-paint": 1789367491936,
+          "webview-loaded": 1789367491939,
+          "window-shown": 1789367491494
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run6.log",
+        "run": 6
+      },
+      {
+        "exit_code": -15,
+        "latency_ms": 764.0,
+        "markers": {
+          "first-paint": 1789367495768,
+          "window-shown": 1789367495368
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run7.log",
+        "run": 7
+      },
+      {
+        "exit_code": -15,
+        "latency_ms": 673.0,
+        "markers": {
+          "first-paint": 1789367499473,
+          "webview-loaded": 1789367499476,
+          "window-shown": 1789367499136
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run8.log",
+        "run": 8
+      },
+      {
+        "exit_code": -15,
+        "latency_ms": 914.0,
+        "markers": {
+          "first-paint": 1789367503450,
+          "webview-loaded": 1789367503451,
+          "window-shown": 1789367502888
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run9.log",
+        "run": 9
+      },
+      {
+        "exit_code": -15,
+        "latency_ms": 746.0,
+        "markers": {
+          "first-paint": 1789367507224,
+          "webview-loaded": 1789367507224,
+          "window-shown": 1789367506760
+        },
+        "raw_log": "docs/perf/raw/launch-20260914T063043Z-run10.log",
+        "run": 10
+      }
+    ],
+    "samples": [
+      854.0,
+      484.0,
+      485.0,
+      842.0,
+      739.0,
+      764.0,
+      673.0,
+      914.0,
+      746.0
+    ],
+    "unit": "ms",
+    "worst_recorded_p95": 1026.0
+  },
+  "memory": {
+    "attribution_verified": true,
+    "binary": {
+      "bytes": 38399248,
+      "mtime": "2026-09-14T06:22:53Z",
+      "path": "src-tauri/target/release/sift",
+      "profile": "release",
+      "sha256": "643ed89f0737ff5a"
+    },
+    "budget_mib": 180.0,
+    "data_dir": "/var/folders/lh/40fwyyf12hj2k3t1y6dwgbxc0000gn/T//sift-bench-data",
+    "history": [
+      {
+        "budget": 180.0,
+        "detail": "app + WebKit helpers, footprint, settle 30s",
+        "load_average": {
+          "15m": 15.08,
+          "1m": 21.95,
+          "5m": 14.67
+        },
+        "measured_at": "2026-09-14T06:32:30Z",
+        "unit": "MiB",
+        "value": 209.2
+      },
+      {
+        "budget": 180.0,
+        "detail": "app + WebKit helpers, footprint, settle 30s",
+        "load_average": {
+          "15m": 14.52,
+          "1m": 12.7,
+          "5m": 13.21
+        },
+        "measured_at": "2026-09-14T06:33:13Z",
+        "unit": "MiB",
+        "value": 188.2
+      },
+      {
+        "budget": 180.0,
+        "detail": "app + WebKit helpers, footprint, settle 30s",
+        "load_average": {
+          "15m": 14.02,
+          "1m": 8.28,
+          "5m": 12.0
+        },
+        "measured_at": "2026-09-14T06:33:55Z",
+        "unit": "MiB",
+        "value": 187.1
+      }
+    ],
+    "history_detail": [
+      {
+        "budget": 180.0,
+        "detail": "app + WebKit helpers, footprint, settle 30s",
+        "load_average": {
+          "15m": 15.08,
+          "1m": 21.95,
+          "5m": 14.67
+        },
+        "measured_at": "2026-09-14T06:32:30Z",
+        "unit": "MiB",
+        "value": 209.2
+      },
+      {
+        "budget": 180.0,
+        "detail": "app + WebKit helpers, footprint, settle 30s",
+        "load_average": {
+          "15m": 14.52,
+          "1m": 12.7,
+          "5m": 13.21
+        },
+        "measured_at": "2026-09-14T06:33:13Z",
+        "unit": "MiB",
+        "value": 188.2
+      },
+      {
+        "budget": 180.0,
+        "detail": "app + WebKit helpers, footprint, settle 30s",
+        "load_average": {
+          "15m": 14.02,
+          "1m": 8.28,
+          "5m": 12.0
+        },
+        "measured_at": "2026-09-14T06:33:55Z",
+        "unit": "MiB",
+        "value": 187.1
+      }
+    ],
+    "leftover_helpers": [],
+    "limitations": [
+      "footprint excludes clean file-backed pages (shared framework code), so it under-counts any memory genuinely shared with other apps",
+      "ps RSS is reported next to it and double-counts pages shared between the app and its WebKit helpers",
+      "WebKit helpers have ppid 1 and carry no owner in argv, so attribution is by pid-set difference across the app's lifetime"
+    ],
+    "load_average": {
+      "15m": 14.02,
+      "1m": 8.28,
+      "5m": 12.0
+    },
+    "measured_at": "2026-09-14T06:33:55Z",
+    "method": "footprint -p (dirty physical footprint) summed over the app and the WebKit helper processes attributed by pid-set difference",
+    "metric": "total_footprint_mib",
+    "pass": false,
+    "profile": "release",
+    "recorded_runs": 3,
+    "samples": [
+      {
+        "at": "2026-09-14T06:33:44Z",
+        "processes": [
+          {
+            "footprint_mib": 26.0,
+            "pid": 26538,
+            "role": "app",
+            "rss_mib": 206.6
+          },
+          {
+            "footprint_mib": 17.0,
+            "pid": 26542,
+            "role": "webkit.GPU",
+            "rss_mib": 31.5
+          },
+          {
+            "footprint_mib": 138.0,
+            "pid": 26546,
+            "role": "webkit.WebContent",
+            "rss_mib": 120.4
+          },
+          {
+            "footprint_mib": 6.0947265625,
+            "pid": 26547,
+            "role": "webkit.Networking",
+            "rss_mib": 12.5
+          }
+        ],
+        "round": 1,
+        "total_footprint_mib": 187.1,
+        "total_rss_mib": 371.0
+      },
+      {
+        "at": "2026-09-14T06:33:49Z",
+        "processes": [
+          {
+            "footprint_mib": 26.0,
+            "pid": 26538,
+            "role": "app",
+            "rss_mib": 199.4
+          },
+          {
+            "footprint_mib": 17.0,
+            "pid": 26542,
+            "role": "webkit.GPU",
+            "rss_mib": 27.2
+          },
+          {
+            "footprint_mib": 114.0,
+            "pid": 26546,
+            "role": "webkit.WebContent",
+            "rss_mib": 106.8
+          },
+          {
+            "footprint_mib": 6.1259765625,
+            "pid": 26547,
+            "role": "webkit.Networking",
+            "rss_mib": 9.5
+          }
+        ],
+        "round": 2,
+        "total_footprint_mib": 163.1,
+        "total_rss_mib": 342.9
+      },
+      {
+        "at": "2026-09-14T06:33:55Z",
+        "processes": [
+          {
+            "footprint_mib": 26.0,
+            "pid": 26538,
+            "role": "app",
+            "rss_mib": 199.6
+          },
+          {
+            "footprint_mib": 17.0,
+            "pid": 26542,
+            "role": "webkit.GPU",
+            "rss_mib": 27.2
+          },
+          {
+            "footprint_mib": 114.0,
+            "pid": 26546,
+            "role": "webkit.WebContent",
+            "rss_mib": 108.4
+          },
+          {
+            "footprint_mib": 6.1259765625,
+            "pid": 26547,
+            "role": "webkit.Networking",
+            "rss_mib": 9.6
+          }
+        ],
+        "round": 3,
+        "total_footprint_mib": 163.1,
+        "total_rss_mib": 344.8
+      }
+    ],
+    "settle_s": 30.0,
+    "unit": "MiB",
+    "worst_footprint_mib": 187.1,
+    "worst_recorded_footprint_mib": 209.2
+  }
+}

@@ -1,15 +1,17 @@
 ---
 import SiteLayout from '../layouts/SiteLayout.astro';
+import { RELEASES_PAGE, releaseState, releaseView } from '../lib/release';
+const release = releaseView(await releaseState(), 'macOS 13 or newer');
 const releases = [
   {
     version: 'v1.0.0',
     date: 'September 4, 2026',
     notes: [
-      'Multi-account Gmail and Google Workspace with a unified inbox.',
-      'Local-first sync into SQLite with full offline reading and triage.',
-      'Keyboard-first triage, command palette, and remappable shortcuts.',
-      'HTML mail rendering with a sandboxed frame and sanitized content.',
-      'Undo, snooze, compose with drafts, and background updates.',
+      'Multi-account Gmail and Google Workspace, each account syncing on its own, with a unified inbox.',
+      'Local-first sync into SQLite with offline reading, search and triage; actions queue and sync when you reconnect.',
+      'Keyboard-first triage with a command palette and a full keyboard map.',
+      'HTML mail sanitized once and rendered in a sandboxed frame.',
+      'Undo, snooze, compose with drafts, and an update check that installs nothing until you click through it.',
     ],
   },
 ];
@@ -17,7 +19,7 @@ const releases = [
 <SiteLayout title="Changelog" description="What shipped in each Sift release." path="/changelog">
   <div class="page-head">
     <h1>Changelog</h1>
-    <p>Notable changes in each release. Full history is on <a href="https://github.com/AadiXC0DE/Sift/releases">GitHub</a>.</p>
+    <p>Notable changes in each release. Full history is on <a href={RELEASES_PAGE}>GitHub</a>.</p>
   </div>
 
   <div class="prose">
@@ -35,6 +37,7 @@ const releases = [
         </section>
       ))
     }
-    <p>Release builds are signed and notarized, with SHA-256 checksums published next to each DMG.</p>
+    <p>{release.status}</p>
+    <p>Every release build is signed and notarized, and the pipeline generates <code>SHA256SUMS</code> from the exact bytes it uploads and re-verifies the uploaded file before the release is made public, so the checksums and the DMG cannot disagree.</p>
   </div>
 </SiteLayout>

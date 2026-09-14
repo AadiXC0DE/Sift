@@ -12,13 +12,17 @@ import { decodePublicKeyField, publicKeyProblem } from './lib/updater';
 const args = process.argv.slice(2);
 const configFlag = args.indexOf('--config');
 const configPath = configFlag === -1 ? DEFAULT_CONFIG : args[configFlag + 1];
-const positional = args.filter((arg, index) => !arg.startsWith('--') && index !== configFlag + 1);
+const positional = args.filter((arg, index) => !arg.startsWith('--') && (configFlag === -1 || index !== configFlag + 1));
 const keyPath = positional[0];
 if (!keyPath) {
   console.error('usage: set-updater-pubkey <path-to-minisign-public-key>');
   process.exit(1);
 }
-const content = readFileSync(keyPath, 'utf8').trim();
+const fileContent = readFileSync(keyPath, 'utf8').trim();
+// Tauri writes base64-encoded minisign files; also accept plain minisign keys.
+const content = fileContent.startsWith('untrusted comment:')
+  ? fileContent
+  : Buffer.from(fileContent, 'base64').toString('utf8').trim();
 if (/secret key/i.test(content) || /PRIVATE KEY/.test(content)) {
   console.error(`${keyPath} looks like a *private* key; pass the .pub file instead`);
   process.exit(1);

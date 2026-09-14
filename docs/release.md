@@ -1,3 +1,5 @@
+> Release 1.1.0: Apple Developer ID signing and notarization are explicitly deferred. The workflow uses ad-hoc code signing and `verify-release.sh --mode unnotarized`; missing artifacts, non-universal binaries, version mismatches and invalid updater signatures still fail. Restore strict mode and the Apple credentials before claiming notarized distribution. The existing public updater key is configured; retain its matching private key in Actions secrets. Vercel deployment is skipped with a visible log message when its optional hook is absent.
+
 # Releasing Sift
 
 The release workflow (`.github/workflows/release.yml`) runs on any `v*` tag. It
@@ -23,6 +25,7 @@ Set these on `AadiXC0DE/Sift` (Settings -> Secrets and variables -> Actions):
 | `APPLE_TEAM_ID` | Your 10-character team id |
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater signing private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for the updater key |
+| `VERCEL_DEPLOY_HOOK_URL` | Vercel Deploy Hook for `sift-site`; the last step of a release POSTs it, so the site rebuilds from the published release |
 | `SIFT_GOOGLE_CLIENT_ID` | Optional. Enables "Sign in with Google" |
 | `SIFT_GOOGLE_CLIENT_SECRET` | Optional. Same |
 
@@ -228,3 +231,18 @@ that Vercel project (Project -> Settings -> Domains) and Vercel will provision
 the certificate. The canonical URL in `sift-site/astro.config.mjs` is already
 `https://usesift.xyz`, and `robots.txt`, `sitemap-index.xml`, and `llms.txt` are
 generated at build time.
+
+The site redeploys through a Vercel Deploy Hook, because Vercel's Git
+integration only builds branch pushes and a release is a tag, so publishing a
+release does not rebuild the site on its own. Create the hook in the project
+(Settings -> Git -> Deploy Hooks) on the production branch and store its URL as
+the repository secret `VERCEL_DEPLOY_HOOK_URL`; the release workflow POSTs it as
+its final step, after the release is un-drafted, so the site is built from a
+release that already exists.
+
+The site reads the GitHub release API at build time to show the current version
+and download. Unauthenticated calls share a small per-IP budget, so set
+`SIFT_RELEASE_TOKEN` in the Vercel project's environment variables (a token with
+no scopes is enough for a public repository) to raise it. Without the token the
+build still succeeds and renders the honest fallback: no version, no size, and a
+button that points at the releases page.
