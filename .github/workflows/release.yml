@@ -38,6 +38,11 @@ jobs:
       - name: versions agree (package.json, Cargo.toml, tauri.conf.json, CHANGELOG)
         run: pnpm exec tsx scripts/check-versions.ts --tag "${{ env.RELEASE_TAG }}"
       - run: pnpm build
+      - name: verify email rendering under the packaged security policy
+        run: |
+          pnpm exec playwright install chromium
+          pnpm e2e:bundle
+          PW_PREVIEW=1 PW_PROJECTS=chromium pnpm e2e e2e/release-csp.spec.ts
       - name: build unnotarized universal app (signed updater artifacts)
         if: github.event_name != 'workflow_dispatch'
         run: pnpm tauri build --target universal-apple-darwin --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
