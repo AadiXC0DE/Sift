@@ -154,7 +154,7 @@ test('reader: authored mail colors survive and collapsed content removes inner s
   const handle = await frameElement.elementHandle();
   const frame = await handle!.contentFrame();
   await frame!.evaluate(() => {
-    document.body.innerHTML = `<style>body { background: rgb(244, 240, 232); color: rgb(35, 45, 55); font-family: Georgia; }</style><p>Authored newsletter</p><details open><summary>History</summary><div style="height:1800px">Long quoted message</div></details>`;
+    document.body.innerHTML = `<style>body { height:100% !important; background: rgb(244, 240, 232); color: rgb(35, 45, 55); font-family: Georgia; }</style><p>Authored newsletter</p><details open><summary>History</summary><div style="height:1800px">Long quoted message</div></details>`;
   });
   await expect.poll(async () => (await frameElement.boundingBox())!.height).toBeGreaterThan(1800);
   const colors = await frame!.evaluate(() => {

@@ -17,6 +17,8 @@ const fixtureDir = path.join(here, 'fixture');
 const root = path.resolve(here, '..');
 
 export default defineConfig({
+  // Different Tauri aliases must never invalidate the running app's modules.
+  cacheDir: 'node_modules/.vite-e2e',
   root,
   plugins: [react()],
   clearScreen: false,

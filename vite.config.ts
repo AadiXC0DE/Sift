@@ -18,6 +18,8 @@ const isTauri = !!tauriPlatform;
 const buildTarget = !isTauri ? 'esnext' : tauriPlatform === 'windows' ? 'chrome105' : 'safari16';
 
 export default defineConfig({
+  // Different Tauri aliases must never invalidate the running app's modules.
+  cacheDir: 'node_modules/.vite-app',
   plugins: [react()],
   clearScreen: false,
   server: {
