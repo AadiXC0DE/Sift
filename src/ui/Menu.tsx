@@ -30,7 +30,14 @@ export function Menu({
     <BaseMenu.Root onOpenChange={(next: boolean) => setOpen(next)}>
       <BaseMenu.Trigger render={trigger as never} />
       <BaseMenu.Portal>
-        <BaseMenu.Positioner sideOffset={4}>
+        {/*
+          The portal lands in a static container at the end of `<body>`, so a
+          positioned popup only outranks in-app content by DOM order. The
+          composer sheet is the one app surface that claims a stacking layer of
+          its own (`z-index: 50` in Sheet.tsx), which would otherwise paint over
+          every menu opened from inside it — including the Send Later menu.
+        */}
+        <BaseMenu.Positioner sideOffset={4} style={{ zIndex: 60 }}>
           <BaseMenu.Popup
             style={{
               background: 'var(--bg-elevated)',

@@ -14,6 +14,8 @@ declare global {
 
   interface Window {
     __SIFT_E2E__?: boolean;
+    /** The page's pinned clock (index.e2e.html); the single source of "now". */
+    __SIFT_CLOCK__: { now: number };
     __siftFixture?: FixtureControl;
     __sift_xss?: number;
   }

@@ -13,12 +13,18 @@ export function Switch({
   /** For rows whose visible label sits outside the control (Settings → General). */
   ariaLabel?: string;
 }) {
+  // The control renders as `<span role="switch">`, and a span is not a
+  // labelable element: the wrapping `<label>` below names nothing, so a visible
+  // `label` has to be attached to the control by id or the switch is announced
+  // with no name at all (P9.5).
+  const labelId = React.useId();
   return (
     <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
       <BaseSwitch.Root
         checked={checked}
         onCheckedChange={onChange}
-        aria-label={ariaLabel}
+        aria-label={label ? undefined : ariaLabel}
+        aria-labelledby={label ? labelId : undefined}
         style={{
           width: 36,
           height: 22,
@@ -42,7 +48,11 @@ export function Switch({
           }}
         />
       </BaseSwitch.Root>
-      {label && <span style={{ fontSize: 13 }}>{label}</span>}
+      {label && (
+        <span id={labelId} style={{ fontSize: 13 }}>
+          {label}
+        </span>
+      )}
     </label>
   );
 }

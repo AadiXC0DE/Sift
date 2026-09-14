@@ -25,6 +25,28 @@ const NOT_CACHED_COPY =
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
+/**
+ * One raw-source read per message, shared across React StrictMode's double
+ * mount (the pattern `StepConnecting` uses for sign-in). A source can run to
+ * megabytes, so two IPC reads of the same message would decode it twice for
+ * nothing. `fresh` (the Retry button) deliberately starts a new read.
+ */
+const inflight = new Map<string, Promise<string>>();
+
+function readRawSource(accountId: string, messageId: string, fresh: boolean): Promise<string> {
+  const key = `${accountId}\u0000${messageId}`;
+  if (fresh) inflight.delete(key);
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const read = api.message_raw_source(accountId, messageId);
+  const entry = read.finally(() => {
+    // Only drop our own entry: a retry may already have replaced it.
+    if (inflight.get(key) === entry) inflight.delete(key);
+  });
+  inflight.set(key, entry);
+  return entry;
+}
+
 /** What a failed backend said, when it said anything at all. */
 function errorDetail(e: unknown): string {
   if (e instanceof Error && e.message) return e.message;
@@ -56,7 +78,7 @@ export function ViewSourceDialog({
     // on screen behind its own error.
     setRaw(null);
     setError(null);
-    api.message_raw_source(accountId, messageId).then(
+    readRawSource(accountId, messageId, attempt > 0).then(
       (text) => {
         if (!cancelled) setRaw(text ?? '');
       },

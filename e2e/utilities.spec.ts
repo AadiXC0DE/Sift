@@ -29,7 +29,7 @@ async function openThread(page: Page, threadId: string): Promise<void> {
 }
 
 /** P8.1: a scheduled send is a queued operation with a deadline, and it says so. */
-test.fixme('P8.1 scheduling from the Send menu shows the zone, survives a relaunch and sends when the clock passes it', async ({
+test('P8.1 scheduling from the Send menu shows the zone, survives a relaunch and sends when the clock passes it', async ({
   page,
   app,
 }) => {
@@ -72,7 +72,7 @@ test.fixme('P8.1 scheduling from the Send menu shows the zone, survives a relaun
 });
 
 /** P8.1: sending now clears the deadline through the outbox, not by guessing. */
-test.fixme('P8.1 Send now on a scheduled item claims it immediately and the view empties', async ({
+test('P8.1 Send now on a scheduled item claims it immediately and the view empties', async ({
   page,
   app,
 }) => {
@@ -98,7 +98,7 @@ test.fixme('P8.1 Send now on a scheduled item claims it immediately and the view
  * P8.2: a reminder leaves the message exactly where it is, and a deadline that
  * cannot notify is still visible as due rather than silently lost.
  */
-test.fixme('P8.2 a reminder never changes the mail and stays visible when notifications are denied', async ({
+test('P8.2 a reminder never changes the mail and stays visible when notifications are denied', async ({
   page,
   app,
 }) => {
@@ -134,7 +134,7 @@ test.fixme('P8.2 a reminder never changes the mail and stays visible when notifi
 });
 
 /** P8.5: emptying Trash shows the count first, then deletes exactly that mail. */
-test.fixme('P8.5 Empty Trash previews a count before anything is deleted', async ({ page, app }) => {
+test('P8.5 Empty Trash previews a count before anything is deleted', async ({ page, app }) => {
   await app.gotoApp();
   await app.ready();
 
@@ -151,7 +151,18 @@ test.fixme('P8.5 Empty Trash previews a count before anything is deleted', async
   });
   await page.getByTestId('empty-trash').click();
 
-  await expect(page.getByText(/Permanently delete 2 conversations/)).toBeVisible();
+  // Trash is not empty when this test starts (the dataset seeds trashed mail),
+  // so the honest number is every conversation currently in Trash — derived
+  // from persisted state rather than assumed from the two rows just moved.
+  const inTrash = await page.evaluate(
+    () =>
+      [
+        ...window.__siftFixture!.control.threads('acc-a'),
+        ...window.__siftFixture!.control.threads('acc-b'),
+      ].filter((t) => t.labelIds.includes('TRASH')).length,
+  );
+  expect(inTrash).toBeGreaterThan(2);
+  await expect(page.getByText(`Permanently delete ${inTrash} conversations`)).toBeVisible();
   expect(await fixtureCalls(page, 'trash_empty')).toHaveLength(0);
 
   await page.getByRole('button', { name: 'Delete permanently' }).click();
@@ -238,7 +249,7 @@ test('P8.4 notifications follow the configured policy and route back to the righ
 });
 
 /** P8.3: a rule is off by default and running it over a mailbox shows the count first. */
-test.fixme('P8.3 a new rule is disabled, and running it on existing mail shows the count before applying', async ({
+test('P8.3 a new rule is disabled, and running it on existing mail shows the count before applying', async ({
   page,
   app,
 }) => {
@@ -249,6 +260,11 @@ test.fixme('P8.3 a new rule is disabled, and running it on existing mail shows t
   await page.getByRole('button', { name: 'Rules' }).click();
   await page.getByRole('button', { name: 'New rule' }).first().click();
   await page.getByLabel('Rule name').fill('Invoices');
+  // The default condition is "sender contains", which matches none of the
+  // seeded senders; pick the field whose subjects actually contain "invoice",
+  // so the preview has a real count to show. Changing the field clears the
+  // value, so it is chosen first.
+  await page.getByLabel('Condition field').selectOption('subject');
   await page.getByLabel('Condition value').first().fill('invoice');
   await page.getByRole('button', { name: 'Add action' }).click();
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -263,6 +279,7 @@ test.fixme('P8.3 a new rule is disabled, and running it on existing mail shows t
   await expect
     .poll(async () => await page.evaluate(() => window.__siftFixture!.control.callCount('rules_preview')))
     .toBeGreaterThan(0);
+  await expect(page.getByText(/\d+ existing messages match\./)).toBeVisible();
   await expect(page.getByRole('button', { name: /^Apply to / })).toBeVisible();
   expect(await page.evaluate(() => window.__siftFixture!.control.callCount('rules_apply_existing'))).toBe(0);
 });
@@ -292,10 +309,7 @@ test('P9.3 Cmd+F reports match counts and Escape does not leave the conversation
 });
 
 /** P9.3: a reader utility never marks unrelated mail read. */
-test.fixme('P9.3 View source opens the raw message and leaves unrelated mail untouched', async ({
-  page,
-  app,
-}) => {
+test('P9.3 View source opens the raw message and leaves unrelated mail untouched', async ({ page, app }) => {
   await app.gotoApp();
   await app.ready();
 
@@ -317,10 +331,7 @@ test.fixme('P9.3 View source opens the raw message and leaves unrelated mail unt
 });
 
 /** P9.3: the print surface states whether the collapsed quote is included. */
-test.fixme('P9.3 the print preview says what will print and toggles the collapsed quote', async ({
-  page,
-  app,
-}) => {
+test('P9.3 the print preview says what will print and toggles the collapsed quote', async ({ page, app }) => {
   await app.gotoApp();
   await app.ready();
 
@@ -329,7 +340,10 @@ test.fixme('P9.3 the print preview says what will print and toggles the collapse
   await page.getByRole('menuitem', { name: 'Print…' }).click();
 
   await expect(page.getByRole('button', { name: 'Print…' })).toBeVisible();
-  await expect(page.getByText(/quoted/i).first()).toBeVisible();
+  // The surface has to state, before printing, whether the collapsed quote is
+  // part of the page — the spec names that state, not a particular sentence,
+  // so this pins the copy the dialog actually carries.
+  await expect(page.getByText('Quoted replies stay hidden.')).toBeVisible();
   await page.getByRole('switch', { name: /Include collapsed quoted text/i }).click();
-  await expect(page.getByText(/quoted history will print/i)).toBeVisible();
+  await expect(page.getByText('Quoted replies are expanded.')).toBeVisible();
 });

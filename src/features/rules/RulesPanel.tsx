@@ -230,7 +230,9 @@ export function RulesPanel({
       id: null,
       revision: null,
       sortOrder: null,
-      enabled: true,
+      // Rules are off until the user turns them on (P8.3): saving a rule must
+      // never start acting on incoming mail by itself.
+      enabled: false,
       name: '',
       match: 'all',
       conditions: [{ field: 'sender', op: 'contains', value: '' }],
@@ -596,6 +598,12 @@ function RuleEditor({
           style={{ ...inputStyle, flex: 1, height: 30 }}
         />
       </div>
+
+      {draft.id === null && (
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--fg-3)' }}>
+          New rules are saved off. Switch it on in the list when you want it to run on incoming mail.
+        </p>
+      )}
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <span style={{ fontSize: 12.5, color: 'var(--fg-2)' }}>Match</span>

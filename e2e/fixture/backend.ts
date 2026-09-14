@@ -690,9 +690,10 @@ function now(): number {
 
 function setClock(skew: number): void {
   clockSkew = skew;
-  // `index.e2e.html` pinned the clock for reproducible dates; the suite moves
-  // it deliberately, and everything read afterwards must agree.
-  Date.now = () => FIXED_NOW + clockSkew;
+  // `index.e2e.html` owns the pinned clock. Moving it has to move every reader
+  // of "now" — `Date.now()` and `new Date()` alike — or the app computes a
+  // present the fixture disagrees with and no deadline is ever crossed.
+  window.__SIFT_CLOCK__.now = FIXED_NOW + clockSkew;
 }
 
 /** The configured attachment-cache cap (P10.4); settable through the UI. */
