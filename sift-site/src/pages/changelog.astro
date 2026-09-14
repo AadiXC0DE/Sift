@@ -4,11 +4,14 @@ import { RELEASES_PAGE, releaseState, releaseView } from '../lib/release';
 const release = releaseView(await releaseState(), 'macOS 13 or newer');
 const releases = [
   {
-    version: 'v1.0.0',
-    date: 'September 4, 2026',
+    version: 'v1.1.0',
+    date: 'September 14, 2026',
     notes: [
+      'More reliable Gmail attachment downloads, draft uploads and queued changes, including drafts without recipients.',
+      'Corrected HTML message sizing and sender CSS, cleaner composer controls and Outbox, and fixed full-screen spacing and modal layering.',
+      'Explicit update checks, downloads and installation in Settings, with cryptographically verified updater archives.',
       'Multi-account Gmail and Google Workspace, each account syncing on its own, with a unified inbox.',
-      'Local-first sync into SQLite with offline reading, search and triage; actions queue and sync when you reconnect.',
+      'Local-first sync into SQLite with cached-message reading, local search and triage; actions queue and sync when you reconnect.',
       'Keyboard-first triage with a command palette and a full keyboard map.',
       'HTML mail sanitized once and rendered in a sandboxed frame.',
       'Undo, snooze, compose with drafts, and an update check that installs nothing until you click through it.',
@@ -38,6 +41,6 @@ const releases = [
       ))
     }
     <p>{release.status}</p>
-    <p>Every release build is signed and notarized, and the pipeline generates <code>SHA256SUMS</code> from the exact bytes it uploads and re-verifies the uploaded file before the release is made public, so the checksums and the DMG cannot disagree.</p>
+    <p>Version 1.1.0 is not Apple Developer ID signed or notarized. Updater archives are signed with Sift’s updater key. The pipeline generates <code>SHA256SUMS</code> from the exact bytes it uploads and re-verifies the uploaded file before the release is made public, so the checksums and the DMG cannot disagree.</p>
   </div>
 </SiteLayout>
