@@ -316,3 +316,24 @@ async fn p43_cancelled_command_poisons_the_connection() {
         "the next task must open a fresh connection"
     );
 }
+
+/// Startup discovery and queued changes must not invert the folder/worker locks.
+#[tokio::test]
+async fn startup_discovery_and_folder_lookup_do_not_deadlock() {
+    let fake = support::fake_imap::FakeGmail::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let account = db.new_account("user@gmail.com", None, None).await.unwrap();
+    let provider = GmailImapProvider::new(account.id, pool_for(fake.addr.port()), db.clone());
+    let sink = DbSink::new(db);
+    let (sync, folders) = tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::join!(
+            provider.full_sync(&sink, tokio_util::sync::CancellationToken::new()),
+            provider.folders_cached(),
+        )
+    })
+    .await
+    .expect("concurrent startup work must finish without a lock cycle");
+    sync.unwrap();
+    assert!(!folders.unwrap().all.is_empty());
+}

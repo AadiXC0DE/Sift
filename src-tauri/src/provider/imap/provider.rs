@@ -735,13 +735,18 @@ impl GmailImapProvider {
 
     /// Discover (once) and cache the folder map.
     pub async fn folders_cached(&self) -> Result<FolderMap, SiftError> {
-        let mut guard = self.folders.lock().await;
-        if guard.is_none() {
-            let mut conn = self.pool.worker().await?;
-            let map = folders::discover(conn.as_mut().expect("connected")).await?;
-            *guard = Some(map);
+        if let Some(map) = self.folders.lock().await.clone() {
+            return Ok(map);
         }
-        Ok(guard.clone().expect("cached"))
+        // Every path takes the worker before the folder-cache lock. Holding
+        // the cache while waiting for a worker deadlocks concurrent discovery.
+        let mut conn = self.pool.worker().await?;
+        if let Some(map) = self.folders.lock().await.clone() {
+            return Ok(map);
+        }
+        let map = folders::discover(conn.as_mut().expect("connected")).await?;
+        *self.folders.lock().await = Some(map.clone());
+        Ok(map)
     }
 
     pub async fn caps(&self) -> Caps {

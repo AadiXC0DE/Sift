@@ -405,7 +405,16 @@ pub fn message_for_draft(
     from: &Identity,
     date_unix: i64,
 ) -> Result<OutgoingMessage, SiftError> {
-    let RecipientLists { to, cc, bcc } = recipients(draft)?;
+    message_with_recipients(draft, from, date_unix, recipients(draft)?)
+}
+
+fn message_with_recipients(
+    draft: &Draft,
+    from: &Identity,
+    date_unix: i64,
+    recipients: RecipientLists,
+) -> Result<OutgoingMessage, SiftError> {
+    let RecipientLists { to, cc, bcc } = recipients;
     let attachments: Vec<OutgoingAttachment> = draft
         .attachments_json
         .iter()
@@ -478,6 +487,23 @@ pub fn prepare_bytes(
     let raw = build_bytes(&msg)?;
     check_raw_size(raw.len())?;
     Ok((msg, raw))
+}
+
+/// Draft storage accepts an empty recipient list; delivery still uses `prepare_bytes`.
+pub fn prepare_draft_bytes(
+    draft: &Draft,
+    from: &Identity,
+    date_unix: i64,
+) -> Result<Vec<u8>, SiftError> {
+    let lists = RecipientLists {
+        to: dedupe_mailboxes(&parse_list("To", &draft.to_json)?),
+        cc: dedupe_mailboxes(&parse_list("Cc", &draft.cc_json)?),
+        bcc: dedupe_mailboxes(&parse_list("Bcc", &draft.bcc_json)?),
+    };
+    let msg = message_with_recipients(draft, from, date_unix, lists)?;
+    let raw = build_bytes(&msg)?;
+    check_raw_size(raw.len())?;
+    Ok(raw)
 }
 
 /// The typed over-limit error, phrased with Sift's own limit.
@@ -572,6 +598,14 @@ mod tests {
             revision: 3,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn recipientless_draft_can_sync_but_cannot_send() {
+        let draft = draft_with(vec![], vec![], vec![]);
+        let raw = prepare_draft_bytes(&draft, &identity(), 1_700_000_000).unwrap();
+        assert!(String::from_utf8_lossy(&raw).contains("Subject: Subject"));
+        assert!(prepare_bytes(&draft, &identity(), 1_700_000_000).is_err());
     }
 
     fn identity() -> Identity {

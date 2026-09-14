@@ -36,12 +36,20 @@ const AUTH_CODES: [&str; 5] = [
 
 /// Codes that are not evidence about connectivity at all (a local refusal, a
 /// budget pause, a cancellation) and must never change the reported state.
-const IGNORED_CODES: [&str; 5] = [
+const IGNORED_CODES: &[&str] = &[
     "cancelled",
     "account_cancelled",
     "backfill_budget",
     "not_in_trash",
     "attachment_locator_invalid",
+    "no_recipients",
+    "bad_recipient",
+    "attachment_missing",
+    "too_large",
+    "storage",
+    "db",
+    "payload_invalid",
+    "unsupported_operation",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -306,6 +314,9 @@ mod tests {
         assert!(c.record_failure("a", &err("imap_error", false), at() + 3));
         assert_eq!(c.state_for("a", at()).state, DEGRADED);
         assert!(!c.background_paused("a"));
+
+        assert!(!c.record_failure("a", &err("no_recipients", false), at() + 4));
+        assert_eq!(c.state_for("a", at()).state, DEGRADED);
 
         // Local refusals and cancellations are not connectivity evidence.
         assert!(!c.record_failure("a", &err("cancelled", true), at() + 4));

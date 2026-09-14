@@ -334,17 +334,18 @@ async fn drain_loop(
                         if !state.is_current(account_id, generation).await {
                             return;
                         }
-                        // Fresh server state after every mutation: one
-                        // coordinated tick, coalesced with any sync that is
-                        // already running (P4.3).
-                        let coordinator = state.coordinator_for(account_id).await;
-                        coordinator
-                            .tick_now(|| {
-                                refresh_after_outbox(
-                                    state, account_id, generation, cancel, &*provider, host,
-                                )
-                            })
-                            .await;
+                        // Drain queued gestures before a potentially large refresh.
+                        // The periodic sync still runs while the queue is busy.
+                        if state.db.outbox_pending_count(account_id).await.unwrap_or(0) == 0 {
+                            let coordinator = state.coordinator_for(account_id).await;
+                            coordinator
+                                .tick_now(|| {
+                                    refresh_after_outbox(
+                                        state, account_id, generation, cancel, &*provider, host,
+                                    )
+                                })
+                                .await;
+                        }
                     }
                     Ok(false) => {}
                     Err(e) => {

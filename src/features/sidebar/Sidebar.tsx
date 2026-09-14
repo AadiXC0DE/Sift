@@ -28,6 +28,7 @@ import {
   CalendarClock,
   BellRing,
   MoreHorizontal,
+  RefreshCw,
 } from 'lucide-react';
 import { useLabels } from '../../stores/labelsStore';
 import { COLOR_MIX_SUPPORTED } from '../../lib/css';
@@ -665,10 +666,6 @@ function PendingFooter() {
   const stuck = totals.failed + totals.uncertain;
   if (running + stuck <= 0) return null;
   const details = totals.summary;
-  const inline = details
-    .slice(0, 2)
-    .map((d) => `${d.label}${d.count > 1 ? ` (${d.count})` : ''}`)
-    .join(', ');
   const tooltip = stuck
     ? `${stuck} operation${stuck === 1 ? '' : 's'} need attention — open the Outbox`
     : details.length
@@ -676,7 +673,7 @@ function PendingFooter() {
       : 'Sending your changes to Gmail';
   const text = stuck
     ? `${stuck} need${stuck === 1 ? 's' : ''} attention`
-    : `Sending ${running.toLocaleString()} change${running === 1 ? '' : 's'} to Gmail`;
+    : `${running.toLocaleString()} change${running === 1 ? '' : 's'} syncing`;
   return (
     <Popover
       open={storeOpen}
@@ -708,13 +705,10 @@ function PendingFooter() {
           {stuck > 0 ? (
             <AlertTriangle size={12} color="var(--warning)" aria-hidden />
           ) : (
-            <span className="spin" aria-hidden style={{ color: 'var(--accent)' }}>
-              ◌
-            </span>
+            <RefreshCw size={12} aria-hidden style={{ flexShrink: 0, color: 'var(--fg-3)' }} />
           )}
           <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {text}
-            {inline && !stuck ? `: ${inline}` : ''}
           </span>
         </button>
       }

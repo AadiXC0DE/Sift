@@ -160,7 +160,7 @@ pub async fn apply_draft_sync(
             generated
         }
     };
-    let (_, raw) = crate::outgoing::prepare_bytes(&draft, &identity, crate::db::now_ms() / 1000)?;
+    let raw = crate::outgoing::prepare_draft_bytes(&draft, &identity, crate::db::now_ms() / 1000)?;
     let previous = draft.remote_draft_id.clone();
     let new = provider
         .draft_upsert(previous.as_deref(), &raw, &rfc_message_id)

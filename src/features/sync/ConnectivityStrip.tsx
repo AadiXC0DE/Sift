@@ -111,14 +111,39 @@ export function ConnectivityStrip({
             key={r.accountId}
             data-account-id={r.accountId}
             data-state={r.state}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, fontSize: 12 }}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '14px minmax(0, 1fr) auto',
+              alignItems: 'center',
+              gap: '4px 8px',
+              minWidth: 0,
+              fontSize: 12,
+            }}
           >
             <Icon size={14} color="var(--warning)" style={{ flexShrink: 0 }} />
-            <span style={{ color: 'var(--fg-2)', flexShrink: 0 }}>{r.email}</span>
+            <span
+              style={{
+                color: 'var(--fg-2)',
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              title={r.email}
+            >
+              {r.email}
+            </span>
             <span
               role="status"
               aria-live="polite"
-              style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}
+              style={{
+                gridColumn: '2 / -1',
+                gridRow: 2,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 2,
+                minWidth: 0,
+              }}
             >
               <span style={{ color: 'var(--warning)', flexShrink: 0 }}>{STATE_COPY[r.state]}</span>
               <span
@@ -138,6 +163,7 @@ export function ConnectivityStrip({
             {r.state === 'reauth_required' ? (
               <button
                 className="sift-chip-btn"
+                style={{ gridColumn: 3, gridRow: 1 }}
                 data-testid="connectivity-reconnect"
                 onClick={() => onReconnect(r.accountId)}
               >
@@ -146,6 +172,7 @@ export function ConnectivityStrip({
             ) : (
               <button
                 className="sift-chip-btn"
+                style={{ gridColumn: 3, gridRow: 1 }}
                 data-testid="connectivity-retry"
                 aria-busy={retrying === r.accountId}
                 onClick={() => void retry(r.accountId)}

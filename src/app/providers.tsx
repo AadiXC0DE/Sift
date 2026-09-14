@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
 import { Toaster } from 'sonner';
 import { Tooltip } from '@base-ui-components/react/tooltip';
 import { useSettings } from '../stores/settingsStore';
@@ -44,6 +45,32 @@ export function Providers({ children }: { children: React.ReactNode }) {
     mq.addEventListener('change', h);
     return () => mq.removeEventListener('change', h);
   }, [load, refresh]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void import('@tauri-apps/api/window')
+      .then(async ({ getCurrentWindow }) => {
+        const nativeWindow = getCurrentWindow();
+        const updateInset = async () => {
+          const fullscreen = await nativeWindow.isFullscreen();
+          if (!disposed)
+            document.documentElement.style.setProperty('--titlebar-h', fullscreen ? '0px' : '30px');
+        };
+        await updateInset();
+        const off = await nativeWindow.onResized(() => {
+          void updateInset().catch(() => {});
+        });
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+      document.documentElement.style.removeProperty('--titlebar-h');
+    };
+  }, []);
   return (
     <>
       <Tooltip.Provider>{children}</Tooltip.Provider>
