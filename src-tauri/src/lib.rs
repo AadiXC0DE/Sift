@@ -18,6 +18,7 @@ pub mod snooze;
 pub mod search;
 pub mod secrets;
 pub mod sync;
+pub mod unsubscribe;
 pub mod uri_scheme;
 
 use app_state::AppState;
@@ -251,7 +252,10 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::threads::thread_get,
             commands::threads::message_body,
             commands::threads::message_raw_source,
-            commands::threads::remote_images_load,
+            commands::threads::remote_content_allow,
+            commands::threads::remote_content_policy_get,
+            commands::threads::remote_content_policy_set,
+            commands::threads::remote_content_sender_revoke,
             commands::outbox::threads_action,
             commands::outbox::action_undo,
             commands::outbox::snooze_set,
@@ -272,6 +276,11 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::compose::attachments_stage_from_message,
             commands::search::search,
             commands::search::unsubscribe,
+            commands::search::saved_search_upsert,
+            commands::search::saved_search_delete,
+            commands::search::saved_search_list,
+            commands::search::saved_search_count,
+            commands::search::saved_search_open,
             commands::attachments::attachments_open,
             commands::attachments::attachments_save_as,
             commands::attachments::attachments_save_all,

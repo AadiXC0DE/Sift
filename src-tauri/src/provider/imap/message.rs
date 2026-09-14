@@ -170,6 +170,15 @@ pub fn meta_to_upsert(
     let get = |n: &str| item.headers.get(n).cloned().unwrap_or_default();
     let from_raw = get("from");
     let parsed = crate::provider::gmail::mime::parse_addrs(&from_raw);
+    let list_unsub_post_value = {
+        let raw = get("list-unsubscribe-post");
+        if raw.is_empty() {
+            None
+        } else {
+            Some(raw)
+        }
+    };
+    let list_unsub_post = crate::unsubscribe::post_is_one_click(list_unsub_post_value.as_deref());
     let _ = is_draft_only_hint;
     Some(MsgUpsert {
         id: format!("{msgid:x}"),
@@ -217,7 +226,21 @@ pub fn meta_to_upsert(
                 Some(r)
             }
         },
-        list_unsubscribe_post: get("list-unsubscribe-post").contains("One-Click"),
+        list_unsubscribe_post_value: list_unsub_post_value,
+        list_unsubscribe_post: list_unsub_post,
+        // An IMAP message is exactly the bytes the sender transmitted: an
+        // `Authentication-Results` field inside it cannot be trusted, so the
+        // evidence is recorded but marked untrusted and one-click is refused
+        // on this transport.
+        auth_results: {
+            let r = get("authentication-results");
+            if r.is_empty() {
+                None
+            } else {
+                Some(r)
+            }
+        },
+        auth_results_trusted: false,
         size_estimate: Some(item.size as i64),
         has_attachments: false,
         is_unread: unread,

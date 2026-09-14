@@ -312,6 +312,7 @@ async fn p52_remote_only_gmail_draft_is_imported_editable() {
         trackers: 0,
         dark_safe: true,
         quoted_from: None,
+        unsubscribe: Default::default(),
     })
     .await
     .unwrap();

@@ -140,10 +140,15 @@ pub async fn run_full_sync(
                         in_reply_to: hdrs.get("in-reply-to").cloned(),
                         references_json: "[]".into(),
                         list_unsubscribe: hdrs.get("list-unsubscribe").cloned(),
-                        list_unsubscribe_post: hdrs
-                            .get("list-unsubscribe-post")
-                            .map(|s| s.contains("One-Click"))
-                            .unwrap_or(false),
+                        list_unsubscribe_post_value: hdrs.get("list-unsubscribe-post").cloned(),
+                        list_unsubscribe_post: crate::unsubscribe::post_is_one_click(
+                            hdrs.get("list-unsubscribe-post").map(String::as_str),
+                        ),
+                        // The Gmail API returns these metadata headers from
+                        // Google's own copy of the message, so a value here is
+                        // provider evidence, not sender-authored text.
+                        auth_results: hdrs.get("authentication-results").cloned(),
+                        auth_results_trusted: hdrs.contains_key("authentication-results"),
                         size_estimate: m.size_estimate,
                         has_attachments: false,
                         is_unread: labels.contains(&"UNREAD".to_string()),

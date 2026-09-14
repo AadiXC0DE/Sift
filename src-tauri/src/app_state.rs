@@ -77,6 +77,13 @@ pub struct AppState {
     /// One wake-up handle per account (P6.6): enqueueing work and reconnecting
     /// nudge the drain instead of waiting out its poll interval.
     pub outbox_kicks: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
+    /// P9.1 "load once": a per-message permission that lives only for this run
+    /// of the app and is never written to settings.
+    session_remote_loads: std::sync::Mutex<std::collections::HashSet<(String, String)>>,
+    /// P9.1: session-only bumps of the permission generation, so a client that
+    /// keys a body cache on the generation also invalidates it for a load-once
+    /// grant (which deliberately does not change stored preferences).
+    session_privacy_bumps: std::sync::Mutex<HashMap<String, i64>>,
 }
 
 impl AppState {
@@ -104,7 +111,39 @@ impl AppState {
             setup_runtime: Mutex::new(None),
             connectivity: crate::connectivity::Connectivity::new(),
             outbox_kicks: Mutex::new(Default::default()),
+            session_remote_loads: std::sync::Mutex::new(Default::default()),
+            session_privacy_bumps: std::sync::Mutex::new(Default::default()),
         }
+    }
+
+    // -- remote-content session permission (P9.1) ---------------------------
+
+    /// Grant "load once" for one message, for this run of the app only.
+    pub async fn grant_session_remote_load(&self, account_id: &str, message_id: &str) {
+        if let Ok(mut grants) = self.session_remote_loads.lock() {
+            grants.insert((account_id.to_string(), message_id.to_string()));
+        }
+        if let Ok(mut bumps) = self.session_privacy_bumps.lock() {
+            *bumps.entry(account_id.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    pub async fn session_remote_allowed(&self, account_id: &str, message_id: &str) -> bool {
+        self.session_remote_loads
+            .lock()
+            .map(|grants| {
+                grants.contains(&(account_id.to_string(), message_id.to_string()))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Session-only additions to one account's permission generation.
+    pub async fn session_privacy_bumps(&self, account_id: &str) -> i64 {
+        self.session_privacy_bumps
+            .lock()
+            .ok()
+            .and_then(|bumps| bumps.get(account_id).copied())
+            .unwrap_or(0)
     }
 
     // -- outbox wake-ups (P6.6) ---------------------------------------------

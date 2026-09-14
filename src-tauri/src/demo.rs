@@ -481,6 +481,11 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
                 None
             },
             list_unsubscribe_post: m.0 == "da-m4",
+            list_unsubscribe_post_value: (m.0 == "da-m4").then(|| "List-Unsubscribe=One-Click".to_string()),
+            // Demo mail is seeded locally, so it carries no provider evidence:
+            // the demo unsubscribe flow therefore shows the honest fallback.
+            auth_results: None,
+            auth_results_trusted: false,
             size_estimate: Some(4096),
             has_attachments: m.10,
             is_unread: m.8,
@@ -514,6 +519,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
             trackers: s.trackers,
             dark_safe: s.dark_safe,
             quoted_from: None,
+            unsubscribe: Default::default(),
         })
         .await?;
     }

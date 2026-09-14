@@ -31,6 +31,12 @@ pub struct ParsedMessage {
     pub references: Vec<String>,
     pub list_unsub: Option<String>,
     pub list_unsub_post: bool,
+    /// The exact `List-Unsubscribe-Post` field value (P9.4).
+    pub list_unsub_post_value: Option<String>,
+    /// `Authentication-Results` as the provider returned it, and whether the
+    /// provider itself produced it (rather than the sender).
+    pub auth_results: Option<String>,
+    pub auth_results_trusted: bool,
 }
 
 fn b64url(s: &str) -> Vec<u8> {
@@ -214,11 +220,13 @@ pub fn parse_full(msg: &Message) -> ParsedMessage {
         pm.references = r.split_whitespace().map(|s| s.to_string()).collect();
     }
     pm.list_unsub = pm.headers.get("list-unsubscribe").cloned();
-    pm.list_unsub_post = pm
-        .headers
-        .get("list-unsubscribe-post")
-        .map(|s| s.contains("List-Unsubscribe=One-Click"))
-        .unwrap_or(false);
+    pm.list_unsub_post_value = pm.headers.get("list-unsubscribe-post").cloned();
+    pm.list_unsub_post = crate::unsubscribe::post_is_one_click(pm.list_unsub_post_value.as_deref());
+    // Gmail's REST metadata headers are produced by Google, so an
+    // `Authentication-Results` field here is provider evidence rather than a
+    // header the sender wrote.
+    pm.auth_results = pm.headers.get("authentication-results").cloned();
+    pm.auth_results_trusted = pm.auth_results.is_some();
     let from_raw = get("from");
     let f = parse_addrs(&from_raw);
     pm.from_name = f.first().and_then(|(n, _)| n.clone());

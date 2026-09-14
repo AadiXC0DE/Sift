@@ -123,7 +123,7 @@ fn jitter() -> std::time::Duration {
     std::time::Duration::from_millis((n % 400) as u64)
 }
 
-const META_HEADERS: &str = "From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&metadataHeaders=Reply-To&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=Message-ID&metadataHeaders=In-Reply-To&metadataHeaders=References&metadataHeaders=List-Unsubscribe&metadataHeaders=List-Unsubscribe-Post";
+const META_HEADERS: &str = "From&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&metadataHeaders=Reply-To&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=Message-ID&metadataHeaders=In-Reply-To&metadataHeaders=References&metadataHeaders=List-Unsubscribe&metadataHeaders=List-Unsubscribe-Post&metadataHeaders=Authentication-Results";
 const META_FIELDS: &str =
     "id,threadId,labelIds,snippet,historyId,internalDate,sizeEstimate,payload/headers";
 

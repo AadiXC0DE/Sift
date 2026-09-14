@@ -159,6 +159,81 @@ pub struct ThreadsPage {
     pub generation: i64,
 }
 
+/// One page of search results (P7.1/P7.3). A superset of `ThreadsPage` so a
+/// caller that only reads rows keeps working.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchPage {
+    pub rows: Vec<ThreadRow>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub total: Option<i64>,
+    pub generation: i64,
+    /// Recoverable problems with the query itself: an invalid date, an
+    /// unclosed quote, an operator Sift keeps as literal text.
+    pub hints: Vec<crate::search::query::QueryHint>,
+    /// The query text as the backend interpreted it.
+    #[serde(rename = "query")]
+    pub query: String,
+    /// Accounts whose *server* search failed while others succeeded, so the UI
+    /// can say the result is partial instead of pretending it is complete.
+    #[serde(rename = "failedAccounts", default)]
+    pub failed_accounts: Vec<String>,
+    /// `true` when the local result is limited to downloaded mail.
+    #[serde(rename = "localOnly", default)]
+    pub local_only: bool,
+}
+
+/// A saved search (P7.4). It stores a validated query and an account scope —
+/// never a copy of any message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSearch {
+    pub id: String,
+    pub name: String,
+    pub query: String,
+    /// The accounts this search was saved against. An empty list matches
+    /// nothing: a scope is never silently widened to every account.
+    #[serde(rename = "accountScope")]
+    pub account_scope: Vec<String>,
+    /// Scope entries whose account no longer exists. The query is kept and the
+    /// UI offers the scope for editing.
+    #[serde(rename = "missingAccounts", default)]
+    pub missing_accounts: Vec<String>,
+    #[serde(rename = "sortOrder")]
+    pub sort_order: i64,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+    /// The AST version the stored query was validated against.
+    #[serde(rename = "astVersion")]
+    pub ast_version: i64,
+    /// Lazy count: `None` until the UI asks for a visible mailbox.
+    #[serde(rename = "matchCount", skip_serializing_if = "Option::is_none")]
+    pub match_count: Option<i64>,
+    #[serde(rename = "countedAt", skip_serializing_if = "Option::is_none")]
+    pub counted_at: Option<i64>,
+}
+
+/// Create/update payload for a saved search. `id` is absent for a new one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSearchInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    pub query: String,
+    #[serde(rename = "accountScope")]
+    pub account_scope: Vec<String>,
+    #[serde(rename = "sortOrder", default)]
+    pub sort_order: Option<i64>,
+}
+
+/// A lazily computed saved-search count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSearchCount {
+    pub id: String,
+    pub count: i64,
+    #[serde(rename = "computedAt")]
+    pub computed_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentMeta {
     pub id: String,
@@ -344,6 +419,42 @@ pub struct ListUnsub {
     pub mailto: Option<String>,
     #[serde(rename = "oneClick")]
     pub one_click: bool,
+    /// Every structured entry of the header, in header order (P9.4).
+    #[serde(default)]
+    pub targets: Vec<UnsubscribeTarget>,
+}
+
+/// One parsed `List-Unsubscribe` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsubscribeTarget {
+    /// `https` | `http` | `mailto` | `other`.
+    pub scheme: String,
+    pub url: String,
+}
+
+/// Outcome of one user-initiated unsubscribe (P9.4). Every path is explicit:
+/// when Sift will not POST on the user's behalf it says why and hands back the
+/// URL or `mailto:` for the user to complete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsubscribeResult {
+    /// `one_click` | `open_link` | `mailto` | `none`.
+    pub method: String,
+    pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mailto: Option<String>,
+    /// Why a one-click POST was not performed or did not succeed:
+    /// `insecure_transport`, `missing_post_value`, `untrusted_authentication`,
+    /// `blocked_target`, `redirected`, `post_failed`, `no_targets`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// Human-readable explanation shown next to the button.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub targets: Vec<UnsubscribeTarget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -410,9 +521,91 @@ pub struct MessageBody {
     pub tracker_count: i64,
     #[serde(rename = "darkSafe")]
     pub dark_safe: bool,
+    /// Whether this read was rendered with external images permitted. The UI
+    /// must never treat this as a request to change policy: it reports what
+    /// the backend actually did.
     #[serde(rename = "remoteImagesAllowed")]
     pub remote_images_allowed: bool,
+    /// P9.1: the effective policy used for this read (`block`|`ask`|`allow`).
+    #[serde(rename = "remoteContentMode")]
+    pub remote_content_mode: String,
+    /// P9.1: monotonic per-account permission generation. It changes whenever
+    /// this account's effective remote-content permission changes, so a body
+    /// cache must key on it.
+    #[serde(rename = "privacyGeneration")]
+    pub privacy_generation: i64,
+    /// P9.2/P9.1: monotonic rendering version; a cache key must include it so
+    /// a sanitizer change invalidates stored renderings.
+    #[serde(rename = "renderVersion")]
+    pub render_version: i64,
+    /// P9.1: inline `cid:` references that could not be resolved from the
+    /// cached parts. A broken CID is reported, never worked around by turning
+    /// remote content on.
+    #[serde(rename = "unresolvedInlineCount", default)]
+    pub unresolved_inline_count: i64,
 }
+
+/// Bumped whenever the sanitizer's output for the same input changes.
+pub const RENDER_VERSION: i64 = 2;
+
+/// The remote-content policy (P9.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteContentMode {
+    /// Never load anything external.
+    Block,
+    /// Ask per message; a sender allow-list entry or a session "load once"
+    /// grant permits the load.
+    Ask,
+    /// Load the HTTPS images a message needs without asking.
+    Allow,
+}
+
+impl RemoteContentMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "block" => Some(Self::Block),
+            "ask" => Some(Self::Ask),
+            "allow" => Some(Self::Allow),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Ask => "ask",
+            Self::Allow => "allow",
+        }
+    }
+
+    /// Whether external resources load without a per-message decision.
+    pub fn loads_without_asking(&self) -> bool {
+        matches!(self, Self::Allow)
+    }
+}
+
+/// The visible policy plus the state the privacy panel needs (P9.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteContentPolicy {
+    #[serde(rename = "mode")]
+    pub mode: String,
+    /// True while the one-time compact privacy choice is still unanswered for
+    /// an upgraded database. Effective behaviour stays `allow` until then.
+    #[serde(rename = "choicePending")]
+    pub choice_pending: bool,
+    /// Senders this account has permanently allowed.
+    #[serde(rename = "allowedSenders")]
+    pub allowed_senders: Vec<String>,
+    #[serde(rename = "generation")]
+    pub generation: i64,
+    /// The copy the UI must show; kept next to the values it describes so the
+    /// two cannot drift apart.
+    #[serde(rename = "privacyNotice")]
+    pub privacy_notice: String,
+}
+
+/// P9.1 visible privacy copy. Sift talks to the image host directly.
+pub const PRIVACY_NOTICE: &str = "External images are loaded straight from their own servers, which can see your IP address and when you opened the message. Sift does not hide your IP address through a relay.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -819,6 +1012,18 @@ pub struct Settings {
     pub dock_badge: String,
     #[serde(rename = "remoteImages")]
     pub remote_images: String,
+    /// P9.1: the explicit remote-content policy. `block` never loads anything
+    /// external, `ask` waits for a per-message or per-sender decision, and
+    /// `allow` loads the HTTPS images a message needs without asking. New
+    /// installations default to `ask`.
+    #[serde(rename = "remoteContentMode")]
+    pub remote_content_mode: String,
+    /// P9.1: true when this database was upgraded from a build that treated a
+    /// legacy ambiguous `ask` as `allow`. The effective policy stays `allow`
+    /// until the one-time compact privacy choice is answered, so nothing
+    /// changes silently on upgrade.
+    #[serde(rename = "remoteContentChoicePending", default)]
+    pub remote_content_choice_pending: bool,
     #[serde(rename = "stripTrackers")]
     pub strip_trackers: bool,
     #[serde(rename = "offlineBodyCache")]
@@ -857,6 +1062,8 @@ impl Default for Settings {
             sound: "subtle".into(),
             dock_badge: "unread".into(),
             remote_images: "always".into(),
+            remote_content_mode: "ask".into(),
+            remote_content_choice_pending: false,
             strip_trackers: true,
             offline_body_cache: "2y".into(),
             attachment_cache_size: "512MB".into(),

@@ -1564,6 +1564,7 @@ mod tests {
             trackers: 0,
             dark_safe: true,
             quoted_from: None,
+            unsubscribe: Default::default(),
         })
         .await
         .unwrap();

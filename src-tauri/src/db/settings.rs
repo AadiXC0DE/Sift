@@ -30,6 +30,20 @@ impl Db {
                 map.insert(k.clone(), v.clone());
             }
         }
+        // Choosing a remote-content policy answers the one-time upgrade prompt
+        // in the same write, so the stored document can never say "pending"
+        // about a choice the user just made.
+        let chose_policy = patch
+            .as_object()
+            .is_some_and(|p| p.contains_key(super::privacy::MODE_KEY));
+        if chose_policy {
+            if let Some(map) = cur.as_object_mut() {
+                map.insert(
+                    super::privacy::PENDING_KEY.into(),
+                    serde_json::json!(false),
+                );
+            }
+        }
         let merged: Settings = serde_json::from_value(cur.clone())?;
         let json = serde_json::to_string(&merged)?;
         self.write(move |c| {
@@ -40,6 +54,11 @@ impl Db {
             Ok(())
         })
         .await?;
+        if chose_policy {
+            // A cached rendering was produced under the previous permission:
+            // move the generation so no cache can serve it as current.
+            self.privacy_bump_generations(None).await?;
+        }
         Ok(merged)
     }
     /// Raw key/value cell in the settings table (feature counters, etc.).

@@ -203,6 +203,11 @@ pub fn sanitize(url_path: &str, raw_html: &str) -> SanitizeOut {
     // iframe CSP and sandboxing provide the primary execution boundary.
     html = strip_bad_styles(&html);
 
+    // Remote fonts and external stylesheets are blocked in every policy, so a
+    // stored body never carries them. Image references stay in place: the
+    // permission is applied per read, so a policy change needs no re-render.
+    html = crate::render::policy::strip_blocked_vectors(&html);
+
     // dark_safe: no bgcolor/background other than white/transparent
     let lower = html.to_lowercase();
     let mut dark_safe = true;

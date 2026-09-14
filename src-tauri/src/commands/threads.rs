@@ -19,32 +19,10 @@ pub async fn threads_query(
             generation: 0,
         });
     }
-    // Search view delegates to search
-    if let View::Search { q } = &query.view {
-        let parsed = crate::search::query::parse(q);
-        let pairs =
-            crate::search::local::search(&state.db, &query.account_ids, &parsed, query.limit)
-                .await
-                .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-        // hydrate rows
-        let mut rows = vec![];
-        for (aid, tid) in pairs {
-            if let Some(r) = thread_row_for(&state.db, &aid, &tid).await? {
-                rows.push(r);
-            }
-        }
-        return Ok(ThreadsPage {
-            rows,
-            next_cursor: None,
-            total: None,
-            generation: 0,
-        });
-    }
-    state
-        .db
-        .threads_query(query)
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))
+    // The Search view, the keyset cursor and the query/sort identity are all
+    // resolved in one place (`Db::threads_query`), so the list and a saved
+    // mailbox can never page differently.
+    state.db.threads_query(query).await
 }
 
 pub async fn thread_row_for(
@@ -58,34 +36,8 @@ pub async fn thread_row_for(
             Ok(s) => s,
             Err(_) => return Ok(None),
         };
-        let mut rows = s
-            .query_map(rusqlite::params![a, t], |r| {
-                let label_ids: Vec<String> =
-                    serde_json::from_str(&r.get::<_, String>("label_ids")?).unwrap_or_default();
-                let parts: Vec<Address> =
-                    serde_json::from_str(&r.get::<_, String>("participants")?).unwrap_or_default();
-                Ok(ThreadRow {
-                    account_id: r.get("account_id")?,
-                    id: r.get("id")?,
-                    subject: r.get("subject")?,
-                    snippet: r.get("snippet")?,
-                    participants: parts,
-                    last_message_at: r.get("last_message_at")?,
-                    message_count: r.get("message_count")?,
-                    unread_count: r.get("unread_count")?,
-                    is_starred: r.get::<_, i64>("is_starred")? != 0,
-                    has_attachments: r.get::<_, i64>("has_attachments")? != 0,
-                    label_ids,
-                    snoozed_until: r.get("snoozed_until")?,
-                    server_only: false,
-                })
-            })
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        Ok(rows
-            .next()
-            .transpose()
-            .map_err(|e: rusqlite::Error| e)
-            .unwrap_or(None))
+        let mut rows = s.query_map(rusqlite::params![a, t], crate::db::threads::thread_row_from)?;
+        Ok(rows.next().transpose()?)
     })
     .await
     .map_err(|e| SiftError::app("db", e.to_string(), false))
@@ -189,11 +141,20 @@ pub async fn thread_get(
         let cc: Vec<Address> = serde_json::from_str(&cc_json).unwrap_or_default();
         let bcc: Vec<Address> = serde_json::from_str(&bcc_json).unwrap_or_default();
         let list_unsubscribe = list_unsub.map(|u| {
-            let (url, mailto) = parse_list_unsub(&u);
+            let targets = crate::unsubscribe::parse_targets(&u);
+            let url = targets
+                .iter()
+                .find(|t| t.scheme == "https" || t.scheme == "http")
+                .map(|t| t.url.clone());
+            let mailto = targets
+                .iter()
+                .find(|t| t.scheme == "mailto")
+                .map(|t| t.url.clone());
             ListUnsub {
                 url,
                 mailto,
                 one_click: list_post,
+                targets,
             }
         });
         messages.push(MessageMeta {
@@ -264,24 +225,6 @@ type MsgTuple = (
     Option<String>,
 );
 
-fn parse_list_unsub(raw: &str) -> (Option<String>, Option<String>) {
-    let mut url = None;
-    let mut mailto = None;
-    for part in raw.split(',') {
-        let p = part
-            .trim()
-            .trim_matches(|c| c == '<' || c == '>')
-            .trim()
-            .to_string();
-        if p.starts_with("mailto:") {
-            mailto = Some(p);
-        } else if p.starts_with("http") {
-            url = Some(p);
-        }
-    }
-    (url, mailto)
-}
-
 fn body_failure_state(error: &SiftError) -> &'static str {
     if error.is_retryable() {
         "loading"
@@ -338,11 +281,157 @@ async fn render_message_html(
     rendered
 }
 
+/// Whether this read may load external content, and the policy that decided.
+struct RemoteDecision {
+    mode: &'static str,
+    allowed: bool,
+    generation: i64,
+}
+
+fn db_err(e: anyhow::Error) -> SiftError {
+    SiftError::app("db", e.to_string(), false)
+}
+
+/// The sender of one message, as stored. Used for the account-scoped
+/// allow-list, which is only consulted in `ask` mode.
+async fn message_sender(db: &crate::db::Db, message: &MessageRef) -> Result<String, SiftError> {
+    let (account, id) = (message.account_id.clone(), message.message_id.clone());
+    db.read(move |c| {
+        Ok(c.query_row(
+            "SELECT COALESCE(from_email,'') FROM messages WHERE account_id=? AND id=?",
+            rusqlite::params![account, id],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap_or_default())
+    })
+    .await
+    .map_err(db_err)
+}
+
+/// Resolve the permission for one read (P9.1).
+///
+/// `block` never loads, `allow` always does, and `ask` consults — in this
+/// order — the per-message session grant and then the sender allow-list for
+/// **this account**. An unanswered one-time upgrade choice keeps the behaviour
+/// the database already had (`allow`).
+async fn remote_decision(
+    state: &AppState,
+    message: &MessageRef,
+) -> Result<RemoteDecision, SiftError> {
+    let privacy = state.db.privacy_state().await.map_err(db_err)?;
+    let generation = state.db.privacy_generation(&message.account_id).await.map_err(db_err)?
+        + state.session_privacy_bumps(&message.account_id).await;
+    let mode = privacy.effective();
+    let allowed = match mode {
+        crate::dto::RemoteContentMode::Block => false,
+        crate::dto::RemoteContentMode::Allow => true,
+        crate::dto::RemoteContentMode::Ask => {
+            if state
+                .session_remote_allowed(&message.account_id, &message.message_id)
+                .await
+            {
+                true
+            } else {
+                let sender = message_sender(&state.db, message).await?;
+                !sender.is_empty()
+                    && state
+                        .db
+                        .sender_allowed(&message.account_id, &sender)
+                        .await
+                        .map_err(db_err)?
+            }
+        }
+    };
+    Ok(RemoteDecision {
+        mode: mode.as_str(),
+        allowed,
+        generation,
+    })
+}
+
+/// Build the IPC payload for one read, applying the permission to the stored
+/// body. A broken inline reference is reported, never worked around by turning
+/// remote content on.
+/// What the sanitized body contributed to the payload.
+struct BodyStats {
+    remote_images: i64,
+    trackers: i64,
+    dark_safe: bool,
+    unresolved_inline: i64,
+}
+
+impl Default for BodyStats {
+    fn default() -> Self {
+        Self {
+            remote_images: 0,
+            trackers: 0,
+            dark_safe: true,
+            unresolved_inline: 0,
+        }
+    }
+}
+
+fn body_payload(
+    decision: &RemoteDecision,
+    message_id: String,
+    state: &str,
+    html: Option<String>,
+    text: Option<String>,
+    stats: BodyStats,
+) -> MessageBody {
+    MessageBody {
+        message_id,
+        state: state.into(),
+        html,
+        text,
+        remote_image_count: stats.remote_images,
+        tracker_count: stats.trackers,
+        dark_safe: stats.dark_safe,
+        remote_images_allowed: decision.allowed,
+        remote_content_mode: decision.mode.to_string(),
+        privacy_generation: decision.generation,
+        render_version: crate::dto::RENDER_VERSION,
+        unresolved_inline_count: stats.unresolved_inline,
+    }
+}
+
+/// Render one stored body under the resolved permission.
+async fn rendered_body(
+    state: &AppState,
+    message: &MessageRef,
+    html: Option<String>,
+    decision: &RemoteDecision,
+) -> (Option<String>, i64) {
+    let Some(html) = html else {
+        return (None, 0);
+    };
+    let url_path = format!("{}/{}", message.account_id, message.message_id);
+    let rendered = render_message_html(state, message, html).await;
+    let unresolved = crate::render::sanitize::inline_image_refs(&rendered, &url_path).len() as i64;
+    (
+        Some(crate::render::policy::apply(&rendered, decision.allowed)),
+        unresolved,
+    )
+}
+
 #[tauri::command]
 pub async fn message_body(
     state: State<'_, AppState>,
     account_id: String,
     message_id: String,
+) -> Result<MessageBody, SiftError> {
+    message_body_for(&state, &account_id, &message_id).await
+}
+
+/// Read one message body under the account's current remote-content policy.
+///
+/// Split out from the command so the whole path — permission, sanitized
+/// render, unresolved inline references — is exercisable without a Tauri
+/// runtime.
+pub async fn message_body_for(
+    state: &AppState,
+    account_id: &str,
+    message_id: &str,
 ) -> Result<MessageBody, SiftError> {
     let message = MessageRef::new(account_id, message_id);
     // Ownership check: the message must exist in this account. The provider id
@@ -351,69 +440,54 @@ pub async fn message_body(
         .db
         .message_thread(&message)
         .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+        .map_err(db_err)?;
     if exists.is_none() {
-        return Ok(MessageBody {
-            message_id: message.message_id,
-            state: "error".into(),
-            html: None,
-            text: None,
-            remote_image_count: 0,
-            tracker_count: 0,
-            dark_safe: true,
-            remote_images_allowed: false,
-        });
+        return Ok(body_payload(
+            &RemoteDecision {
+                mode: "block",
+                allowed: false,
+                generation: 0,
+            },
+            message.message_id,
+            "error",
+            None,
+            None,
+            BodyStats::default(),
+        ));
     }
-    // Remote images load by default like any other email client.
-    // Only an explicit Settings → Privacy → Never blocks them (via CSP).
-    // Legacy 'ask' values and per-sender allow-lists are treated as allowed.
-    let settings = state
-        .db
-        .settings_get()
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-    let global_allow = settings.remote_images != "never";
-    if let Some((html, text, ri, tc, ds, _q)) = state
-        .db
-        .bodies_get(&message)
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?
+    let decision = remote_decision(state, &message).await?;
+    if let Some((html, text, remote_images, trackers, dark_safe, _q)) =
+        state.db.bodies_get(&message).await.map_err(db_err)?
     {
-        let html_out = if global_allow {
-            html.map(|h| crate::render::sanitize::restore_remote_images(&h))
-        } else {
-            html
-        };
-        let html_out = match html_out {
-            Some(h) => Some(render_message_html(&state, &message, h).await),
-            None => None,
-        };
-        return Ok(MessageBody {
-            message_id: message.message_id,
-            state: "ready".into(),
-            html: html_out,
+        let (html_out, unresolved) =
+            rendered_body(state, &message, html, &decision).await;
+        return Ok(body_payload(
+            &decision,
+            message.message_id,
+            "ready",
+            html_out,
             text,
-            remote_image_count: ri,
-            tracker_count: tc,
-            dark_safe: ds,
-            remote_images_allowed: global_allow,
-        });
+            BodyStats {
+                remote_images,
+                trackers,
+                dark_safe,
+                unresolved_inline: unresolved,
+            },
+        ));
     }
     // Foreground fetches must preempt bulk backfill after a rendering upgrade.
     let _foreground = state.gate.enter();
     let mut provider = match state.provider_for(&message.account_id).await {
         Ok(p) => p,
         Err(error) => {
-            return Ok(MessageBody {
-                message_id: message.message_id,
-                state: body_failure_state(&error).into(),
-                html: None,
-                text: Some(error.to_string()),
-                remote_image_count: 0,
-                tracker_count: 0,
-                dark_safe: true,
-                remote_images_allowed: global_allow,
-            });
+            return Ok(body_payload(
+                &decision,
+                message.message_id,
+                body_failure_state(&error),
+                None,
+                Some(error.to_string()),
+                BodyStats::default(),
+            ))
         }
     };
     let mut fetched = provider.fetch_body(&message.message_id).await;
@@ -439,67 +513,53 @@ pub async fn message_body(
                 .await
                 .is_err()
             {
-                return Ok(MessageBody {
-                    message_id: message.message_id,
-                    state: "error".into(),
-                    html: None,
-                    text: parsed.text,
-                    remote_image_count: 0,
-                    tracker_count: 0,
-                    dark_safe: true,
-                    remote_images_allowed: global_allow,
-                });
+                return Ok(body_payload(
+                    &decision,
+                    message.message_id,
+                    "error",
+                    None,
+                    parsed.text,
+                    BodyStats::default(),
+                ));
             }
         }
         Err(error) => {
-            return Ok(MessageBody {
-                message_id: message.message_id,
-                state: body_failure_state(&error).into(),
-                html: None,
-                text: Some(error.to_string()),
-                remote_image_count: 0,
-                tracker_count: 0,
-                dark_safe: true,
-                remote_images_allowed: global_allow,
-            });
+            return Ok(body_payload(
+                &decision,
+                message.message_id,
+                body_failure_state(&error),
+                None,
+                Some(error.to_string()),
+                BodyStats::default(),
+            ))
         }
     }
-    if let Some((html, text, ri, tc, ds, _q)) = state
-        .db
-        .bodies_get(&message)
-        .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?
+    if let Some((html, text, remote_images, trackers, dark_safe, _q)) =
+        state.db.bodies_get(&message).await.map_err(db_err)?
     {
-        let html_out = if global_allow {
-            html.map(|h| crate::render::sanitize::restore_remote_images(&h))
-        } else {
-            html
-        };
-        let html_out = match html_out {
-            Some(h) => Some(render_message_html(&state, &message, h).await),
-            None => None,
-        };
-        return Ok(MessageBody {
-            message_id: message.message_id,
-            state: "ready".into(),
-            html: html_out,
+        let (html_out, unresolved) = rendered_body(state, &message, html, &decision).await;
+        return Ok(body_payload(
+            &decision,
+            message.message_id,
+            "ready",
+            html_out,
             text,
-            remote_image_count: ri,
-            tracker_count: tc,
-            dark_safe: ds,
-            remote_images_allowed: global_allow,
-        });
+            BodyStats {
+                remote_images,
+                trackers,
+                dark_safe,
+                unresolved_inline: unresolved,
+            },
+        ));
     }
-    Ok(MessageBody {
-        message_id: message.message_id,
-        state: "error".into(),
-        html: None,
-        text: None,
-        remote_image_count: 0,
-        tracker_count: 0,
-        dark_safe: true,
-        remote_images_allowed: global_allow,
-    })
+    Ok(body_payload(
+        &decision,
+        message.message_id,
+        "error",
+        None,
+        None,
+        BodyStats::default(),
+    ))
 }
 
 #[tauri::command]
@@ -513,7 +573,7 @@ pub async fn message_raw_source(
         .db
         .message_thread(&message)
         .await
-        .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+        .map_err(db_err)?;
     if exists.is_none() {
         return Err(SiftError::NotFound("message".into()));
     }
@@ -521,49 +581,123 @@ pub async fn message_raw_source(
     provider.fetch_raw(&message.message_id).await
 }
 
+// ---------------------------------------------------------------------------
+// Remote content permission (P9.1)
+// ---------------------------------------------------------------------------
+
+async fn policy_payload(
+    state: &AppState,
+    account_id: &str,
+) -> Result<RemoteContentPolicy, SiftError> {
+    let privacy = state.db.privacy_state().await.map_err(db_err)?;
+    Ok(RemoteContentPolicy {
+        mode: privacy.stored_mode.as_str().to_string(),
+        choice_pending: privacy.choice_pending,
+        allowed_senders: state
+            .db
+            .sender_allow_list(account_id)
+            .await
+            .map_err(db_err)?,
+        generation: state
+            .db
+            .privacy_generation(account_id)
+            .await
+            .map_err(db_err)?,
+        privacy_notice: PRIVACY_NOTICE.to_string(),
+    })
+}
+
 #[tauri::command]
-pub async fn remote_images_load(
+pub async fn remote_content_policy_get(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<RemoteContentPolicy, SiftError> {
+    policy_payload(&state, &account_id).await
+}
+
+/// Set the explicit policy. Answering this clears the one-time upgrade prompt
+/// and moves every account's permission generation, because a cached body was
+/// rendered under the previous permission.
+#[tauri::command]
+pub async fn remote_content_policy_set(
+    state: State<'_, AppState>,
+    account_id: String,
+    mode: String,
+) -> Result<RemoteContentPolicy, SiftError> {
+    let parsed = crate::dto::RemoteContentMode::parse(&mode)
+        .ok_or_else(|| SiftError::app("bad_request", "unknown remote-content mode", false))?;
+    state.db.privacy_set_mode(parsed).await.map_err(db_err)?;
+    policy_payload(&state, &account_id).await
+}
+
+#[tauri::command]
+pub async fn remote_content_sender_revoke(
+    state: State<'_, AppState>,
+    account_id: String,
+    sender: String,
+) -> Result<RemoteContentPolicy, SiftError> {
+    state
+        .db
+        .sender_revoke(&account_id, &sender)
+        .await
+        .map_err(db_err)?;
+    state
+        .db
+        .privacy_bump_generations(Some(std::slice::from_ref(&account_id)))
+        .await
+        .map_err(db_err)?;
+    policy_payload(&state, &account_id).await
+}
+
+/// Grant external content for one message.
+///
+/// `rememberSender` persists an account-scoped "always for sender"; without it
+/// the grant is a **session** permission for this one message and is never
+/// written to settings. Either way the body is returned re-rendered under the
+/// new permission.
+#[tauri::command]
+pub async fn remote_content_allow(
     state: State<'_, AppState>,
     account_id: String,
     message_id: String,
     remember_sender: bool,
 ) -> Result<MessageBody, SiftError> {
+    remote_content_allow_for(&state, &account_id, &message_id, remember_sender).await
+}
+
+/// Grant external content for one message; see [`remote_content_allow`].
+pub async fn remote_content_allow_for(
+    state: &AppState,
+    account_id: &str,
+    message_id: &str,
+    remember_sender: bool,
+) -> Result<MessageBody, SiftError> {
     let message = MessageRef::new(account_id, message_id);
     if remember_sender {
-        let (aid, mid) = (message.account_id.clone(), message.message_id.clone());
-        let from_email: String = state
-            .db
-            .read(move |c| {
-                Ok(c.query_row(
-                    "SELECT COALESCE(from_email,'') FROM messages WHERE account_id=? AND id=?",
-                    rusqlite::params![aid, mid],
-                    |r| r.get(0),
-                )
-                .unwrap_or_default())
-            })
-            .await
-            .map_err(|e| SiftError::app("db", e.to_string(), false))?;
-        let (aid, fe) = (message.account_id.clone(), from_email.clone());
+        let sender = message_sender(&state.db, &message).await?;
+        if sender.is_empty() {
+            return Err(SiftError::app(
+                "bad_request",
+                "This message has no sender address to remember.",
+                false,
+            ));
+        }
         state
             .db
-            .write(move |c| {
-                c.execute(
-                    "INSERT OR REPLACE INTO sender_prefs (account_id,email,allow_remote_images) VALUES (?,?,1)",
-                    rusqlite::params![aid, fe],
-                )?;
-                Ok(())
-            })
+            .sender_allow(&message.account_id, &sender)
             .await
-            .map_err(|e| SiftError::app("db", e.to_string(), false))?;
+            .map_err(db_err)?;
+        state
+            .db
+            .privacy_bump_generations(Some(std::slice::from_ref(&message.account_id)))
+            .await
+            .map_err(db_err)?;
+    } else {
+        state
+            .grant_session_remote_load(&message.account_id, &message.message_id)
+            .await;
     }
-    // return body with images allowed
-    let mut body = message_body(state.clone(), message.account_id.clone(), message.message_id.clone()).await?;
-    if let Some(h) = body.html.take() {
-        let restored = crate::render::sanitize::restore_remote_images(&h);
-        body.html = Some(restored);
-    }
-    body.remote_images_allowed = true;
-    Ok(body)
+    message_body_for(state, &message.account_id, &message.message_id).await
 }
 
 #[cfg(test)]

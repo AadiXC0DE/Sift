@@ -16,6 +16,8 @@ pub mod imap;
 pub mod labels;
 pub mod messages;
 pub mod outbox;
+pub mod privacy;
+pub mod saved_searches;
 pub mod settings;
 pub mod threads;
 
@@ -58,6 +60,22 @@ static MIGRATIONS: &[(&str, &str)] = &[
     (
         "0010_outbox_lifecycle",
         include_str!("migrations/0010_outbox_lifecycle.sql"),
+    ),
+    (
+        "0011_saved_searches",
+        include_str!("migrations/0011_saved_searches.sql"),
+    ),
+    (
+        "0012_search_indexes",
+        include_str!("migrations/0012_search_indexes.sql"),
+    ),
+    (
+        "0013_remote_content_policy",
+        include_str!("migrations/0013_remote_content_policy.sql"),
+    ),
+    (
+        "0014_unsubscribe_auth",
+        include_str!("migrations/0014_unsubscribe_auth.sql"),
     ),
 ];
 

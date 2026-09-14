@@ -551,6 +551,12 @@ pub async fn store_parsed(
         trackers,
         dark_safe,
         quoted_from: parsed.quoted_from.map(|q| q as i64),
+        unsubscribe: crate::db::bodies::UnsubscribeHeaders {
+            list_unsubscribe: parsed.list_unsub.clone(),
+            post_value: parsed.list_unsub_post_value.clone(),
+            auth_results: parsed.auth_results.clone(),
+            trusted: parsed.auth_results_trusted,
+        },
     })
     .await?;
     // Snippet backfill: transports without server snippets (IMAP messages

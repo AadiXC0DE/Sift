@@ -51,6 +51,7 @@ async fn identical_provider_ids_stay_isolated_per_account() {
         trackers: 0,
         dark_safe: true,
         quoted_from: None,
+        unsubscribe: Default::default(),
     })
     .await
     .unwrap();
@@ -63,6 +64,7 @@ async fn identical_provider_ids_stay_isolated_per_account() {
         trackers: 0,
         dark_safe: true,
         quoted_from: None,
+        unsubscribe: Default::default(),
     })
     .await
     .unwrap();
@@ -181,6 +183,7 @@ async fn removal_cleans_every_scoped_table() {
             trackers: 0,
             dark_safe: true,
             quoted_from: None,
+            unsubscribe: Default::default(),
         })
         .await
         .unwrap();
