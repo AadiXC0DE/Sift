@@ -4,15 +4,15 @@ import SiteLayout from '../layouts/SiteLayout.astro';
 // machine are part of it: an eager-JS figure without `--max-js-kib` and the
 // manifest walk means nothing (docs/acceptance-dossier.md §2.4).
 const measured = {
-  value: '187.7',
+  value: '219.9',
   unit: 'KiB',
-  bytes: 192165,
+  bytes: 225155,
   ceilingKib: 250,
   command: 'node scripts/eager-js.mjs --dist dist --max-js-kib 250',
   what: 'gzip level 9 of every chunk the first paint pulls in, walked through dist/.vite/manifest.json static imports only (lazy chunks are excluded by construction)',
   where: 'Apple M1, arm64, macOS 15.6.1, 2026-09-14, against the fix/reliability-hardening build in the working tree',
   caveat:
-    'Not a released artifact: no signed universal build exists locally, so this measures the branch bundle, and a stale dist/ would pass the gate against old code.',
+    'Not a released artifact: this figure measures a fresh production frontend build, not application memory or launch latency.',
 };
 const ceilings = [
   {
@@ -32,7 +32,7 @@ const notPublished = [
   ['Cold start, launch to first paint', 'no stored result here that names the command and machine behind it'],
   ['Idle and working memory, CPU', 'no stored result here that names the command and machine behind it'],
   ['Per-action latency (open, archive, search, list page)', 'no stored result here that names the command and machine behind it'],
-  ['Download size of a shipped build', 'the size comes from the release API, and no build is published yet'],
+  ['Download size of a shipped build', 'the download page reads the current installer size from GitHub'],
   ['Per-account connection counts', 'needs a live Gmail account, which no number on this site has been taken with'],
   ['Large-mailbox behaviour (100k messages)', 'needs a large-mailbox fixture that does not exist in the repository'],
 ];

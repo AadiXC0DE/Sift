@@ -2,17 +2,17 @@
 
 Fast, quiet email for Gmail on macOS. Website: <https://usesift.xyz>.
 
-Sift is a keyboard-first Gmail client built as a native Mac app. A Rust core mirrors your whole mailbox into a local SQLite database, so lists, search and thread metadata come off your disk instead of the network. The shell is a thin native window around WKWebView with no bundled browser engine. What the build actually costs is gated, not guessed: the eager JavaScript budget is 250 KiB gzip, and the current build measures **187.7 KiB** (gzip, `node scripts/eager-js.mjs --dist dist`, Apple M1, 2026-09-14). Launch time, idle memory and the download size of a signed build are not published as measured numbers — see [`docs/acceptance-dossier.md`](docs/acceptance-dossier.md) for what is measured and what is still pending.
-
-Native to the metal. No Electron.
+Sift is a keyboard-first Gmail client for macOS. A Rust core mirrors your mailbox into local SQLite for fast lists and search. The app uses the Mac’s built-in WKWebView, with no bundled browser engine.
 
 ## Download
 
-Get the latest build from the [releases page](https://github.com/AadiXC0DE/Sift/releases):
+[Download Sift for Mac](https://usesift.xyz/download) · [Latest GitHub release](https://github.com/AadiXC0DE/Sift/releases/latest)
 
 - macOS 13 Ventura or newer
-- Apple Silicon and Intel — the release pipeline builds a universal binary and `scripts/verify-release.sh` fails a build that is not universal
+- Universal app for Apple Silicon and Intel
 - Free while in beta
+
+Open the DMG and drag **Sift** into **Applications**. Version 1.1.0 is not Apple Developer ID signed or notarized. Verify the download against the release’s `SHA256SUMS`; if macOS blocks opening it, use **System Settings → Privacy & Security → Open Anyway**. The in-app updater verifies updates with Sift’s separate cryptographic signing key.
 
 ## Connect with an app password
 
@@ -33,8 +33,8 @@ If you want the "Sign in with Google" button instead, see [`docs/oauth.md`](docs
 - **Reads offline.** Message metadata, labels and the full-text search index are mirrored locally with SQLite FTS5, and bodies are cached as you read them, so search is a query rather than a round trip. Opening a message whose body has never been fetched still needs the network, and upgrading across a rendering migration re-fetches cached bodies.
 - **Multiple accounts as a core feature.** Personal, work, and client inboxes sync independently and show up in one unified inbox with `⌘0`.
 - **Mail renders like mail.** HTML messages are sanitized once at ingest and rendered in a sandboxed frame with authored CSS, tables, and layout preserved. Plain text keeps its whitespace, and quoted replies collapse.
-- **Mistakes are cheap, within limits.** Archive and other label actions apply locally straight away and can be undone while the operation is still queued, and a queued send can be cancelled before its deadline. Undo reverses the change it queued rather than restoring a recorded previous state; a permanent delete is not undoable, and cancelling a queued send does not reopen the draft. Snooze is built in.
-- **Quiet by default.** No telemetry, no trackers, no ads, and no Sift server. Credentials live in the Keychain. One thing does reach out on your behalf: HTML mail renders with remote images loaded by default, so a message can fetch images from its sender's servers unless you block them in Settings → Privacy. Nothing else in the app contacts a host you did not configure.
+- **Mistakes are cheap, within limits.** Archive and other label actions apply locally straight away and can be undone while the operation is still queued, and a queued send can be cancelled before its deadline. Undo restores the recorded previous state. Cancelling a queued send returns it to an editable draft; permanent deletion cannot be undone. Snooze is built in.
+- **Quiet by default.** No telemetry, trackers, ads, or Sift server. Credentials live in the Keychain. New installations ask before loading remote images; you control that policy in Settings → Privacy. Automatic GitHub update checks can be disabled in Settings → Updates.
 
 ## Shortcuts
 
@@ -78,7 +78,7 @@ To run the offline demo mailbox without connecting an account, start the app wit
 
 ## Privacy
 
-Sift talks directly to Google over TLS. No analytics, no crash reporting, no Sift server, no third party endpoints you did not configure. Credentials are stored in the macOS Keychain, and the local database never contains tokens. The one exception is message content: HTML mail loads remote images by default, so images come from the sender's servers until you turn them off in Settings → Privacy. See <https://usesift.xyz/privacy> for the full statement.
+Sift talks directly to Google over TLS for mail and to GitHub for update checks and downloads. There is no analytics service, crash reporting service, or Sift backend. Credentials are stored in the macOS Keychain, never in the local mailbox database. Sender-hosted images load only when your remote-content policy allows them; new installations start with **Ask**. See [Privacy](https://usesift.xyz/privacy) for details.
 
 ## Contributing
 
