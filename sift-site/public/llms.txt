@@ -1,20 +1,20 @@
 # Sift
 
-> Sift is a fast, keyboard-first desktop email client for Gmail and Google Workspace on macOS. A Rust core mirrors your entire mailbox into a local SQLite database, so every read comes off disk instead of the network.
+> Sift is a fast, keyboard-first desktop email client for Gmail and Google Workspace on macOS. A Rust core mirrors your entire mailbox into a local SQLite database, for fast local lists and search.
 
-Sift is a native Mac app, not an Electron shell: it draws its interface with the macOS WebView and ships no bundled browser engine. It publishes no launch-time, idle-memory or download-size figures, because none of those has been measured on a released build. The one measured number is the JavaScript the app must download before first paint: **187.7 KiB gzip** against an enforced 250 KiB ceiling (`node scripts/eager-js.mjs --dist dist --max-js-kib 250`, Apple M1, 2026-09-14). Nothing on this site quotes an unmeasured figure.
+Sift is a native Mac app, not an Electron shell: it draws its interface with the macOS WebView and ships no bundled browser engine. The download page reads the current installer size from the published GitHub release. The benchmarks page documents measured frontend size and enforced build budgets; launch-time and total application-memory figures are not published.
 
 ## Key facts
 
 - Platform: macOS 13 Ventura or newer, Apple Silicon and Intel (the release pipeline builds a universal binary)
 - Stack: Rust core (tokio), Tauri 2, React 19 in WKWebView, SQLite with FTS5
-- Local-first: the full mailbox is mirrored locally; reading, search, and triage work offline
+- Local-first: the full mailbox is mirrored locally; search and triage work locally; cached message bodies can be read offline, while unopened bodies need a connection
 - Sign-in: a Google app password, with no Google Cloud project required
 - Multi-account: independent sync per account, unified inbox, color-coded
 - Privacy: no Sift server, no telemetry, credentials in the macOS Keychain; remote images are not loaded by default
 - Updates: Sift checks for a newer release at launch, verifies its signature, and installs nothing until you press Download update, then Install, then Restart now
 - Price: free while in beta
-- Source: public at https://github.com/AadiXC0DE/Sift (no release has been published yet)
+- Source: public at https://github.com/AadiXC0DE/Sift
 
 ## Pages
 
@@ -28,7 +28,7 @@ Sift is a native Mac app, not an Electron shell: it draws its interface with the
 
 ## What Sift is good at
 
-- Speed as a feature: reads come off the local mirror, so the interface never waits on the network
+- Speed as a feature: lists and search use the local mailbox mirror
 - Keyboard-first triage: j/k, e, #, s, h, plus a Cmd-K command palette
 - Faithful mail rendering: HTML is sanitized once and rendered in a sandboxed frame with sender CSS, tables, and layout preserved
 - Small footprint: no bundled browser, and the release pipeline refuses a build whose eager JavaScript exceeds 250 KiB gzip or whose disk image exceeds 12 MiB
