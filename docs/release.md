@@ -247,3 +247,9 @@ build still succeeds and renders the honest fallback: no version, no size, and a
 button that points at the releases page.
 
 The universal installer budget is 20 MiB as of 1.1.0. The verified CI artifact is 16.85 MiB (17,670,550 bytes); the former 12 MiB target blocked publication after a successful dual-architecture build. The eager-JavaScript budget remains 250 KiB.
+
+### Verified 1.1.0 publication
+
+Recovery run `34877290740` published `v1.1.0` after checking the retained installers from tagged run `34844819611`. Both arm64 and x86_64 binaries, app version, ad-hoc code signature, updater signature, staged and downloaded checksums, and rollback check passed. The release includes the universal DMG, signed updater archive, signature, `latest.json`, and `SHA256SUMS`.
+
+The universal DMG is 17,670,550 bytes. SHA-256: `1314c0ea66d84b760a7396204a97cdbc22116e15d259048122d051c2d3212e2f`. Apple notarization remains deferred. This post-publication commit also rebuilds the Vercel site so its build-time release lookup sees the published installer.
