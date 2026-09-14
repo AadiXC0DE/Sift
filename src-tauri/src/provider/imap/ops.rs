@@ -780,8 +780,8 @@ pub async fn draft_upsert(
                 Some((first, rest)) => (None, *first, rest.to_vec()),
                 None => {
                     return Err(SiftError::app(
-                        "imap_transient",
-                        "the draft could not be appended to the Drafts mailbox",
+                        "draft_sync_failed",
+                        "Gmail did not confirm saving this draft. Sift will retry.",
                         true,
                     ))
                 }

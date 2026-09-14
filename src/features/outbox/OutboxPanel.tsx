@@ -3,7 +3,7 @@ import { AlertTriangle, Check, Clock, Loader, Send, X } from 'lucide-react';
 import type { OutboxOp, OperationState } from '../../app/ipc/types';
 import { useAccounts } from '../../stores/accountsStore';
 import { useOutbox, OUTBOX_PAGE_LIMIT } from '../../stores/outboxStore';
-import { formatRowDate, relativeTime } from '../../lib/dates';
+import { formatRowDate } from '../../lib/dates';
 
 /**
  * The compact Outbox (P6.6).
@@ -104,7 +104,7 @@ export function OutboxPanel({ onClose }: { onClose?: () => void }) {
             : `Showing ${operations.length} of ${total.toLocaleString()}`}
         </span>
         <span style={{ flex: 1 }} />
-        {counts.done > 0 && <span>{counts.done.toLocaleString()} sent</span>}
+        {counts.done > 0 && <span>{counts.done.toLocaleString()} completed</span>}
         {nextCursor && (
           <button
             onClick={() => void loadMore(idsRef.current)}
@@ -128,6 +128,12 @@ const STATE_LABEL: Record<OperationState, string> = {
   cancelled: 'Cancelled',
 };
 
+function stateLabel(op: OutboxOp): string {
+  if (op.kind !== 'send' && op.state === 'inflight') return 'Syncing';
+  if (op.kind !== 'send' && op.state === 'done') return 'Completed';
+  return STATE_LABEL[op.state];
+}
+
 function stateIcon(state: OperationState): React.ReactNode {
   if (state === 'failed') return <AlertTriangle size={12} color="var(--danger)" />;
   if (state === 'uncertain') return <AlertTriangle size={12} color="var(--warning)" />;
@@ -145,11 +151,11 @@ function stateIcon(state: OperationState): React.ReactNode {
 function whenText(op: OutboxOp, now: number): string {
   if (op.scheduledAt && op.scheduledAt > now) return `Scheduled for ${formatRowDate(op.scheduledAt, now)}`;
   if (op.retryAt && op.retryAt > now) return `Retries ${formatRowDate(op.retryAt, now)}`;
-  if (op.state === 'inflight') return 'Sending now';
+  if (op.state === 'inflight') return op.kind === 'send' ? 'Sending now' : 'Syncing with Gmail';
   if (op.state === 'uncertain') return 'Checking the provider for a sent copy';
-  if (op.state === 'failed') return `Failed ${relativeTime(op.createdAt, now)}`;
-  if (op.state === 'pending') return 'Waiting to send';
-  return STATE_LABEL[op.state];
+  if (op.state === 'failed') return 'Needs retry';
+  if (op.state === 'pending') return op.kind === 'send' ? 'Waiting to send' : 'Waiting to sync';
+  return stateLabel(op);
 }
 
 function OutboxRow({ op }: { op: OutboxOp }) {
@@ -173,8 +179,7 @@ function OutboxRow({ op }: { op: OutboxOp }) {
         display: 'grid',
         gap: 2,
         padding: '7px 6px',
-        borderRadius: 'var(--r-md)',
-        border: '1px solid var(--border)',
+        borderBottom: '1px solid var(--border)',
         fontSize: 12.5,
       }}
     >
@@ -196,7 +201,7 @@ function OutboxRow({ op }: { op: OutboxOp }) {
           data-testid={`outbox-state-${op.opId}`}
           style={{ fontSize: 11, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}
         >
-          {scheduled ? 'Scheduled' : STATE_LABEL[op.state]}
+          {scheduled ? 'Scheduled' : stateLabel(op)}
         </span>
       </div>
       {op.recipientSummary && op.subject && (
@@ -213,12 +218,16 @@ function OutboxRow({ op }: { op: OutboxOp }) {
         </div>
       )}
       <div style={{ display: 'flex', gap: 6, color: 'var(--fg-3)', fontSize: 11.5 }}>
-        <span>{op.action}</span>
-        <span>·</span>
+        {(op.recipientSummary || op.subject) && (
+          <>
+            <span>{op.action}</span>
+            <span>·</span>
+          </>
+        )}
         <span>{whenText(op, now)}</span>
       </div>
       {op.errorMessage && op.state !== 'failed' && (
-        <div style={{ color: 'var(--fg-3)' }}>{op.errorMessage}</div>
+        <div style={{ color: 'var(--fg-3)', overflowWrap: 'anywhere' }}>{op.errorMessage}</div>
       )}
       {op.state === 'failed' && op.errorMessage && (
         <div role="note" style={{ color: 'var(--danger)' }}>

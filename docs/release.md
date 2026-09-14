@@ -3,15 +3,14 @@
 # Releasing Sift
 
 The release workflow (`.github/workflows/release.yml`) runs on any `v*` tag. It
-builds a universal (Apple Silicon + Intel) app, signs and notarizes it, generates
+builds a universal (Apple Silicon + Intel) app with an ad-hoc code signature, generates
 the updater metadata and checksums from the exact artifacts it will upload, and
-only then publishes them to a GitHub release, which pings the site to rebuild.
+only then publishes them to a GitHub release. An optional deploy hook rebuilds the site.
 
-Nothing is published until the required repository secrets exist. Without them a
-tagged build fails at the signing step, so do not push a `v*` tag until the
-secrets below are set.
+The updater signing key and its password are required. Apple credentials below are
+for a future notarized release; they are not consumed by the current workflow.
 
-## Required secrets
+## Release secrets
 
 Set these on `AadiXC0DE/Sift` (Settings -> Secrets and variables -> Actions):
 
@@ -59,7 +58,7 @@ Every gate fails the job. There is no `|| true` in the release workflow.
 | --- | --- | --- |
 | Version agreement | `pnpm exec tsx scripts/check-versions.ts --tag "$TAG"` | package.json / Cargo.toml / tauri.conf.json / CHANGELOG.md / tag disagreement |
 | Bundle budget | `bash scripts/check-bundle.sh --target-dir ... --require-artifacts` | missing artifact, eager JS >250 KiB gzip, DMG >12 MiB |
-| Code signature + notarization | `bash scripts/verify-release.sh --mode strict` | `codesign --verify` failure, `spctl` rejection, unstapled app or DMG, non-universal binary, bundle version mismatch |
+| Code signature and artifacts | `bash scripts/verify-release.sh --mode unnotarized` | `codesign --verify` failure, missing artifacts, non-universal binary, bundle version mismatch |
 | Metadata generation | `pnpm exec tsx scripts/release-metadata.ts ...` | placeholder/invalid updater key, missing or non-verifying `.sig`, version disagreement, URL that is not a release asset |
 | Staged metadata verification | `... release-metadata.ts --verify release-assets` | checksum row for a missing file, wrong sha256, signature that does not verify, URL pointing at a source archive |
 | Updater failure modes | `pnpm exec tsx scripts/updater-dryrun.ts` | bad signature, wrong platform, truncated asset, non-newer version or unreachable endpoint being accepted |

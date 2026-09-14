@@ -1638,15 +1638,38 @@ impl Conn {
         } else {
             format!(" ({})", flags.join(" "))
         };
-        // Tagged LITERAL+ form: no continuation wait (Gmail advertises LITERAL+).
+        // Synchronizing literals work with both LITERAL+ and Gmail's
+        // LITERAL- (which forbids non-synchronizing literals above 4096 bytes).
         let tag = self.next_tag();
         let head = format!(
-            "{tag} APPEND {}{flag_str} {{{}+}}\r\n",
+            "{tag} APPEND {}{flag_str} {{{}}}\r\n",
             quote_folder(folder),
             bytes.len()
         );
         self.write_raw(head.as_bytes()).await?;
+        loop {
+            match self.read_response().await? {
+                Response::Cont(_) => break,
+                Response::TaggedNo { tag: t, text, .. }
+                | Response::TaggedBad { tag: t, text, .. }
+                    if t == tag =>
+                {
+                    super::errors::map_response("APPEND", &text)?;
+                }
+                Response::Untagged(_) => {}
+                _ => {
+                    return Err(SiftError::app(
+                        "imap_protocol",
+                        "Unexpected APPEND continuation response",
+                        true,
+                    ))
+                }
+            }
+        }
         self.write_raw(bytes).await?;
+        // The literal length covers only the message. The APPEND command's
+        // terminating CRLF follows it, even when the MIME itself ends in CRLF.
+        self.write_raw(b"\r\n").await?;
         // Read until our tagged completion (ignore other untagged).
         loop {
             match self.read_response().await? {

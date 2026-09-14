@@ -42,6 +42,7 @@ const IGNORED_CODES: &[&str] = &[
     "backfill_budget",
     "not_in_trash",
     "attachment_locator_invalid",
+    "draft_sync_failed",
     "no_recipients",
     "bad_recipient",
     "attachment_missing",

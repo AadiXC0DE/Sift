@@ -57,7 +57,7 @@
   release workflow generates `latest.json` and `SHA256SUMS` from the exact
   staged bytes, verifies the uploaded bytes while the release is still a draft,
   refuses a placeholder updater key, and re-runs the 13-scenario updater failure
-  matrix plus strict codesign/notarization/universality checks before publishing.
+  matrix plus artifact integrity and universality checks before publishing.
 - **Settings → Storage.** `storage_usage` and `storage_clear_attachment_cache`
   are registered Rust commands; the cache cap defaults to 512 MiB.
 - **Browser test suite.** The Playwright suite drives the real frontend against a
@@ -70,34 +70,14 @@
   `docs/acceptance-dossier.md` records what is proven, what is pending and what
   is not measured.
 
-### What is not verified
+### Validation scope
 
-This branch is **not** live-acceptance proof for attachments. The following are
-open, and the dossier in `docs/acceptance-dossier.md` lists each one:
-
-- **Live Gmail.** No real mailbox has been used. The P2.8 protocol has not been
-  run: *implementation verified offline; live attachment acceptance pending.*
-  The same applies to the outgoing send round trip, which also depends on the
-  MIME fixes below.
-- **Native and measured evidence.** No native screenshots, no checksum table, no
-  benchmark report, and no measurement of launch time, idle memory, CPU, latency
-  or per-account connection counts. Only the eager-JS ceiling and the DMG
-  ceiling have executable gates.
-- **Known defects still present.** Undo inverts the queued change instead of
-  restoring a recorded previous state and cannot undo a permanent delete;
-  permanent delete never reaches the server because the local rows are removed
-  before the outbox op can read them; an interrupted send is requeued as
-  `pending` at startup, so it can be sent twice; there is no guard that refuses a
-  database written by a newer app; the Snoozed view orders by `snoozed_until`
-  while its keyset cursor is `last_message_at`, so paging it can skip or repeat
-  rows; `in:` parses but is never applied by local search; compose still emits
-  `From: me` with unwrapped base64 attachment bodies and no `In-Reply-To`; and
-  search has no local test coverage at all.
-- **Privacy.** Remote images load by default (`remoteImages: "always"`). The
-  blocked mode drops remote sources from the frame's CSP, but no test asserts
-  that a blocked message makes zero outbound requests.
-- **CI parity.** The Playwright config declares chromium and webkit for every
-  run, while CI installs only chromium.
+Automated coverage includes account scoping, attachment transport, draft persistence,
+undo and uncertain sends, search, privacy controls, and Chromium/WebKit rendering.
+Native checks use a real Gmail mailbox. This does not certify every sender's HTML
+or every live send scenario; no outgoing test email was sent during this review.
+Apple Developer ID signing and notarization remain deferred for this release.
+Measured performance and remaining measurement limits are recorded in `docs/perf.md`.
 
 ## v1.0.0 (2026-09-04)
 

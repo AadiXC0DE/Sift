@@ -940,7 +940,20 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                     };
                     got += n;
                 }
-                // NOTE: no CRLF follows APPEND literal bytes on the wire.
+                // RFC 9051: the command terminator follows the literal bytes.
+                // A MIME trailing newline is inside the literal and cannot replace it.
+                let mut terminator = [0u8; 2];
+                let terminated = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    tokio::io::AsyncReadExt::read_exact(&mut r, &mut terminator),
+                )
+                .await;
+                if !matches!(terminated, Ok(Ok(_))) || terminator != *b"\r\n" {
+                    let _ = w
+                        .write_all(format!("{tag} BAD missing APPEND terminator\r\n").as_bytes())
+                        .await;
+                    return;
+                }
                 let raw = String::from_utf8_lossy(&data).to_string();
                 let subject = raw
                     .lines()

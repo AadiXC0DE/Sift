@@ -109,11 +109,49 @@ async fn p2_t08_live_gmail_attachment_is_byte_exact() {
         .await
         .expect("insert account");
 
-    let provider = GmailImapProvider::new(
-        account.id.clone(),
-        ImapPool::gmail(cfg.email.clone(), cfg.password.clone()),
-        db.clone(),
-    );
+    // Locator persistence references the message row in the real app. Seed
+    // that identity in this scratch mirror before asking the provider to fetch.
+    db.messages_upsert(sift::db::messages::MsgUpsert {
+        id: cfg.message_id.clone(),
+        account_id: account.id.clone(),
+        thread_id: cfg.message_id.clone(),
+        ..Default::default()
+    })
+    .await
+    .expect("seed attachment message identity");
+
+    let pool = ImapPool::gmail(cfg.email.clone(), cfg.password.clone());
+    let provider = GmailImapProvider::new(account.id.clone(), pool.clone(), db.clone());
+    let folders = provider
+        .folders_cached()
+        .await
+        .expect("discover mailbox folders");
+    for role in ["all", "trash", "junk"] {
+        let Some(name) = folders.name_for_role(role) else {
+            continue;
+        };
+        let info = {
+            let lease = pool
+                .with_selected_worker(name, true, &tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("examine folder");
+            lease.info().clone()
+        };
+        db.imap_set_folder(
+            &account.id,
+            &sift::db::imap::FolderCursor {
+                role: role.into(),
+                name: name.into(),
+                uidvalidity: info.uidvalidity as i64,
+                uidnext: 1,
+                highestmodseq: None,
+                exists_count: info.exists as i64,
+                last_full_scan: None,
+            },
+        )
+        .await
+        .expect("seed locator folder parent");
+    }
 
     println!("\n=== P2.8 live Gmail attachment acceptance ===");
     announce("account", redact(&cfg.email));

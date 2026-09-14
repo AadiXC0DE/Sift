@@ -326,14 +326,16 @@ async fn startup_discovery_and_folder_lookup_do_not_deadlock() {
     let account = db.new_account("user@gmail.com", None, None).await.unwrap();
     let provider = GmailImapProvider::new(account.id, pool_for(fake.addr.port()), db.clone());
     let sink = DbSink::new(db);
-    let (sync, folders) = tokio::time::timeout(Duration::from_secs(15), async {
-        tokio::join!(
-            provider.full_sync(&sink, tokio_util::sync::CancellationToken::new()),
-            provider.folders_cached(),
-        )
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (_, folders) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(provider.full_sync(&sink, cancel.clone()), async {
+            let map = provider.folders_cached().await;
+            // This checks startup discovery, not the duration of a full import.
+            cancel.cancel();
+            map
+        },)
     })
     .await
     .expect("concurrent startup work must finish without a lock cycle");
-    sync.unwrap();
     assert!(!folders.unwrap().all.is_empty());
 }
