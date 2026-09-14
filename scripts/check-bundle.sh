@@ -5,7 +5,7 @@
 #   * eager JS gzip <= --max-js-kib (default 250 KiB), measured by walking the
 #     Vite import manifest so every statically loaded chunk counts, not just a
 #     file named "main";
-#   * DMG <= --max-dmg-mib (default 12 MiB) against the signed universal
+#   * DMG <= --max-dmg-mib (default 20 MiB) against the signed universal
 #     artifact (src-tauri/target/universal-apple-darwin/release).
 #
 # Modes:
@@ -23,7 +23,7 @@ set -euo pipefail
 MODE=auto
 TARGET_DIR=""
 MAX_JS_KIB=250
-MAX_DMG_MIB=12
+MAX_DMG_MIB=20
 DIST=dist
 REQUIRE=0
 

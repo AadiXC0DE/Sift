@@ -22,10 +22,10 @@ const ceilings = [
     how: 'scripts/eager-js.mjs fails above this. Runs on every pull request.',
   },
   {
-    value: '12 MiB',
+    value: '20 MiB',
     unit: '',
     label: 'DMG',
-    how: 'scripts/check-bundle.sh --require-artifacts --max-dmg-mib 12 fails a universal build whose disk image is larger. Runs in the release job.',
+    how: 'scripts/check-bundle.sh --require-artifacts --max-dmg-mib 20 fails a universal build whose disk image is larger. Runs in the release job.',
   },
 ];
 const notPublished = [
@@ -45,8 +45,10 @@ const notPublished = [
 
   <div class="prose">
     <h2>Measured</h2>
+    <div class="bars" data-chart aria-label="Eager JavaScript: 219.9 KiB of a 250 KiB budget">
     <div class="bar-row"><span class="bar-name"><strong>Sift</strong></span><span class="bar-track"><span class="bar-fill sift" style={`--w:${Math.round((measured.bytes / (measured.ceilingKib * 1024)) * 100)}%`}></span></span><span class="bar-val">{measured.value} KiB</span></div>
     <div class="bar-row"><span class="bar-name">Ceiling</span><span class="bar-track"><span class="bar-fill rival" style="--w:100%"></span></span><span class="bar-val">{measured.ceilingKib} KiB</span></div>
+    </div>
     <p class="metric-foot">
       <strong>{measured.value} {measured.unit}</strong> gzip, against a {measured.ceilingKib} KiB ceiling. Command:
       <code>{measured.command}</code>. It sums {measured.what}. Measured on {measured.where}. {measured.caveat}

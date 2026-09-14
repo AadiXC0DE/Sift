@@ -60,7 +60,7 @@ const softwareLd = {
   <link rel="apple-touch-icon" href="/logo.png" />
   <title>Sift · Fast, quiet Gmail for macOS</title>
   <script type="application/ld+json" set:html={JSON.stringify(softwareLd)} />
-  <script>
+  <script is:inline>
     try {
       const t = localStorage.getItem('sift-theme');
       if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
@@ -68,6 +68,7 @@ const softwareLd = {
   </script>
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <header class="nav" id="nav">
     <div class="nav-inner">
       <a class="brand" href="/"><img src="/logo.png" alt="Sift" width="23" height="23" />Sift</a>
@@ -83,6 +84,7 @@ const softwareLd = {
     </div>
   </header>
 
+  <main id="main">
   <div class="hero-stage">
     <section class="hero">
       <div>
@@ -279,6 +281,7 @@ const softwareLd = {
     </div>
   </section>
 
+  </main>
   <footer class="site">
     <div class="footer-inner">
       <nav aria-label="Footer">
@@ -298,25 +301,6 @@ const softwareLd = {
     const onScroll = () => nav && nav.classList.toggle('scrolled', window.scrollY > 8);
     window.addEventListener('scroll', onScroll, { passive: true });
     onScroll();
-    // Benchmark bars fill when scrolled into view, once.
-    for (const id of ['numbers', 'footprint']) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      if ('IntersectionObserver' in window) {
-        const io = new IntersectionObserver(
-          (entries) => {
-            if (entries.some((e) => e.isIntersecting)) {
-              el.classList.add('in');
-              io.disconnect();
-            }
-          },
-          { threshold: 0.25 },
-        );
-        io.observe(el);
-      } else {
-        el.classList.add('in');
-      }
-    }
     // Theme toggle: explicit light/dark, stored; unset follows the system.
     const toggle = document.getElementById('theme-toggle');
     const applyIcon = () => {
@@ -327,7 +311,7 @@ const softwareLd = {
     };
     applyIcon();
     toggle && toggle.addEventListener('click', () => {
-      const cur = document.documentElement.dataset.theme;
+      const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
       const next = cur === 'dark' ? 'light' : 'dark';
       document.documentElement.dataset.theme = next;
       try { localStorage.setItem('sift-theme', next); } catch { /* ignore */ }
@@ -361,6 +345,10 @@ const softwareLd = {
       idx = (idx + (e.key === 'j' ? 1 : -1) + rows.length) % rows.length;
       select(idx);
     });
+  </script>
+<script>
+    import { initMotion } from '../lib/motion';
+    initMotion();
   </script>
 </body>
 </html>

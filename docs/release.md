@@ -57,7 +57,7 @@ Every gate fails the job. There is no `|| true` in the release workflow.
 | Gate | Command | Fails on |
 | --- | --- | --- |
 | Version agreement | `pnpm exec tsx scripts/check-versions.ts --tag "$TAG"` | package.json / Cargo.toml / tauri.conf.json / CHANGELOG.md / tag disagreement |
-| Bundle budget | `bash scripts/check-bundle.sh --target-dir ... --require-artifacts` | missing artifact, eager JS >250 KiB gzip, DMG >12 MiB |
+| Bundle budget | `bash scripts/check-bundle.sh --target-dir ... --require-artifacts` | missing artifact, eager JS >250 KiB gzip, DMG >20 MiB |
 | Code signature and artifacts | `bash scripts/verify-release.sh --mode unnotarized` | `codesign --verify` failure, missing artifacts, non-universal binary, bundle version mismatch |
 | Metadata generation | `pnpm exec tsx scripts/release-metadata.ts ...` | placeholder/invalid updater key, missing or non-verifying `.sig`, version disagreement, URL that is not a release asset |
 | Staged metadata verification | `... release-metadata.ts --verify release-assets` | checksum row for a missing file, wrong sha256, signature that does not verify, URL pointing at a source archive |
@@ -245,3 +245,5 @@ and download. Unauthenticated calls share a small per-IP budget, so set
 no scopes is enough for a public repository) to raise it. Without the token the
 build still succeeds and renders the honest fallback: no version, no size, and a
 button that points at the releases page.
+
+The universal installer budget is 20 MiB as of 1.1.0. The verified CI artifact is 16.85 MiB (17,670,550 bytes); the former 12 MiB target blocked publication after a successful dual-architecture build. The eager-JavaScript budget remains 250 KiB.

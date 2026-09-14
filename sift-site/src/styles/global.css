@@ -575,9 +575,9 @@ button:focus-visible,
 .bar-fill {
   display: block;
   height: 100%;
-  width: 0;
+  width: var(--w);
+  transform-origin: left;
   border-radius: 6px;
-  transition: width 900ms var(--ease-out);
 }
 .bar-fill.sift {
   background: var(--accent);
@@ -704,9 +704,9 @@ button:focus-visible,
 .fp-fill {
   display: block;
   height: 100%;
-  width: 0;
+  width: var(--w);
+  transform-origin: left;
   border-radius: 5px;
-  transition: width 900ms var(--ease-out);
 }
 .fp-fill.sift {
   background: var(--accent);
@@ -1314,7 +1314,7 @@ footer.site {
   }
   .cell-3,
   .cell-2 {
-    grid-column: span 6;
+    grid-column: 1 / -1;
   }
   .bento {
     grid-template-columns: minmax(0, 1fr);
@@ -1466,4 +1466,34 @@ footer.site {
     grid-template-columns: 1fr;
     gap: 24px;
   }
+}
+
+/* Progressive motion keeps charts readable without JavaScript. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-chart].chart-ready .bar-fill { transform: scaleX(0); transition: transform 900ms var(--ease-out); }
+  [data-chart].chart-ready.in .bar-fill { transform: scaleX(1); }
+  .section.reveal-ready { opacity: 0; transform: translateY(18px); transition: opacity 600ms ease, transform 600ms var(--ease-out); }
+  .section.reveal-ready.in { opacity: 1; transform: none; }
+}
+.section { scroll-margin-top: 80px; }
+.footer-inner nav { flex-wrap: wrap; gap: 12px 20px; }
+.prose code, details.sha code { overflow-wrap: anywhere; }
+.skip-link { position: fixed; top: -100px; left: 16px; z-index: 100; padding: 12px 18px; background: var(--surface); color: var(--ink); }
+.skip-link:focus { top: 12px; }
+@media (max-width: 640px) {
+  .hero { padding: 40px 20px 36px; gap: 32px; }
+  .hero h1 { font-size: clamp(38px, 10vw, 54px); line-height: 1.08; }
+  .hero .sub { font-size: 16px; }
+  .hero-ctas { flex-wrap: wrap; }
+  .hero-ctas .btn { flex: 1 1 140px; }
+  .hero-spec { font-size: 11px; }
+  .cta { padding: 56px 16px 0; }
+  .cta-box { padding: 28px 22px; border-radius: 16px; }
+  .cta-row .btn { width: 100%; }
+  .shortcut-row { grid-template-columns: 100px minmax(0, 1fr); gap: 12px; }
+  .bar-row { grid-template-columns: 62px minmax(0, 1fr) 76px; gap: 8px; }
+  .feel-card { padding: 16px 14px; }
+  .nav-inner { gap: 8px; }
+  .nav .btn-sm { padding: 0 12px; font-size: 12px; }
+  .footer-inner { padding: 26px 16px 32px; }
 }
