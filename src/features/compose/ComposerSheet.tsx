@@ -452,7 +452,12 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
 
   useEffect(() => {
     if (!bodyReady) return;
-    const t = setTimeout(() => editor?.commands.focus('start'), 0);
+    const t = setTimeout(() => {
+      // Loading the editor must never steal focus from a recipient or subject
+      // the user has already started editing.
+      if (rootRef.current?.contains(document.activeElement)) return;
+      editor?.commands.focus('start');
+    }, 0);
     return () => clearTimeout(t);
   }, [editor, bodyReady]);
 

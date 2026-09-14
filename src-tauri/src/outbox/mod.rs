@@ -130,7 +130,7 @@ pub async fn apply_draft_sync(
     if local_id.is_empty() {
         return Err(SiftError::app("op", "draft_sync without a draft", false));
     }
-    let Some(draft) = db.drafts_get(&local_id).await.map_err(db_error)? else {
+    let Some(mut draft) = db.drafts_get(&local_id).await.map_err(db_error)? else {
         // The draft was discarded; its remote copy, if any, is gone with it.
         return Ok(ApplyOutcome::Done);
     };
@@ -160,6 +160,7 @@ pub async fn apply_draft_sync(
             generated
         }
     };
+    draft.rfc_message_id = Some(rfc_message_id.clone());
     let raw = crate::outgoing::prepare_draft_bytes(&draft, &identity, crate::db::now_ms() / 1000)?;
     let previous = draft.remote_draft_id.clone();
     let new = provider
