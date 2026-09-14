@@ -34,9 +34,9 @@ impl Account {
             return true;
         }
         match self.granted_scope.as_deref() {
-            Some(scope) => scope.split_whitespace().any(|s| {
-                s.contains("mail.google.com") || s.ends_with("/gmail.modify")
-            }),
+            Some(scope) => scope
+                .split_whitespace()
+                .any(|s| s.contains("mail.google.com") || s.ends_with("/gmail.modify")),
             None => true,
         }
     }
@@ -206,7 +206,11 @@ pub struct ThreadRow {
     /// P8.2: an open reminder on this thread, if any. The list row uses it for
     /// a subtle indicator; a reminder never moves the thread, so this is the
     /// only place the row shows it.
-    #[serde(rename = "reminderAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "reminderAt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub reminder_at: Option<i64>,
     #[serde(default, rename = "serverOnly")]
     pub server_only: bool,
@@ -534,7 +538,11 @@ pub struct MessageMeta {
     /// carries (P5.4). The composer needs them to build a reply draft that
     /// threads correctly, and the server re-derives the same values from the
     /// stored parent row when the draft is saved.
-    #[serde(rename = "rfcMessageId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "rfcMessageId",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub rfc_message_id: Option<String>,
     #[serde(rename = "references", default)]
     pub references_json: Vec<String>,
@@ -739,21 +747,41 @@ pub struct Draft {
     /// address.
     #[serde(rename = "fromEmail", skip_serializing_if = "Option::is_none", default)]
     pub from_email: Option<String>,
-    #[serde(rename = "remoteDraftId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "remoteDraftId",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub remote_draft_id: Option<String>,
-    #[serde(rename = "remoteMessageId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "remoteMessageId",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub remote_message_id: Option<String>,
     #[serde(rename = "threadId", skip_serializing_if = "Option::is_none", default)]
     pub thread_id: Option<String>,
-    #[serde(rename = "inReplyToMessageId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "inReplyToMessageId",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub in_reply_to_message_id: Option<String>,
     /// Stable Message-ID of this draft's send lineage. Set when the draft is
     /// first prepared or queued and reused by every retry of that attempt.
-    #[serde(rename = "rfcMessageId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "rfcMessageId",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub rfc_message_id: Option<String>,
     /// RFC Message-ID of the message being replied to, and the References
     /// chain up to it (P5.4). Both are carried into MIME and the REST body.
-    #[serde(rename = "parentRfcMessageId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "parentRfcMessageId",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub parent_rfc_message_id: Option<String>,
     #[serde(rename = "references", default)]
     pub references_json: Vec<String>,
@@ -786,11 +814,23 @@ pub struct Draft {
     /// Queued send deadline (undo send / send later).
     #[serde(rename = "notBefore", skip_serializing_if = "Option::is_none", default)]
     pub not_before: Option<i64>,
-    #[serde(rename = "scheduledAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "scheduledAt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub scheduled_at: Option<i64>,
-    #[serde(rename = "scheduledTimezone", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "scheduledTimezone",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub scheduled_timezone: Option<String>,
-    #[serde(rename = "scheduledLocalTime", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "scheduledLocalTime",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub scheduled_local_time: Option<String>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
     pub updated_at: Option<i64>,
@@ -877,7 +917,11 @@ pub struct RemoteDraft {
     pub thread_id: Option<String>,
     /// RFC Message-ID of the remote draft when the transport knows it (IMAP
     /// locator); `None` for REST, where the mailbox copy is authoritative.
-    #[serde(rename = "rfcMessageId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "rfcMessageId",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub rfc_message_id: Option<String>,
 }
 
@@ -890,16 +934,28 @@ pub struct SendHandle {
     pub not_before: i64,
     /// P8.1: the UTC deadline the user chose, which is `not_before` for a send
     /// later and `None` for an immediate send (undo window only).
-    #[serde(rename = "scheduledAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "scheduledAt",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub scheduled_at: Option<i64>,
     /// The exact local wall time the user picked (`YYYY-MM-DDTHH:MM`), kept
     /// verbatim so the UI shows what was intended rather than a re-derived
     /// value that a DST change could shift.
-    #[serde(rename = "scheduledLocalTime", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "scheduledLocalTime",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub scheduled_local_time: Option<String>,
     /// The IANA zone that local time belongs to. Shown before queueing, and
     /// shown again on the scheduled item, because the send itself is UTC.
-    #[serde(rename = "scheduledTimezone", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "scheduledTimezone",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub scheduled_timezone: Option<String>,
 }
 
@@ -1225,7 +1281,6 @@ pub struct StorageUsage {
     #[serde(rename = "computedAt")]
     pub computed_at: i64,
 }
-
 
 // ---------------------------------------------------------------------------
 // P8.3 Rules

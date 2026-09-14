@@ -491,7 +491,7 @@ fn leaf(tok: &Token, hints: &mut Vec<QueryHint>) -> Node {
                         ));
                         Node::Never
                     }
-                }
+                };
             }
             _ => return literal(hints),
         }
@@ -607,10 +607,12 @@ mod tests {
         let Node::And(items) = p.ast.clone().unwrap() else {
             panic!("expected conjunction")
         };
-        assert!(items.iter().any(|n| matches!(n, Node::Phrase(t) if t == "quarterly numbers")));
         assert!(items
             .iter()
-            .any(|n| matches!(n, Node::Not(inner) if matches!(**inner, Node::Pred(Pred::From(_))))));
+            .any(|n| matches!(n, Node::Phrase(t) if t == "quarterly numbers")));
+        assert!(items.iter().any(
+            |n| matches!(n, Node::Not(inner) if matches!(**inner, Node::Pred(Pred::From(_))))
+        ));
         // before excludes the day's start, after includes it.
         let before = preds
             .iter()

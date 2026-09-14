@@ -8,7 +8,8 @@ use rusqlite::params;
 /// One `threads` row as the UI sees it. Shared by the list query, the search
 /// hydration and the single-row lookup so all three can never disagree.
 pub(crate) fn thread_row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadRow> {
-    let label_ids: Vec<String> = serde_json::from_str(&r.get::<_, String>("label_ids")?).unwrap_or_default();
+    let label_ids: Vec<String> =
+        serde_json::from_str(&r.get::<_, String>("label_ids")?).unwrap_or_default();
     let participants: Vec<Address> =
         serde_json::from_str(&r.get::<_, String>("participants")?).unwrap_or_default();
     Ok(ThreadRow {
@@ -35,40 +36,55 @@ pub(crate) fn thread_row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadR
 /// so a partial-sync batch can write its messages and their thread rows in one
 /// commit (P4.5).
 pub(crate) fn recompute_thread_conn(c: &rusqlite::Connection, a: &str, t: &str) -> Result<()> {
-      // 8 aggregate columns in one row scan; tuple keeps it in one query (perf hot path).
-      #[allow(clippy::type_complexity)]
+    // 8 aggregate columns in one row scan; tuple keeps it in one query (perf hot path).
+    #[allow(clippy::type_complexity)]
       let (mc, uc, starred, has_att, min_d, max_d, subj, snip): (i64,i64,i64,i64,Option<i64>,Option<i64>,Option<String>,Option<String>) =
         c.query_row("SELECT count(*), COALESCE(SUM(is_unread),0), COALESCE(MAX(is_starred),0), COALESCE(MAX(has_attachments),0), MIN(internal_date), MAX(internal_date), NULL, NULL FROM messages WHERE account_id=? AND thread_id=?", params![a,t], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,None,None)))?;
-      if mc == 0 {
-        c.execute("DELETE FROM threads WHERE account_id=? AND id=?", params![a,t])?;
+    if mc == 0 {
+        c.execute(
+            "DELETE FROM threads WHERE account_id=? AND id=?",
+            params![a, t],
+        )?;
         return Ok(());
-      }
-      let in_inbox: i64 = c.query_row("SELECT EXISTS(SELECT 1 FROM messages m JOIN message_labels ml ON ml.account_id=m.account_id AND ml.message_id=m.id WHERE m.account_id=? AND m.thread_id=? AND ml.label_id='INBOX')", params![a,t], |r| r.get(0))?;
-      let all_trash: i64 = c.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM messages m LEFT JOIN message_labels ml ON ml.account_id=m.account_id AND ml.message_id=m.id AND ml.label_id='TRASH' WHERE m.account_id=? AND m.thread_id=? AND ml.label_id IS NULL) THEN 0 ELSE 1 END", params![a,t], |r| r.get(0))?;
-      let all_spam: i64 = c.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM messages m LEFT JOIN message_labels ml ON ml.account_id=m.account_id AND ml.message_id=m.id AND ml.label_id='SPAM' WHERE m.account_id=? AND m.thread_id=? AND ml.label_id IS NULL) THEN 0 ELSE 1 END", params![a,t], |r| r.get(0))?;
-      let subject: String = c.query_row("SELECT subject FROM messages WHERE account_id=? AND thread_id=? AND subject<>'' ORDER BY internal_date LIMIT 1", params![a,t], |r| r.get(0)).unwrap_or_default();
-      let snippet: String = c.query_row("SELECT snippet FROM messages WHERE account_id=? AND thread_id=? AND is_draft=0 ORDER BY internal_date DESC LIMIT 1", params![a,t], |r| r.get(0)).unwrap_or_default();
-      // participants: distinct from_email in date order
-      let mut ps = c.prepare("SELECT from_name, from_email FROM messages WHERE account_id=? AND thread_id=? ORDER BY internal_date")?;
-      let mut parts: Vec<Address> = vec![];
-      let mut seen = std::collections::HashSet::new();
-      for row in ps.query_map(params![a,t], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)))? {
+    }
+    let in_inbox: i64 = c.query_row("SELECT EXISTS(SELECT 1 FROM messages m JOIN message_labels ml ON ml.account_id=m.account_id AND ml.message_id=m.id WHERE m.account_id=? AND m.thread_id=? AND ml.label_id='INBOX')", params![a,t], |r| r.get(0))?;
+    let all_trash: i64 = c.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM messages m LEFT JOIN message_labels ml ON ml.account_id=m.account_id AND ml.message_id=m.id AND ml.label_id='TRASH' WHERE m.account_id=? AND m.thread_id=? AND ml.label_id IS NULL) THEN 0 ELSE 1 END", params![a,t], |r| r.get(0))?;
+    let all_spam: i64 = c.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM messages m LEFT JOIN message_labels ml ON ml.account_id=m.account_id AND ml.message_id=m.id AND ml.label_id='SPAM' WHERE m.account_id=? AND m.thread_id=? AND ml.label_id IS NULL) THEN 0 ELSE 1 END", params![a,t], |r| r.get(0))?;
+    let subject: String = c.query_row("SELECT subject FROM messages WHERE account_id=? AND thread_id=? AND subject<>'' ORDER BY internal_date LIMIT 1", params![a,t], |r| r.get(0)).unwrap_or_default();
+    let snippet: String = c.query_row("SELECT snippet FROM messages WHERE account_id=? AND thread_id=? AND is_draft=0 ORDER BY internal_date DESC LIMIT 1", params![a,t], |r| r.get(0)).unwrap_or_default();
+    // participants: distinct from_email in date order
+    let mut ps = c.prepare("SELECT from_name, from_email FROM messages WHERE account_id=? AND thread_id=? ORDER BY internal_date")?;
+    let mut parts: Vec<Address> = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for row in ps.query_map(params![a, t], |r| {
+        Ok((
+            r.get::<_, Option<String>>(0)?,
+            r.get::<_, Option<String>>(1)?,
+        ))
+    })? {
         let (n, e) = row?;
         if let Some(e) = e {
-          if seen.insert(e.clone()) { parts.push(Address { n, e, me: None }); if parts.len() >= 6 { break; } }
+            if seen.insert(e.clone()) {
+                parts.push(Address { n, e, me: None });
+                if parts.len() >= 6 {
+                    break;
+                }
+            }
         }
-      }
-      let parts_json = serde_json::to_string(&parts)?;
-      // union labels
-      let mut ls = c.prepare("SELECT DISTINCT label_id FROM message_labels WHERE account_id=? AND message_id IN (SELECT id FROM messages WHERE account_id=? AND thread_id=?)")?;
-      let labels: Vec<String> = ls.query_map(params![a,a,t], |r| r.get(0))?.collect::<Result<Vec<_>,_>>()?;
-      let labels_json = serde_json::to_string(&labels)?;
-      let is_draft_only: i64 = c.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM messages WHERE account_id=? AND thread_id=? AND is_draft=0) THEN 0 ELSE 1 END", params![a,t], |r| r.get(0))?;
-      let _ = (subj, snip);
-      c.execute("INSERT INTO threads (account_id,id,subject,snippet,last_message_at,first_message_at,message_count,unread_count,is_starred,has_attachments,participants,label_ids,in_inbox,in_trash,in_spam,is_draft_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    }
+    let parts_json = serde_json::to_string(&parts)?;
+    // union labels
+    let mut ls = c.prepare("SELECT DISTINCT label_id FROM message_labels WHERE account_id=? AND message_id IN (SELECT id FROM messages WHERE account_id=? AND thread_id=?)")?;
+    let labels: Vec<String> = ls
+        .query_map(params![a, a, t], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let labels_json = serde_json::to_string(&labels)?;
+    let is_draft_only: i64 = c.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM messages WHERE account_id=? AND thread_id=? AND is_draft=0) THEN 0 ELSE 1 END", params![a,t], |r| r.get(0))?;
+    let _ = (subj, snip);
+    c.execute("INSERT INTO threads (account_id,id,subject,snippet,last_message_at,first_message_at,message_count,unread_count,is_starred,has_attachments,participants,label_ids,in_inbox,in_trash,in_spam,is_draft_only) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account_id,id) DO UPDATE SET subject=excluded.subject, snippet=excluded.snippet, last_message_at=excluded.last_message_at, first_message_at=excluded.first_message_at, message_count=excluded.message_count, unread_count=excluded.unread_count, is_starred=excluded.is_starred, has_attachments=excluded.has_attachments, participants=excluded.participants, label_ids=excluded.label_ids, in_inbox=excluded.in_inbox, in_trash=excluded.in_trash, in_spam=excluded.in_spam, is_draft_only=excluded.is_draft_only",
         params![a,t,subject,snippet,max_d.unwrap_or(0),min_d.unwrap_or(0),mc,uc,starred,has_att,parts_json,labels_json,in_inbox,all_trash,all_spam,is_draft_only])?;
-      Ok(())
+    Ok(())
 }
 
 /// Stable tag for one view, used in the cursor scope fingerprint.
@@ -142,7 +158,10 @@ impl Db {
     /// The cursor is decoded and matched against this exact request
     /// (sort, scope, query) before any row is read; a cursor from another list
     /// is a typed error, never a silently different page.
-    pub async fn threads_query(&self, q: ThreadsQuery) -> std::result::Result<ThreadsPage, SiftError> {
+    pub async fn threads_query(
+        &self,
+        q: ThreadsQuery,
+    ) -> std::result::Result<ThreadsPage, SiftError> {
         let limit = q.limit.clamp(1, 100);
         let (sort, scope, query) = page_identity(&q.view, &q.account_ids);
         let cursor = match q.cursor.as_deref() {

@@ -16,7 +16,8 @@
 //! and `@import` / `@font-face` are removed unconditionally.
 
 /// Stand-in for a blocked image: a transparent 1x1 GIF that cannot mail home.
-pub const BLOCKED_PIXEL: &str = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+pub const BLOCKED_PIXEL: &str =
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
 /// Elements whose `src`/`poster`/`background` can start a network request.
 const MEDIA_ELEMENTS: &[&str] = &["img", "source", "video", "audio", "track", "embed"];
@@ -38,11 +39,8 @@ fn attr_span(tag: &str, name: &str) -> Option<(usize, usize)> {
     let mut from = 0;
     while from < lower.len() {
         let i = from + lower[from..].find(name)?;
-        let before_ok = i == 0
-            || matches!(
-                tag.as_bytes()[i - 1],
-                b' ' | b'\t' | b'\n' | b'\r' | b'<'
-            );
+        let before_ok =
+            i == 0 || matches!(tag.as_bytes()[i - 1], b' ' | b'\t' | b'\n' | b'\r' | b'<');
         let after = i + name.len();
         if before_ok {
             match tag.as_bytes().get(after) {
@@ -300,7 +298,10 @@ fn rewrite_style_attributes(html: &str, allow_images: bool) -> String {
             return out;
         };
         out.push_str("style=\"");
-        out.push_str(&rewrite_css_urls(&strip_at_rules(&after[..end]), allow_images));
+        out.push_str(&rewrite_css_urls(
+            &strip_at_rules(&after[..end]),
+            allow_images,
+        ));
         out.push('"');
         rest = &after[end + 1..];
     }

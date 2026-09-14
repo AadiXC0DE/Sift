@@ -95,7 +95,9 @@ fn fts_exists(b: &mut Builder, expression: String) {
 fn substring_any(b: &mut Builder, value: &str, include_to: bool) {
     b.raw("(instr(lower(m.subject), lower(");
     b.text(value.to_string());
-    b.raw("))>0 OR instr(lower(COALESCE(m.from_name,'') || ' ' || COALESCE(m.from_email,'')), lower(");
+    b.raw(
+        "))>0 OR instr(lower(COALESCE(m.from_name,'') || ' ' || COALESCE(m.from_email,'')), lower(",
+    );
     b.text(value.to_string());
     b.raw("))>0");
     if include_to {
@@ -144,7 +146,9 @@ fn compile_phrase(b: &mut Builder, phrase: &str) {
 fn compile_pred(b: &mut Builder, pred: &Pred) {
     match pred {
         Pred::From(value) => {
-            b.raw("instr(lower(COALESCE(m.from_name,'') || ' ' || COALESCE(m.from_email,'')), lower(");
+            b.raw(
+                "instr(lower(COALESCE(m.from_name,'') || ' ' || COALESCE(m.from_email,'')), lower(",
+            );
             b.text(value.clone());
             b.raw("))>0");
         }
@@ -410,7 +414,12 @@ mod tests {
         let compiled = sql_of("from:a to:b cc:c subject:d label:e in:trash has:attachment is:unread before:2026-01-01");
         // No literal user text can appear in the SQL string.
         for needle in ["'a'", "'b'", "'c'", "'d'", "'e'", "2026-01-01"] {
-            assert!(!compiled.sql.contains(needle), "{} in {}", needle, compiled.sql);
+            assert!(
+                !compiled.sql.contains(needle),
+                "{} in {}",
+                needle,
+                compiled.sql
+            );
         }
         assert_eq!(compiled.sql.matches('?').count(), compiled.params.len());
     }

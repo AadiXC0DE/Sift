@@ -52,7 +52,13 @@ async fn newsletter_survives_fetch_store_and_read() {
         ..Default::default()
     };
     let sink = DbSink::new(db.clone());
-    store_parsed(&sink, &sift::dto::MessageRef::new(account_id.clone(), "m1"), &parsed).await.unwrap();
+    store_parsed(
+        &sink,
+        &sift::dto::MessageRef::new(account_id.clone(), "m1"),
+        &parsed,
+    )
+    .await
+    .unwrap();
 
     let m1 = sift::dto::MessageRef::new(account_id.clone(), "m1");
     let stored = db.bodies_get(&m1).await.unwrap().expect("body stored");
@@ -63,7 +69,8 @@ async fn newsletter_survives_fetch_store_and_read() {
     // stored bodies keep sift-att:// refs; bytes are embedded when read.
     let parts = db.attachments_with_bytes(&m1).await.unwrap();
     assert_eq!(parts.len(), 1);
-    let html = sift::render::sanitize::embed_local_images(&html, &format!("{account_id}/m1"), &parts);
+    let html =
+        sift::render::sanitize::embed_local_images(&html, &format!("{account_id}/m1"), &parts);
 
     for expected in [
         "width=",
@@ -109,9 +116,13 @@ async fn document_head_and_body_survive_pipeline() {
         html: Some(DOCUMENT.into()),
         ..Default::default()
     };
-    store_parsed(&DbSink::new(db.clone()), &sift::dto::MessageRef::new(account_id.clone(), "m2"), &parsed)
-        .await
-        .unwrap();
+    store_parsed(
+        &DbSink::new(db.clone()),
+        &sift::dto::MessageRef::new(account_id.clone(), "m2"),
+        &parsed,
+    )
+    .await
+    .unwrap();
 
     let html = db
         .bodies_get(&sift::dto::MessageRef::new(account_id.clone(), "m2"))

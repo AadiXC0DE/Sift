@@ -14,9 +14,8 @@ impl Db {
     pub async fn vip_list(&self, account_id: &str) -> Result<Vec<String>> {
         let a = account_id.to_string();
         self.read(move |c| {
-            let mut s = c.prepare(
-                "SELECT email FROM vip_senders WHERE account_id=? ORDER BY email",
-            )?;
+            let mut s =
+                c.prepare("SELECT email FROM vip_senders WHERE account_id=? ORDER BY email")?;
             let rows = s
                 .query_map(params![a], |r| r.get(0))?
                 .collect::<Result<Vec<String>, _>>()?;
@@ -29,10 +28,7 @@ impl Db {
     /// normalises it, so a VIP selected from a recent contact matches the
     /// address sync will see.
     pub async fn vip_set(&self, account_id: &str, email: &str, vip: bool) -> Result<Vec<String>> {
-        let (a, e) = (
-            account_id.to_string(),
-            email.trim().to_ascii_lowercase(),
-        );
+        let (a, e) = (account_id.to_string(), email.trim().to_ascii_lowercase());
         let now = super::now_ms();
         self.write(move |c| {
             if vip {
@@ -53,10 +49,7 @@ impl Db {
     }
 
     pub async fn vip_is_vip(&self, account_id: &str, email: &str) -> Result<bool> {
-        let (a, e) = (
-            account_id.to_string(),
-            email.trim().to_ascii_lowercase(),
-        );
+        let (a, e) = (account_id.to_string(), email.trim().to_ascii_lowercase());
         self.read(move |c| {
             Ok(c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM vip_senders WHERE account_id=? AND email=?)",
@@ -75,9 +68,8 @@ impl Db {
                 return Ok(vec![]);
             }
             let holes = vec!["?"; accounts.len()].join(",");
-            let sql = format!(
-                "SELECT account_id, email FROM vip_senders WHERE account_id IN ({holes})"
-            );
+            let sql =
+                format!("SELECT account_id, email FROM vip_senders WHERE account_id IN ({holes})");
             let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![];
             for a in &accounts {
                 binds.push(Box::new(a.clone()));

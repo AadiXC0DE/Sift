@@ -144,13 +144,21 @@ pub async fn run_partial_sync(
             .collect();
         if holders.contains("trash") {
             let (a, t) = sink
-                .apply_label_change(&crate::dto::MessageRef::new(account_id, &mid), &["TRASH".to_string()], &["INBOX".to_string()])
+                .apply_label_change(
+                    &crate::dto::MessageRef::new(account_id, &mid),
+                    &["TRASH".to_string()],
+                    &["INBOX".to_string()],
+                )
                 .await
                 .map_err(|e| SiftError::app("db", e.to_string(), false))?;
             changed.push((a, t));
         } else if holders.contains("junk") {
             let (a, t) = sink
-                .apply_label_change(&crate::dto::MessageRef::new(account_id, &mid), &["SPAM".to_string()], &["INBOX".to_string()])
+                .apply_label_change(
+                    &crate::dto::MessageRef::new(account_id, &mid),
+                    &["SPAM".to_string()],
+                    &["INBOX".to_string()],
+                )
                 .await
                 .map_err(|e| SiftError::app("db", e.to_string(), false))?;
             changed.push((a, t));
@@ -395,7 +403,9 @@ async fn sync_one_folder(
                         _ => None,
                     });
                     if let Some(mid) = uid.and_then(|u| stored.get(&u).cloned()) {
-                        if let Some(tid) = apply_remote_state(sink, account_id, &mid, &meta, &flags).await? {
+                        if let Some(tid) =
+                            apply_remote_state(sink, account_id, &mid, &meta, &flags).await?
+                        {
                             changed.push((account_id.to_string(), tid));
                         }
                     }

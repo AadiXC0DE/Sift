@@ -159,7 +159,11 @@ mod tests {
             "jane@example.com"
         );
         // A `%` in the query is not a wildcard.
-        assert!(db.contacts_suggest("a", "%%%%", 10).await.unwrap().is_empty());
+        assert!(db
+            .contacts_suggest("a", "%%%%", 10)
+            .await
+            .unwrap()
+            .is_empty());
         let r = db.contacts_suggest("a", "100%", 10).await.unwrap();
         assert_eq!(r.len(), 1, "the literal percent still matches");
         assert_eq!(r[0].email, "percent@example.com");
@@ -205,14 +209,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            db.contacts_suggest("a", "Old Name", 10).await.unwrap().len(),
+            db.contacts_suggest("a", "Old Name", 10)
+                .await
+                .unwrap()
+                .len(),
             1
         );
         db.contacts_upsert("a", "person@x.com", Some("New Name"))
             .await
             .unwrap();
         assert!(
-            db.contacts_suggest("a", "Old Name", 10).await.unwrap().is_empty(),
+            db.contacts_suggest("a", "Old Name", 10)
+                .await
+                .unwrap()
+                .is_empty(),
             "the stale trigram row must be gone"
         );
         let renamed = db.contacts_suggest("a", "New Name", 10).await.unwrap();

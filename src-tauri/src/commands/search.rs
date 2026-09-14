@@ -135,11 +135,7 @@ pub async fn saved_search_upsert(
 /// label or queued operation is touched.
 #[tauri::command]
 pub async fn saved_search_delete(state: State<'_, AppState>, id: String) -> Result<(), SiftError> {
-    state
-        .db
-        .saved_search_delete(&id)
-        .await
-        .map_err(db_error)
+    state.db.saved_search_delete(&id).await.map_err(db_error)
 }
 
 /// List saved searches with their scope, plus the entries of that scope whose
@@ -156,11 +152,7 @@ pub async fn saved_search_count(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<SavedSearchCount, SiftError> {
-    state
-        .db
-        .saved_search_count(&id)
-        .await
-        .map_err(db_error)
+    state.db.saved_search_count(&id).await.map_err(db_error)
 }
 
 /// Run a saved search. It expands to the stored query and scope only — there

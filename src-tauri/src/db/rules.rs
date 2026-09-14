@@ -107,9 +107,7 @@ impl Db {
     pub async fn rule_get(&self, account_id: &str, rule_id: &str) -> Result<Option<MailRule>> {
         let (a, r) = (account_id.to_string(), rule_id.to_string());
         self.read(move |c| {
-            let sql = format!(
-                "SELECT {RULE_COLUMNS} FROM mail_rules WHERE account_id=? AND id=?"
-            );
+            let sql = format!("SELECT {RULE_COLUMNS} FROM mail_rules WHERE account_id=? AND id=?");
             Ok(c.query_row(&sql, params![a, r], rule_from_row).optional()?)
         })
         .await
@@ -297,7 +295,11 @@ impl Db {
         .await
     }
 
-    pub async fn rule_message(&self, account_id: &str, message_id: &str) -> Result<Option<RuleMessage>> {
+    pub async fn rule_message(
+        &self,
+        account_id: &str,
+        message_id: &str,
+    ) -> Result<Option<RuleMessage>> {
         type Row = (
             String,
             String,
@@ -594,7 +596,10 @@ mod tests {
             RuleAction::new("addLabel", Some("Label_1")),
         ];
         let d = diff_for(&actions, &["INBOX".into()]);
-        assert_eq!(d.add, vec!["SPAM".to_string(), "STARRED".into(), "Label_1".into()]);
+        assert_eq!(
+            d.add,
+            vec!["SPAM".to_string(), "STARRED".into(), "Label_1".into()]
+        );
         assert_eq!(d.remove, vec!["INBOX".to_string()]);
         // Already junked and starred: only the label is new.
         let d = diff_for(&actions, &["SPAM".into(), "STARRED".into()]);

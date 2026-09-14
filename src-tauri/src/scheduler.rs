@@ -215,7 +215,10 @@ mod tests {
         // Still due, so the scheduler keeps seeing it: that is what keeps the
         // reminder visible when notifications are denied.
         assert_eq!(next_deadline(&db).await.unwrap(), Some(1));
-        assert_eq!(db.reminders_due(crate::db::now_ms()).await.unwrap().len(), 1);
+        assert_eq!(
+            db.reminders_due(crate::db::now_ms()).await.unwrap().len(),
+            1
+        );
         // Once delivery is recorded it stops being due but stays visible.
         db.reminder_mark_delivered("a", "t1").await.unwrap();
         assert_eq!(next_deadline(&db).await.unwrap(), None);

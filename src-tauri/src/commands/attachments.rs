@@ -7,9 +7,9 @@
 //! Every command takes the account-qualified key from appendix A: an
 //! attachment id or message id alone is not unique across accounts (P4.2).
 
+use crate::app_state::AppState;
 use crate::attachments::service;
 use crate::attachments::AttachmentRuntime;
-use crate::app_state::AppState;
 use crate::dto::{AttachmentRefKey, MessageRef, SaveAllResult, SaveAsResult};
 use crate::errors::SiftError;
 use std::path::PathBuf;
@@ -68,9 +68,13 @@ pub async fn attachments_open(
         attachment_id,
     };
     let rec = service::owned_record(&rt.db, &key).await?;
-    service::open(&rt, &*state, &rec, confirmed_executable.unwrap_or(false), |path| {
-        crate::opener::open_path(&app, &path.to_string_lossy())
-    })
+    service::open(
+        &rt,
+        &*state,
+        &rec,
+        confirmed_executable.unwrap_or(false),
+        |path| crate::opener::open_path(&app, &path.to_string_lossy()),
+    )
     .await
 }
 
@@ -90,11 +94,7 @@ pub async fn attachments_save_as(
         attachment_id,
     };
     let rec = service::owned_record(&rt.db, &key).await?;
-    let name = crate::attachments::naming::basename(
-        rec.filename.as_deref(),
-        &rec.mime,
-        &rec.id,
-    );
+    let name = crate::attachments::naming::basename(rec.filename.as_deref(), &rec.mime, &rec.id);
     let Some(dest) = prompt_save_path(&app, &name).await else {
         return Ok(SaveAsResult {
             path: None,
@@ -129,10 +129,7 @@ pub async fn attachments_save_all(
 /// Cancel an in-flight transfer by the `requestId` the progress event carries
 /// (an account-qualified attachment id). Immediate, and idempotent.
 #[tauri::command]
-pub async fn attachments_cancel(
-    account_id: String,
-    request_id: String,
-) -> Result<(), SiftError> {
+pub async fn attachments_cancel(account_id: String, request_id: String) -> Result<(), SiftError> {
     service::cancel(account_id.trim(), request_id.trim());
     Ok(())
 }

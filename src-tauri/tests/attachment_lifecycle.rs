@@ -127,7 +127,11 @@ impl AttachmentTransport for FakeTransport {
             .unwrap()
             .push((message_id.to_string(), locator.to_string()));
         let total = self.payload.len() as u64;
-        let size = if self.chunk_size == 0 { usize::MAX } else { self.chunk_size };
+        let size = if self.chunk_size == 0 {
+            usize::MAX
+        } else {
+            self.chunk_size
+        };
         let mut sent = 0usize;
         for chunk in self.payload.chunks(size).map(<[u8]>::to_vec) {
             if self.fail_after.is_some_and(|n| sent >= n) {
@@ -182,10 +186,7 @@ struct NoTransport;
 
 #[async_trait]
 impl TransportSource for NoTransport {
-    async fn transport(
-        &self,
-        account_id: &str,
-    ) -> Result<Arc<dyn AttachmentTransport>, SiftError> {
+    async fn transport(&self, account_id: &str) -> Result<Arc<dyn AttachmentTransport>, SiftError> {
         panic!("transport consulted for {account_id}; the cache should have answered");
     }
 }
@@ -210,8 +211,7 @@ impl Fixture {
             let progress = progress.clone();
             Arc::new(move |p: &AttachmentProgress| progress.lock().unwrap().push(p.clone()))
         };
-        let runtime =
-            AttachmentRuntime::with_progress(db.clone(), dir.path().to_path_buf(), sink);
+        let runtime = AttachmentRuntime::with_progress(db.clone(), dir.path().to_path_buf(), sink);
         Self {
             _dir: dir,
             db,
@@ -286,7 +286,10 @@ impl Fixture {
 }
 
 fn error_code(e: &SiftError) -> String {
-    serde_json::to_value(e).unwrap()["code"].as_str().unwrap().to_string()
+    serde_json::to_value(e).unwrap()["code"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 // ------------------------------------------------------------------------- P2.2
@@ -296,8 +299,15 @@ fn error_code(e: &SiftError) -> String {
 async fn metadata_then_body_then_reopen_keeps_one_attachment_with_bytes() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "1.2", Some("invoice.pdf"), "application/pdf", None)
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "1.2",
+        Some("invoice.pdf"),
+        "application/pdf",
+        None,
+    )
+    .await;
     fx.attach(
         "att1",
         "m1",
@@ -321,7 +331,9 @@ async fn metadata_then_body_then_reopen_keeps_one_attachment_with_bytes() {
         1
     );
 
-    let info = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+    let info = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+        .await
+        .unwrap();
     assert_eq!(info.state, "ready");
     assert_eq!(info.cache_basename, "invoice.pdf");
     assert!(!info.requires_confirmation);
@@ -331,8 +343,13 @@ async fn metadata_then_body_then_reopen_keeps_one_attachment_with_bytes() {
     // Reopen: the verified file answers, and the row now records it.
     let rec = fx.record("att1").await;
     assert_eq!(rec.cache_state, CacheState::Ready);
-    assert_eq!(rec.local_path.as_deref(), Some(path.to_string_lossy().as_ref()));
-    let again = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+    assert_eq!(
+        rec.local_path.as_deref(),
+        Some(path.to_string_lossy().as_ref())
+    );
+    let again = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+        .await
+        .unwrap();
     assert_eq!(again.path.unwrap(), path.to_string_lossy());
 }
 
@@ -340,10 +357,19 @@ async fn metadata_then_body_then_reopen_keeps_one_attachment_with_bytes() {
 async fn repeated_ingest_preserves_id_and_local_path() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "2", Some("photo.png"), "image/png", Some(vec![7, 7]))
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("photo.png"),
+        "image/png",
+        Some(vec![7, 7]),
+    )
+    .await;
     let rec = fx.record("att1").await;
-    let first = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+    let first = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+        .await
+        .unwrap();
     let first_path = first.path.unwrap();
 
     // A later metadata-only parse of the same message must not reset the row.
@@ -352,7 +378,9 @@ async fn repeated_ingest_preserves_id_and_local_path() {
     assert_eq!(rec.id, "att1");
     assert_eq!(rec.local_path.as_deref(), Some(first_path.as_str()));
     assert_eq!(rec.filename.as_deref(), Some("photo.png"));
-    let again = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+    let again = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+        .await
+        .unwrap();
     assert_eq!(again.path.unwrap(), first_path);
 }
 
@@ -362,26 +390,44 @@ async fn repeated_ingest_preserves_id_and_local_path() {
 async fn corrupt_payload_refetches_and_never_yields_empty_file() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "3", Some("data.bin"), "application/octet-stream", Some(vec![1]))
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "3",
+        Some("data.bin"),
+        "application/octet-stream",
+        Some(vec![1]),
+    )
+    .await;
     fx.db
         .write(|c| {
-            c.execute("UPDATE attachments SET data_z=?1 WHERE id='att1'", rusqlite::params![b"garbage".to_vec()])?;
+            c.execute(
+                "UPDATE attachments SET data_z=?1 WHERE id='att1'",
+                rusqlite::params![b"garbage".to_vec()],
+            )?;
             Ok(())
         })
         .await
         .unwrap();
 
     let rec = fx.record("att1").await;
-    assert!(rec.data.is_none(), "corrupt bytes are never an empty payload");
+    assert!(
+        rec.data.is_none(),
+        "corrupt bytes are never an empty payload"
+    );
     assert!(rec.data_error.is_some());
 
     let transport = FakeTransport::new(ProviderKind::GmailImap, b"real bytes".to_vec());
     let sink = FakeSource::new(transport.clone());
-    let info = service::ensure_local(&fx.runtime, &sink, &rec).await.unwrap();
+    let info = service::ensure_local(&fx.runtime, &sink, &rec)
+        .await
+        .unwrap();
     assert_eq!(info.state, "ready");
     assert_eq!(std::fs::read(info.path.unwrap()).unwrap(), b"real bytes");
-    assert_eq!(transport.recorded(), vec![("m1".to_string(), "3".to_string())]);
+    assert_eq!(
+        transport.recorded(),
+        vec![("m1".to_string(), "3".to_string())]
+    );
     assert_eq!(fx.record("att1").await.cache_state, CacheState::Ready);
 }
 
@@ -390,16 +436,28 @@ async fn corrupt_payload_refetches_and_never_yields_empty_file() {
 async fn metadata_refresh_alone_does_not_redownload() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "2", Some("invoice.pdf"), "application/pdf", Some(vec![1, 2, 3]))
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("invoice.pdf"),
+        "application/pdf",
+        Some(vec![1, 2, 3]),
+    )
+    .await;
     let rec = fx.record("att1").await;
-    service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+    service::ensure_local(&fx.runtime, &NoTransport, &rec)
+        .await
+        .unwrap();
 
     // Filename metadata arrives later; `NoTransport` fails the test if the
     // service decides to refetch.
-    fx.attach("att1", "m1", "2", None, "application/pdf", None).await;
+    fx.attach("att1", "m1", "2", None, "application/pdf", None)
+        .await;
     let rec = fx.record("att1").await;
-    let info = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+    let info = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+        .await
+        .unwrap();
     assert_eq!(info.state, "ready");
 }
 
@@ -412,28 +470,57 @@ async fn deleted_cache_file_is_repaired() {
     fx.message("m1").await;
 
     // Row-cached bytes: the row alone repairs the file, no network.
-    fx.attach("att1", "m1", "2", Some("cached.bin"), "application/octet-stream", Some(vec![1, 2, 3]))
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("cached.bin"),
+        "application/octet-stream",
+        Some(vec![1, 2, 3]),
+    )
+    .await;
     let rec = fx.record("att1").await;
-    let info = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+    let info = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+        .await
+        .unwrap();
     std::fs::remove_file(info.path.unwrap()).unwrap();
     let rec = fx.record("att1").await;
     assert_eq!(rec.cache_state, CacheState::Ready);
-    let repaired = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
-    assert_eq!(std::fs::read(repaired.path.unwrap()).unwrap(), vec![1, 2, 3]);
+    let repaired = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(repaired.path.unwrap()).unwrap(),
+        vec![1, 2, 3]
+    );
 
     // No row cache: the file must come back over the network.
-    fx.attach("att2", "m1", "3", Some("gone.bin"), "application/octet-stream", None)
-        .await;
+    fx.attach(
+        "att2",
+        "m1",
+        "3",
+        Some("gone.bin"),
+        "application/octet-stream",
+        None,
+    )
+    .await;
     let transport = FakeTransport::new(ProviderKind::GmailImap, b"fresh".to_vec());
     let sink = FakeSource::new(transport.clone());
     let rec = fx.record("att2").await;
-    let first = service::ensure_local(&fx.runtime, &sink, &rec).await.unwrap();
+    let first = service::ensure_local(&fx.runtime, &sink, &rec)
+        .await
+        .unwrap();
     std::fs::remove_file(first.path.unwrap()).unwrap();
 
     let rec = fx.record("att2").await;
-    assert_eq!(rec.cache_state, CacheState::Ready, "row still claims a file");
-    let again = service::ensure_local(&fx.runtime, &sink, &rec).await.unwrap();
+    assert_eq!(
+        rec.cache_state,
+        CacheState::Ready,
+        "row still claims a file"
+    );
+    let again = service::ensure_local(&fx.runtime, &sink, &rec)
+        .await
+        .unwrap();
     assert_eq!(std::fs::read(again.path.unwrap()).unwrap(), b"fresh");
     assert_eq!(transport.recorded().len(), 2, "refetched after deletion");
 }
@@ -443,10 +530,19 @@ async fn deleted_cache_file_is_repaired() {
 async fn empty_attachment_is_ready_with_zero_bytes() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "2", Some("empty.txt"), "text/plain", Some(Vec::new()))
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("empty.txt"),
+        "text/plain",
+        Some(Vec::new()),
+    )
+    .await;
     let rec = fx.record("att1").await;
-    let info = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+    let info = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+        .await
+        .unwrap();
     assert_eq!(info.state, "ready");
     assert_eq!(info.decoded_size, Some(0));
     let path = PathBuf::from(info.path.unwrap());
@@ -454,11 +550,14 @@ async fn empty_attachment_is_ready_with_zero_bytes() {
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
 
     // A streamed zero-byte attachment behaves the same way.
-    fx.attach("att2", "m1", "3", Some("empty2.txt"), "text/plain", None).await;
+    fx.attach("att2", "m1", "3", Some("empty2.txt"), "text/plain", None)
+        .await;
     let rec = fx.record("att2").await;
     let transport = FakeTransport::new(ProviderKind::GmailImap, Vec::new());
     let sink = FakeSource::new(transport);
-    let info = service::ensure_local(&fx.runtime, &sink, &rec).await.unwrap();
+    let info = service::ensure_local(&fx.runtime, &sink, &rec)
+        .await
+        .unwrap();
     assert_eq!(info.state, "ready");
     assert_eq!(std::fs::metadata(info.path.unwrap()).unwrap().len(), 0);
 }
@@ -471,17 +570,34 @@ async fn filename_matrix_covers_unicode_quotes_traversal_and_missing_names() {
     fx.message("m1").await;
     let cases: Vec<(&str, Option<&str>, &str, &str)> = vec![
         ("a1", Some("invoice.pdf"), "application/pdf", "invoice.pdf"),
-        ("a2", Some("Résumé final.pdf"), "application/pdf", "Résumé final.pdf"),
-        ("a3", Some("\"report\" 2026.pdf"), "application/pdf", "\"report\" 2026.pdf"),
+        (
+            "a2",
+            Some("Résumé final.pdf"),
+            "application/pdf",
+            "Résumé final.pdf",
+        ),
+        (
+            "a3",
+            Some("\"report\" 2026.pdf"),
+            "application/pdf",
+            "\"report\" 2026.pdf",
+        ),
         ("a4", None, "application/pdf", "attachment-a4.pdf"),
         ("a5", Some("../../x"), "application/octet-stream", "x"),
-        ("a6", Some("/etc/passwd"), "application/octet-stream", "passwd"),
+        (
+            "a6",
+            Some("/etc/passwd"),
+            "application/octet-stream",
+            "passwd",
+        ),
         ("a7", Some("   "), "application/zip", "attachment-a7.zip"),
     ];
     for (id, name, mime, expected) in &cases {
         fx.attach(id, "m1", id, *name, mime, Some(vec![1])).await;
         let rec = fx.record(id).await;
-        let info = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+        let info = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+            .await
+            .unwrap();
         assert_eq!(&info.cache_basename, expected, "basename for {name:?}");
         let path = PathBuf::from(info.path.unwrap());
         assert_eq!(path.file_name().unwrap().to_string_lossy(), *expected);
@@ -498,14 +614,30 @@ async fn filename_matrix_covers_unicode_quotes_traversal_and_missing_names() {
 async fn duplicate_names_are_distinct_per_attachment() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "2", Some("invoice.pdf"), "application/pdf", Some(vec![1]))
-        .await;
-    fx.attach("att2", "m1", "3", Some("invoice.pdf"), "application/pdf", Some(vec![2]))
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("invoice.pdf"),
+        "application/pdf",
+        Some(vec![1]),
+    )
+    .await;
+    fx.attach(
+        "att2",
+        "m1",
+        "3",
+        Some("invoice.pdf"),
+        "application/pdf",
+        Some(vec![2]),
+    )
+    .await;
     let mut paths = Vec::new();
     for id in ["att1", "att2"] {
         let rec = fx.record(id).await;
-        let info = service::ensure_local(&fx.runtime, &NoTransport, &rec).await.unwrap();
+        let info = service::ensure_local(&fx.runtime, &NoTransport, &rec)
+            .await
+            .unwrap();
         paths.push(PathBuf::from(info.path.unwrap()));
     }
     assert_ne!(paths[0], paths[1], "each attachment owns its own directory");
@@ -519,14 +651,23 @@ async fn duplicate_names_are_distinct_per_attachment() {
 async fn failed_write_leaves_no_ready_state_and_no_half_file() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "2", Some("big.bin"), "application/octet-stream", None)
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("big.bin"),
+        "application/octet-stream",
+        None,
+    )
+    .await;
     let rec = fx.record("att1").await;
     let transport = FakeTransport::new(ProviderKind::GmailImap, vec![9u8; 64])
         .with_chunk_size(8)
         .with_failure(2);
     let sink = FakeSource::new(transport);
-    let err = service::ensure_local(&fx.runtime, &sink, &rec).await.unwrap_err();
+    let err = service::ensure_local(&fx.runtime, &sink, &rec)
+        .await
+        .unwrap_err();
     assert_eq!(error_code(&err), "attachment_offline");
 
     let rec = fx.record("att1").await;
@@ -541,7 +682,10 @@ async fn failed_write_leaves_no_ready_state_and_no_half_file() {
     let leftovers: Vec<_> = std::fs::read_dir(&dir)
         .map(|rd| rd.filter_map(|e| e.ok()).collect::<Vec<_>>())
         .unwrap_or_default();
-    assert!(leftovers.is_empty(), "cache dir holds no half-file or temp file");
+    assert!(
+        leftovers.is_empty(),
+        "cache dir holds no half-file or temp file"
+    );
 
     // The failure is reported to the UI, ending in a terminal state.
     let states = fx.progress_states();
@@ -554,14 +698,23 @@ async fn failed_write_leaves_no_ready_state_and_no_half_file() {
 async fn completion_mismatch_is_an_error_not_a_short_file() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "2", Some("short.bin"), "application/octet-stream", None)
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("short.bin"),
+        "application/octet-stream",
+        None,
+    )
+    .await;
     let rec = fx.record("att1").await;
     let transport = FakeTransport::new(ProviderKind::GmailImap, vec![1u8; 16])
         .with_chunk_size(4)
         .with_done_override(999);
     let sink = FakeSource::new(transport);
-    let err = service::ensure_local(&fx.runtime, &sink, &rec).await.unwrap_err();
+    let err = service::ensure_local(&fx.runtime, &sink, &rec)
+        .await
+        .unwrap_err();
     assert_eq!(error_code(&err), "attachment_decode_failed");
     assert_ne!(fx.record("att1").await.cache_state, CacheState::Ready);
 }
@@ -572,8 +725,15 @@ async fn completion_mismatch_is_an_error_not_a_short_file() {
 async fn save_cancel_aborts_immediately_and_cleans_up() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "2", Some("slow.bin"), "application/octet-stream", None)
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("slow.bin"),
+        "application/octet-stream",
+        None,
+    )
+    .await;
     let gate = Arc::new(tokio::sync::Notify::new());
     let transport = FakeTransport::new(ProviderKind::GmailImap, vec![3u8; 32])
         .with_chunk_size(4)
@@ -588,27 +748,29 @@ async fn save_cancel_aborts_immediately_and_cleans_up() {
     while transport.sent.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    assert!(transport.sent.load(Ordering::SeqCst) > 0, "transfer never started");
+    assert!(
+        transport.sent.load(Ordering::SeqCst) > 0,
+        "transfer never started"
+    );
     assert!(service::cancel(&fx.account, "att1"), "registered transfer");
 
     let err = task.await.unwrap().unwrap_err();
     assert_eq!(error_code(&err), "attachment_cancelled");
     let rec = fx.record("att1").await;
-    assert_eq!(rec.cache_state, CacheState::Missing, "not left downloading/ready");
+    assert_eq!(
+        rec.cache_state,
+        CacheState::Missing,
+        "not left downloading/ready"
+    );
     assert!(rec.local_path.is_none());
-    assert!(fx
-        .progress_states()
-        .iter()
-        .any(|(s, _)| s == "cancelled"));
+    assert!(fx.progress_states().iter().any(|(s, _)| s == "cancelled"));
     let dir = fx
         .runtime
         .data_dir
         .join("attachments")
         .join(&fx.account)
         .join("att1");
-    let leftovers = std::fs::read_dir(&dir)
-        .map(|rd| rd.count())
-        .unwrap_or(0);
+    let leftovers = std::fs::read_dir(&dir).map(|rd| rd.count()).unwrap_or(0);
     assert_eq!(leftovers, 0, "temp file removed on cancel");
 }
 
@@ -616,8 +778,15 @@ async fn save_cancel_aborts_immediately_and_cleans_up() {
 async fn read_only_destination_fails_without_partial_file() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "2", Some("invoice.pdf"), "application/pdf", Some(vec![1, 2, 3]))
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("invoice.pdf"),
+        "application/pdf",
+        Some(vec![1, 2, 3]),
+    )
+    .await;
     let rec = fx.record("att1").await;
 
     let dir = tempfile::tempdir().unwrap();
@@ -650,10 +819,16 @@ impl TinyVolume {
     /// A ~1 MB HFS+ volume: the only portable way to get a real ENOSPC here.
     fn create(workdir: &Path) -> Self {
         static SEQ: AtomicUsize = AtomicUsize::new(0);
-        let name = format!("SiftTiny{}{}", std::process::id(), SEQ.fetch_add(1, Ordering::SeqCst));
+        let name = format!(
+            "SiftTiny{}{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        );
         let dmg = workdir.join(format!("{name}.dmg"));
         let status = std::process::Command::new("/usr/bin/hdiutil")
-            .args(["create", "-size", "1m", "-fs", "HFS+", "-volname", &name, "-quiet"])
+            .args([
+                "create", "-size", "1m", "-fs", "HFS+", "-volname", &name, "-quiet",
+            ])
             .arg(&dmg)
             .status()
             .expect("hdiutil create");
@@ -691,8 +866,15 @@ async fn disk_full_fails_without_ready_or_half_file() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
     let payload = vec![0x41u8; 3 * 1024 * 1024];
-    fx.attach("att1", "m1", "2", Some("big.pdf"), "application/pdf", Some(payload))
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("big.pdf"),
+        "application/pdf",
+        Some(payload),
+    )
+    .await;
     let rec = fx.record("att1").await;
 
     let work = tempfile::tempdir().unwrap();
@@ -711,7 +893,9 @@ async fn disk_full_fails_without_ready_or_half_file() {
         })
         .unwrap_or_default();
     assert!(
-        !leftovers.iter().any(|n| n.contains("big") || n.contains(".part-")),
+        !leftovers
+            .iter()
+            .any(|n| n.contains("big") || n.contains(".part-")),
         "temp copy removed after ENOSPC: {leftovers:?}"
     );
 }
@@ -726,7 +910,8 @@ async fn same_cid_on_two_messages_resolves_to_each_rows_section() {
     fx.message("m1").await;
     fx.message("m2").await;
     for (msg, id, part) in [("m1", "a1", "2"), ("m2", "a2", "3.1")] {
-        fx.attach(id, msg, part, Some("logo.png"), "image/png", None).await;
+        fx.attach(id, msg, part, Some("logo.png"), "image/png", None)
+            .await;
         fx.db
             .write({
                 let id = id.to_string();
@@ -756,7 +941,9 @@ async fn same_cid_on_two_messages_resolves_to_each_rows_section() {
             .unwrap();
         assert_eq!(rec.id, id);
         assert_eq!(rec.part_id, part);
-        let info = service::ensure_local(&fx.runtime, &sink, &rec).await.unwrap();
+        let info = service::ensure_local(&fx.runtime, &sink, &rec)
+            .await
+            .unwrap();
         assert_eq!(std::fs::read(info.path.unwrap()).unwrap(), vec![1u8; 4]);
     }
     let mut calls = transport.recorded();
@@ -782,8 +969,15 @@ async fn same_cid_on_two_messages_resolves_to_each_rows_section() {
 async fn lookup_by_row_id_part_and_api_id_records_the_right_locator() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "1.2", Some("doc.pdf"), "application/pdf", None)
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "1.2",
+        Some("doc.pdf"),
+        "application/pdf",
+        None,
+    )
+    .await;
     fx.db
         .write(|c| {
             c.execute(
@@ -815,16 +1009,29 @@ async fn lookup_by_row_id_part_and_api_id_records_the_right_locator() {
         .await
         .unwrap();
     assert_eq!(imap.recorded(), vec![("m1".to_string(), "1.2".to_string())]);
-    assert_eq!(imap_sink.accounts.lock().unwrap().clone(), vec![fx.account.clone()]);
+    assert_eq!(
+        imap_sink.accounts.lock().unwrap().clone(),
+        vec![fx.account.clone()]
+    );
 
     // REST transport asks for the API id, for the same row.
     let fx2 = Fixture::new().await;
     fx2.message("m1").await;
-    fx2.attach("att1", "m1", "1.2", Some("doc.pdf"), "application/pdf", None)
-        .await;
+    fx2.attach(
+        "att1",
+        "m1",
+        "1.2",
+        Some("doc.pdf"),
+        "application/pdf",
+        None,
+    )
+    .await;
     fx2.db
         .write(|c| {
-            c.execute("UPDATE attachments SET gmail_att_id='API-att-9' WHERE id='att1'", [])?;
+            c.execute(
+                "UPDATE attachments SET gmail_att_id='API-att-9' WHERE id='att1'",
+                [],
+            )?;
             Ok(())
         })
         .await
@@ -835,8 +1042,14 @@ async fn lookup_by_row_id_part_and_api_id_records_the_right_locator() {
     service::ensure_local(&fx2.runtime, &rest_sink, &rec)
         .await
         .unwrap();
-    assert_eq!(rest.recorded(), vec![("m1".to_string(), "API-att-9".to_string())]);
-    assert_eq!(rest_sink.accounts.lock().unwrap().clone(), vec![fx2.account.clone()]);
+    assert_eq!(
+        rest.recorded(),
+        vec![("m1".to_string(), "API-att-9".to_string())]
+    );
+    assert_eq!(
+        rest_sink.accounts.lock().unwrap().clone(),
+        vec![fx2.account.clone()]
+    );
 }
 
 /// A row without a locator for the account's transport is a typed error before
@@ -864,16 +1077,26 @@ async fn missing_locator_for_the_transport_is_a_typed_error() {
 async fn progress_events_are_throttled_and_never_carry_bytes() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("att1", "m1", "2", Some("big.bin"), "application/octet-stream", None)
-        .await;
+    fx.attach(
+        "att1",
+        "m1",
+        "2",
+        Some("big.bin"),
+        "application/octet-stream",
+        None,
+    )
+    .await;
     let payload = vec![7u8; 200 * 64];
-    let transport = FakeTransport::new(ProviderKind::GmailImap, payload.clone())
-        .with_chunk_size(64);
+    let transport =
+        FakeTransport::new(ProviderKind::GmailImap, payload.clone()).with_chunk_size(64);
     let rec = fx.record("att1").await;
     let info = service::ensure_local(&fx.runtime, &FakeSource::new(transport), &rec)
         .await
         .unwrap();
-    assert_eq!(std::fs::read(info.path.unwrap()).unwrap().len(), payload.len());
+    assert_eq!(
+        std::fs::read(info.path.unwrap()).unwrap().len(),
+        payload.len()
+    );
 
     let events = fx.progress.lock().unwrap().clone();
     let downloading: Vec<_> = events.iter().filter(|p| p.state == "downloading").collect();
@@ -882,7 +1105,9 @@ async fn progress_events_are_throttled_and_never_carry_bytes() {
         "200 chunks must not produce 200 events: {}",
         downloading.len()
     );
-    assert!(downloading.windows(2).all(|w| w[0].transferred_bytes <= w[1].transferred_bytes));
+    assert!(downloading
+        .windows(2)
+        .all(|w| w[0].transferred_bytes <= w[1].transferred_bytes));
     let last = events.last().unwrap();
     assert_eq!(last.state, "ready");
     assert_eq!(last.transferred_bytes, payload.len() as u64);
@@ -899,16 +1124,37 @@ async fn progress_events_are_throttled_and_never_carry_bytes() {
 async fn save_all_writes_every_non_inline_attachment_and_avoids_collisions() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("a1", "m1", "2", Some("invoice.pdf"), "application/pdf", Some(vec![1]))
-        .await;
-    fx.attach("a2", "m1", "3", Some("notes.txt"), "text/plain", Some(vec![2]))
-        .await;
+    fx.attach(
+        "a1",
+        "m1",
+        "2",
+        Some("invoice.pdf"),
+        "application/pdf",
+        Some(vec![1]),
+    )
+    .await;
+    fx.attach(
+        "a2",
+        "m1",
+        "3",
+        Some("notes.txt"),
+        "text/plain",
+        Some(vec![2]),
+    )
+    .await;
     // Unnamed attachments are not filtered out.
     fx.attach("a3", "m1", "4", None, "application/zip", Some(vec![3]))
         .await;
     // Inline parts are not part of Save All.
-    fx.attach("a4", "m1", "5", Some("logo.png"), "image/png", Some(vec![4]))
-        .await;
+    fx.attach(
+        "a4",
+        "m1",
+        "5",
+        Some("logo.png"),
+        "image/png",
+        Some(vec![4]),
+    )
+    .await;
     fx.db
         .write(|c| {
             c.execute("UPDATE attachments SET is_inline=1 WHERE id='a4'", [])?;
@@ -924,8 +1170,8 @@ async fn save_all_writes_every_non_inline_attachment_and_avoids_collisions() {
         &sift::dto::MessageRef::new(fx.account.clone(), "m1"),
         &dir,
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
     assert_eq!(first.saved, 3);
     assert!(first.failed.is_empty());
     let mut names: Vec<String> = std::fs::read_dir(&dir)
@@ -944,8 +1190,8 @@ async fn save_all_writes_every_non_inline_attachment_and_avoids_collisions() {
         &sift::dto::MessageRef::new(fx.account.clone(), "m1"),
         &dir,
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
     assert_eq!(second.saved, 3);
     assert!(dir.join("invoice (2).pdf").exists());
     assert_eq!(std::fs::read(dir.join("invoice.pdf")).unwrap(), vec![1]);
@@ -955,8 +1201,15 @@ async fn save_all_writes_every_non_inline_attachment_and_avoids_collisions() {
 async fn save_all_needs_two_non_inline_attachments() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("a1", "m1", "2", Some("only.pdf"), "application/pdf", Some(vec![1]))
-        .await;
+    fx.attach(
+        "a1",
+        "m1",
+        "2",
+        Some("only.pdf"),
+        "application/pdf",
+        Some(vec![1]),
+    )
+    .await;
     let dir = fx.runtime.data_dir.join("saved");
     let err = service::save_all_into(
         &fx.runtime,
@@ -964,8 +1217,8 @@ async fn save_all_needs_two_non_inline_attachments() {
         &sift::dto::MessageRef::new(fx.account.clone(), "m1"),
         &dir,
     )
-        .await
-        .unwrap_err();
+    .await
+    .unwrap_err();
     assert_eq!(error_code(&err), "attachment_save_all_not_applicable");
 
     // A foreign account cannot save another account's message.
@@ -988,10 +1241,24 @@ async fn save_all_needs_two_non_inline_attachments() {
 async fn open_requires_confirmation_for_downloaded_executables() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("a1", "m1", "2", Some("Installer.dmg"), "application/octet-stream", Some(vec![1]))
-        .await;
-    fx.attach("a2", "m1", "3", Some("invoice.pdf"), "application/pdf", Some(vec![2]))
-        .await;
+    fx.attach(
+        "a1",
+        "m1",
+        "2",
+        Some("Installer.dmg"),
+        "application/octet-stream",
+        Some(vec![1]),
+    )
+    .await;
+    fx.attach(
+        "a2",
+        "m1",
+        "3",
+        Some("invoice.pdf"),
+        "application/pdf",
+        Some(vec![2]),
+    )
+    .await;
 
     let opened = Arc::new(Mutex::new(Vec::new()));
     let rec = fx.record("a1").await;
@@ -1021,7 +1288,9 @@ async fn open_requires_confirmation_for_downloaded_executables() {
     // Save As stays available for executable types: the copy succeeds.
     let dir = fx.runtime.data_dir.join("saved");
     let dest = dir.join("Installer.dmg");
-    service::copy_to(&fx.runtime, &NoTransport, &rec, &dest).await.unwrap();
+    service::copy_to(&fx.runtime, &NoTransport, &rec, &dest)
+        .await
+        .unwrap();
     assert!(dest.exists());
 
     // A PDF opens without confirmation.
@@ -1037,11 +1306,20 @@ async fn open_requires_confirmation_for_downloaded_executables() {
 async fn open_uses_the_verified_cache_and_leaves_saved_copies_alone() {
     let fx = Fixture::new().await;
     fx.message("m1").await;
-    fx.attach("a1", "m1", "2", Some("invoice.pdf"), "application/pdf", Some(vec![1, 2, 3]))
-        .await;
+    fx.attach(
+        "a1",
+        "m1",
+        "2",
+        Some("invoice.pdf"),
+        "application/pdf",
+        Some(vec![1, 2, 3]),
+    )
+    .await;
     let rec = fx.record("a1").await;
     let saved = fx.runtime.data_dir.join("saved").join("invoice.pdf");
-    service::copy_to(&fx.runtime, &NoTransport, &rec, &saved).await.unwrap();
+    service::copy_to(&fx.runtime, &NoTransport, &rec, &saved)
+        .await
+        .unwrap();
     let rec = fx.record("a1").await;
     assert_eq!(rec.cache_state, CacheState::Ready);
     service::open(&fx.runtime, &NoTransport, &rec, false, |_: &Path| Ok(()))
@@ -1073,7 +1351,8 @@ async fn migration_0007_dedupes_and_preserves_richest_row() {
         ] {
             conn.execute_batch(sql).unwrap();
         }
-        conn.execute("UPDATE schema_version SET version=6", []).unwrap();
+        conn.execute("UPDATE schema_version SET version=6", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO accounts (id,email,created_at) VALUES ('acc','a@x.com',1)",
             [],
@@ -1162,5 +1441,8 @@ async fn migration_0007_dedupes_and_preserves_richest_row() {
         })
         .await
         .unwrap();
-    assert!(duplicate_rejected, "natural key is enforced after migration");
+    assert!(
+        duplicate_rejected,
+        "natural key is enforced after migration"
+    );
 }

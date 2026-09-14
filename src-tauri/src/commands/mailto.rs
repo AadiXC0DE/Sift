@@ -53,9 +53,7 @@ pub async fn mailto_pending(
 /// Consume the pending compose request. The second caller gets `None`, so a
 /// remount cannot open the same draft twice.
 #[tauri::command]
-pub async fn mailto_take(
-    state: State<'_, AppState>,
-) -> Result<Option<PendingMailto>, SiftError> {
+pub async fn mailto_take(state: State<'_, AppState>) -> Result<Option<PendingMailto>, SiftError> {
     Ok(state.take_mailto())
 }
 

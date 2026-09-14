@@ -1224,11 +1224,7 @@ impl Conn {
     /// One SELECT/EXAMINE. `selected` is cleared before the command and set
     /// only on success, so a failed reselect can never leave a stale mailbox
     /// epoch behind.
-    async fn select_once(
-        &mut self,
-        folder: &str,
-        readonly: bool,
-    ) -> Result<SelectInfo, SiftError> {
+    async fn select_once(&mut self, folder: &str, readonly: bool) -> Result<SelectInfo, SiftError> {
         self.selected = None;
         let verb = if readonly { "EXAMINE" } else { "SELECT" };
         let r = self
@@ -1263,7 +1259,9 @@ impl Conn {
     pub async fn list_special(
         &mut self,
     ) -> Result<Vec<(Vec<String>, Option<String>, String)>, SiftError> {
-        let r = self.read_cmd("LIST \"\" \"*\" RETURN (SPECIAL-USE)").await?;
+        let r = self
+            .read_cmd("LIST \"\" \"*\" RETURN (SPECIAL-USE)")
+            .await?;
         if !r.tagged.ok {
             super::errors::map_response("LIST", &r.tagged.text)?;
         }
@@ -1449,7 +1447,11 @@ impl Conn {
     /// This is how an `uncertain` send is reconciled (P6.1): the prepared
     /// message carries a stable Message-ID, so "did Gmail accept it?" is
     /// answered by the server's own index rather than by a local guess.
-    pub async fn uid_search_header(&mut self, header: &str, value: &str) -> Result<Vec<u32>, SiftError> {
+    pub async fn uid_search_header(
+        &mut self,
+        header: &str,
+        value: &str,
+    ) -> Result<Vec<u32>, SiftError> {
         let v = value.replace('\\', "\\\\").replace('"', "\\\"");
         let r = self
             .read_cmd(&format!("UID SEARCH HEADER {header} \"{v}\""))

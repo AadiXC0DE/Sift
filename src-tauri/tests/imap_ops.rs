@@ -389,7 +389,10 @@ async fn p11_t07_drafts_append_expunge() {
     let msgid = "<p11-t07@example.com>";
     let d1 = ctx.provider.draft_upsert(None, &raw, msgid).await.unwrap();
     assert!(!d1.remote_draft_id.is_empty());
-    assert!(d1.message_id.is_some(), "the copy is identified by its Gmail id");
+    assert!(
+        d1.message_id.is_some(),
+        "the copy is identified by its Gmail id"
+    );
     // Upsert new revision expunges previous (server has exactly one draft copy).
     let d2 = ctx
         .provider
@@ -400,5 +403,8 @@ async fn p11_t07_drafts_append_expunge() {
     // The locator carries UIDVALIDITY:UID:GMAIL-ID, so a later UIDVALIDITY
     // change cannot make an old UID address a different message.
     assert_eq!(d2.remote_draft_id.split(':').count(), 3);
-    ctx.provider.draft_delete(&d2.remote_draft_id).await.unwrap();
+    ctx.provider
+        .draft_delete(&d2.remote_draft_id)
+        .await
+        .unwrap();
 }

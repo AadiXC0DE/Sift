@@ -607,9 +607,7 @@ async fn resolve_for_delete(
             continue;
         };
         let uids = {
-            let mut w = pool
-                .with_selected_worker(&name, true, &no_cancel())
-                .await?;
+            let mut w = pool.with_selected_worker(&name, true, &no_cancel()).await?;
             w.conn().uid_search_gmmsgid(dec).await?
         };
         let Some(uid) = uids.first().copied() else {
@@ -664,11 +662,11 @@ pub async fn delete_targets_from_payload(
             .read({
                 let (a, t) = (account_id.to_string(), tid.clone());
                 move |c| {
-                    Ok(c.prepare(
-                        "SELECT id FROM messages WHERE account_id=? AND thread_id=?",
-                    )?
-                    .query_map(rusqlite::params![a, t], |r| r.get(0))?
-                    .collect::<Result<Vec<String>, _>>()?)
+                    Ok(
+                        c.prepare("SELECT id FROM messages WHERE account_id=? AND thread_id=?")?
+                            .query_map(rusqlite::params![a, t], |r| r.get(0))?
+                            .collect::<Result<Vec<String>, _>>()?,
+                    )
                 }
             })
             .await
@@ -703,9 +701,7 @@ pub async fn sent_by_rfc_message_id(
             continue;
         };
         let uids = {
-            let mut w = pool
-                .with_selected_worker(&name, true, &no_cancel())
-                .await?;
+            let mut w = pool.with_selected_worker(&name, true, &no_cancel()).await?;
             w.conn().uid_search_header("Message-ID", &wanted).await?
         };
         let Some(uid) = uids.first().copied() else {
@@ -806,11 +802,7 @@ pub async fn draft_upsert(
         let _ = draft_delete(pool, db, folders, account_id, prev).await;
     }
     Ok(crate::dto::RemoteDraft {
-        remote_draft_id: encode_draft_locator(
-            uidvalidity.unwrap_or_default(),
-            uid,
-            &hex,
-        ),
+        remote_draft_id: encode_draft_locator(uidvalidity.unwrap_or_default(), uid, &hex),
         message_id: (!hex.is_empty()).then(|| hex.clone()),
         thread_id: None,
         rfc_message_id: Some(rfc_message_id.to_string()),
@@ -841,7 +833,10 @@ async fn resolve_hex(pool: &ImapPool, drafts: &str, uid: u32) -> String {
     };
     let Ok(fetched) = w
         .conn()
-        .uid_fetch_items(&uid.to_string(), &super::conn::FetchItems::new().gmail_msgid())
+        .uid_fetch_items(
+            &uid.to_string(),
+            &super::conn::FetchItems::new().gmail_msgid(),
+        )
         .await
     else {
         return String::new();
@@ -866,7 +861,9 @@ async fn expunge_uid(
     drafts: &str,
     uid: u32,
 ) -> Result<(), SiftError> {
-    let mut w = pool.with_selected_worker(drafts, false, &no_cancel()).await?;
+    let mut w = pool
+        .with_selected_worker(drafts, false, &no_cancel())
+        .await?;
     let conn = w.conn();
     let set = super::message::uid_set(&[uid], 1);
     let _ = conn
@@ -930,7 +927,9 @@ pub async fn draft_delete(
             .filter(|h| !h.is_empty())
             .or_else(|| (!remote_id.contains(':')).then(|| remote_id.to_string()));
         if let Some(dec) = hex.and_then(|h| ids::from_hex(&h)) {
-            let mut w = pool.with_selected_worker(&drafts, false, &no_cancel()).await?;
+            let mut w = pool
+                .with_selected_worker(&drafts, false, &no_cancel())
+                .await?;
             uid = w
                 .conn()
                 .uid_search_gmmsgid(dec)

@@ -126,7 +126,12 @@ pub fn summary(items: &[Notice], policy: &Policy) -> (String, String, String, St
     } else {
         format!("{} new messages, newest from {}", items.len(), first.from)
     };
-    (title, body, first.account_id.clone(), first.thread_id.clone())
+    (
+        title,
+        body,
+        first.account_id.clone(),
+        first.thread_id.clone(),
+    )
 }
 
 /// One notification to raise. The payload carries the account and thread refs
@@ -181,7 +186,10 @@ pub async fn deliver_new_mail(
     // never reported twice.
     let mut fresh: Vec<Notice> = Vec::with_capacity(allowed.len());
     for n in allowed {
-        match db.notify_claim(&n.account_id, &n.message_id, &n.thread_id).await {
+        match db
+            .notify_claim(&n.account_id, &n.message_id, &n.thread_id)
+            .await
+        {
             Ok(true) => fresh.push(n),
             Ok(false) => {}
             Err(_) => {}
@@ -375,7 +383,8 @@ mod tests {
             hide_subject: true,
             sound: true,
         };
-        let (title, body) = notice("a", "Ada", "Q3 payroll figures", true, false).title_body(&hidden);
+        let (title, body) =
+            notice("a", "Ada", "Q3 payroll figures", true, false).title_body(&hidden);
         assert_eq!(title, "Ada");
         assert_eq!(body, "New message");
         assert!(!body.contains("payroll"));

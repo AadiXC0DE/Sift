@@ -302,7 +302,15 @@ mod tests {
     fn p27_root_text_attachment_stays_an_attachment() {
         let raw = b"From: Ada <ada@acme.com>\r\nSubject: Note\r\nMessage-ID: <s3@acme.com>\r\nContent-Type: text/plain; name=\"note.txt\"\r\nContent-Disposition: attachment; filename=\"note.txt\"\r\n\r\nhello note\r\n";
         let pm = parse_raw(raw).expect("parse");
-        assert_eq!(pm.attachments.len(), 1, "{:?}", pm.attachments.iter().map(|a| (&a.filename, &a.mime, &a.part_id)).collect::<Vec<_>>());
+        assert_eq!(
+            pm.attachments.len(),
+            1,
+            "{:?}",
+            pm.attachments
+                .iter()
+                .map(|a| (&a.filename, &a.mime, &a.part_id))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(pm.attachments[0].part_id, "1");
         assert_eq!(pm.attachments[0].filename.as_deref(), Some("note.txt"));
         assert_eq!(pm.attachments[0].mime, "text/plain");
@@ -319,7 +327,15 @@ mod tests {
         raw.extend_from_slice(&payload);
         let pm = parse_raw(&raw).expect("parse");
         assert_eq!(pm.subject, "Bin");
-        assert_eq!(pm.attachments.len(), 1, "named root binary is an attachment: {:?}", pm.attachments.iter().map(|a| (&a.filename, &a.mime, &a.part_id)).collect::<Vec<_>>());
+        assert_eq!(
+            pm.attachments.len(),
+            1,
+            "named root binary is an attachment: {:?}",
+            pm.attachments
+                .iter()
+                .map(|a| (&a.filename, &a.mime, &a.part_id))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(pm.attachments[0].part_id, "1");
         assert_eq!(pm.attachments[0].filename.as_deref(), Some("blob.bin"));
         assert_eq!(pm.attachments[0].mime, "application/octet-stream");
@@ -341,15 +357,34 @@ mod tests {
         // RFC 2231 continuation with a charset-encoded first segment.
         let raw = b"From: Ada <ada@acme.com>\r\nSubject: Invoice\r\nMessage-ID: <s6@acme.com>\r\nContent-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment;\r\n filename*0*=utf-8''%E2%82%AC;\r\n filename*1*=%20Rechnung.pdf\r\n\r\nJVBERi0xLjQK\r\n";
         let pm = parse_raw(raw).expect("parse");
-        assert_eq!(pm.attachments.len(), 1, "{:?}", pm.attachments.iter().map(|a| (&a.filename, &a.mime, &a.part_id)).collect::<Vec<_>>());
+        assert_eq!(
+            pm.attachments.len(),
+            1,
+            "{:?}",
+            pm.attachments
+                .iter()
+                .map(|a| (&a.filename, &a.mime, &a.part_id))
+                .collect::<Vec<_>>()
+        );
         let name = pm.attachments[0].filename.clone().unwrap();
         assert!(name.ends_with("Rechnung.pdf"), "got {name:?}");
-        assert!(name.contains('€'), "RFC2231 charset segment decoded: {name:?}");
+        assert!(
+            name.contains('€'),
+            "RFC2231 charset segment decoded: {name:?}"
+        );
 
         // A filename containing a semicolon and an escaped quote.
         let raw = b"From: Ada <ada@acme.com>\r\nSubject: Odd\r\nMessage-ID: <s7@acme.com>\r\nContent-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"a;b\\\"c.pdf\"\r\n\r\nJVBERi0xLjQK\r\n";
         let pm = parse_raw(raw).expect("parse");
-        assert_eq!(pm.attachments.len(), 1, "{:?}", pm.attachments.iter().map(|a| (&a.filename, &a.mime, &a.part_id)).collect::<Vec<_>>());
+        assert_eq!(
+            pm.attachments.len(),
+            1,
+            "{:?}",
+            pm.attachments
+                .iter()
+                .map(|a| (&a.filename, &a.mime, &a.part_id))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             pm.attachments[0].filename.as_deref(),
             Some("a;b\"c.pdf"),
@@ -367,7 +402,10 @@ mod tests {
         assert_eq!(att.part_id, "2");
         assert_eq!(att.filename.as_deref(), Some("forwarded-message.eml"));
         let body = String::from_utf8_lossy(&att.data);
-        assert!(body.contains("Subject: Inner"), "raw inner message: {body:?}");
+        assert!(
+            body.contains("Subject: Inner"),
+            "raw inner message: {body:?}"
+        );
         assert!(body.contains("Inner body text"));
         assert!(!body.contains("outer body"), "not the outer body");
     }

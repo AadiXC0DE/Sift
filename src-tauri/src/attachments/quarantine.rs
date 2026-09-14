@@ -40,7 +40,11 @@ pub fn apply(path: &Path, inherited: Option<&str>) -> bool {
     }
     let value = match inherited {
         Some(v) if !v.is_empty() => v.to_string(),
-        _ => format!("0081;{:x};Sift;{}", now_hex(), uuid::Uuid::now_v7().simple()),
+        _ => format!(
+            "0081;{:x};Sift;{}",
+            now_hex(),
+            uuid::Uuid::now_v7().simple()
+        ),
     };
     let ok = Command::new("/usr/bin/xattr")
         .arg("-w")

@@ -280,11 +280,7 @@ impl Provider for GmailApiProvider {
             "label_delete" => {
                 let id = op.payload["id"].as_str().unwrap_or_default();
                 if id.is_empty() {
-                    return Err(SiftError::app(
-                        "op",
-                        "a label delete needs a label",
-                        false,
-                    ));
+                    return Err(SiftError::app("op", "a label delete needs a label", false));
                 }
                 match self.client.delete_label(id).await {
                     // Already gone is the requested end state.
@@ -314,7 +310,9 @@ impl Provider for GmailApiProvider {
                     .as_array()
                     .map(|list| {
                         list.iter()
-                            .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(str::to_string))
+                            .filter_map(|m| {
+                                m.get("id").and_then(|i| i.as_str()).map(str::to_string)
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -410,7 +408,9 @@ impl Provider for GmailApiProvider {
                 Err(e) => return Err(e),
             }
         }
-        Ok(draft_resource(self.client.create_draft(&encoded, None).await?))
+        Ok(draft_resource(
+            self.client.create_draft(&encoded, None).await?,
+        ))
     }
 
     async fn draft_delete(&self, remote_id: &str) -> Result<(), SiftError> {

@@ -188,7 +188,9 @@ pub fn evidence_covers<'a>(
 ) -> Option<&'a Evidence> {
     evidence.iter().find(|item| match item.method.as_str() {
         "dmarc" => domain_matches(&item.domain, from_domain) || item.domain.is_empty(),
-        "dkim" => domain_matches(&item.domain, url_host) || domain_matches(&item.domain, from_domain),
+        "dkim" => {
+            domain_matches(&item.domain, url_host) || domain_matches(&item.domain, from_domain)
+        }
         _ => false,
     })
 }
@@ -351,13 +353,13 @@ impl OneClickOutcome {
 ///
 /// The body is bounded: a provider that streams more than
 /// [`MAX_RESPONSE_BYTES`] is not allowed to grow the request.
-pub async fn perform_one_click(
-    client: &reqwest::Client,
-    url: &url::Url,
-) -> OneClickOutcome {
+pub async fn perform_one_click(client: &reqwest::Client, url: &url::Url) -> OneClickOutcome {
     let response = match client
         .post(url.clone())
-        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .header(reqwest::header::ACCEPT, "*/*")
         .body(ONE_CLICK_BODY)
         .send()
@@ -591,13 +593,14 @@ mod tests {
         assert!(post_is_one_click(Some("List-Unsubscribe=One-Click")));
         assert!(post_is_one_click(Some("list-unsubscribe=one-click")));
         assert!(!post_is_one_click(Some("List-Unsubscribe=Two-Click")));
-        assert!(!post_is_one_click(Some("" )));
+        assert!(!post_is_one_click(Some("")));
         assert!(!post_is_one_click(None));
     }
 
     #[test]
     fn authentication_is_never_inferred_from_an_untrusted_header() {
-        let header = "mx.example.com; dkim=pass header.d=example.com; dmarc=pass header.from=example.com";
+        let header =
+            "mx.example.com; dkim=pass header.d=example.com; dmarc=pass header.from=example.com";
         assert!(evidence(Some(header), false).is_empty());
         let trusted = evidence(Some(header), true);
         assert_eq!(trusted.len(), 2);
@@ -619,10 +622,7 @@ mod tests {
             "::ffff:127.0.0.1",
             "::ffff:10.0.0.1",
         ] {
-            assert!(
-                is_blocked_ip(ip.parse().unwrap()),
-                "{ip} must be refused"
-            );
+            assert!(is_blocked_ip(ip.parse().unwrap()), "{ip} must be refused");
         }
         for ip in ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"] {
             assert!(!is_blocked_ip(ip.parse().unwrap()), "{ip} must be allowed");
@@ -631,7 +631,8 @@ mod tests {
 
     #[test]
     fn mailto_keeps_its_encoding() {
-        let encoded = normalize_mailto("mailto:leave@example.com?subject=Unsubscribe%20me").unwrap();
+        let encoded =
+            normalize_mailto("mailto:leave@example.com?subject=Unsubscribe%20me").unwrap();
         assert!(encoded.contains("subject=Unsubscribe%20me"), "{encoded}");
     }
 }

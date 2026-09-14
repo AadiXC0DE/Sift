@@ -258,7 +258,14 @@ pub(crate) fn refresh_message_flags(
     conn.execute(
         "UPDATE messages SET is_unread=?, is_starred=?, is_draft=?, label_ids=? \
          WHERE account_id=? AND id=?",
-        rusqlite::params![unread as i32, starred as i32, draft as i32, lj, account_id, message_id],
+        rusqlite::params![
+            unread as i32,
+            starred as i32,
+            draft as i32,
+            lj,
+            account_id,
+            message_id
+        ],
     )?;
     Ok(())
 }
@@ -348,10 +355,7 @@ fn apply_account_gesture(
     let mut add: Vec<String> = vec![];
     let mut remove: Vec<String> = vec![];
     for l in sets.add.iter().chain(sets.remove.iter()) {
-        let present_before = previous
-            .messages
-            .iter()
-            .any(|m| PreviousState::had(l, m));
+        let present_before = previous.messages.iter().any(|m| PreviousState::had(l, m));
         if sets.add.contains(l) && !present_before {
             if !add.contains(l) {
                 add.push(l.clone());
@@ -535,7 +539,11 @@ pub async fn undo_gesture(
             summary_action: Some("Undoing".into()),
             ..Default::default()
         };
-        let id = db.outbox_enqueue_label_diff(&queued).await.map_err(db_error)?.id;
+        let id = db
+            .outbox_enqueue_label_diff(&queued)
+            .await
+            .map_err(db_error)?
+            .id;
         if let Some(row) = db.outbox_get(id).await.map_err(db_error)? {
             operations.push(row);
         }
@@ -550,7 +558,8 @@ pub async fn undo_gesture(
             failures.push(GestureFailure {
                 account_id: op.account_id.clone(),
                 code: "no_previous_state".into(),
-                message: "this operation does not record what it changed, so Sift will not guess".into(),
+                message: "this operation does not record what it changed, so Sift will not guess"
+                    .into(),
             });
             continue;
         }
@@ -947,10 +956,8 @@ fn enqueue_deletions(
     }
     let mut first: Option<i64> = None;
     for chunk in identities.chunks(EMPTY_TRASH_CHUNK) {
-        let messages: Vec<serde_json::Value> =
-            chunk.iter().map(|i| i.value.clone()).collect();
-        let cache_paths: Vec<String> =
-            chunk.iter().filter_map(|i| i.cache_path.clone()).collect();
+        let messages: Vec<serde_json::Value> = chunk.iter().map(|i| i.value.clone()).collect();
+        let cache_paths: Vec<String> = chunk.iter().filter_map(|i| i.cache_path.clone()).collect();
         let payload = serde_json::json!({
             "messages": messages,
             "cachePaths": cache_paths,
@@ -1078,7 +1085,9 @@ pub(crate) fn trash_message_ids(
         "SELECT m.id, m.thread_id FROM messages m          JOIN message_labels ml ON ml.account_id=m.account_id AND ml.message_id=m.id          WHERE m.account_id=? AND ml.label_id='TRASH' AND m.is_draft=0          ORDER BY m.internal_date, m.id",
     )?;
     let rows = s
-        .query_map(rusqlite::params![account_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .query_map(rusqlite::params![account_id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
         .collect::<Result<Vec<(String, String)>, _>>()?;
     Ok(rows)
 }
@@ -1138,20 +1147,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let acc = db.new_account("a@x.com", None, None).await.unwrap();
-        seed(&db, &acc.id, "t1", &[("m1", true), ("m2", false), ("m3", true)]).await;
+        seed(
+            &db,
+            &acc.id,
+            "t1",
+            &[("m1", true), ("m2", false), ("m3", true)],
+        )
+        .await;
         let targets = vec![GestureTarget {
             account_id: acc.id.clone(),
             thread_id: "t1".into(),
         }];
-        let (outcome, failures) =
-            apply_gesture(&db, "g1", &targets, &ActionKind::Archive).await.unwrap();
+        let (outcome, failures) = apply_gesture(&db, "g1", &targets, &ActionKind::Archive)
+            .await
+            .unwrap();
         assert!(failures.is_empty());
         assert_eq!(outcome.operations.len(), 1);
         // Only the two messages that were in the inbox were changed.
         let payload = outcome.operations[0].payload_value();
         let ids: Vec<String> = serde_json::from_value(payload["ids"].clone()).unwrap();
         assert_eq!(ids.len(), 2);
-        assert!(!ids.contains(&"m2".to_string()), "already archived: no change");
+        assert!(
+            !ids.contains(&"m2".to_string()),
+            "already archived: no change"
+        );
 
         let (_, failures) = undo_gesture(&db, "g1").await.unwrap();
         assert!(failures.is_empty());
@@ -1169,7 +1188,10 @@ mod tests {
             .await
             .unwrap();
         let labels: Vec<String> = serde_json::from_str(&labels).unwrap();
-        assert!(labels.contains(&"INBOX".to_string()), "prior state restored");
+        assert!(
+            labels.contains(&"INBOX".to_string()),
+            "prior state restored"
+        );
         // m2 was untouched by the gesture and stays untouched by the undo.
         let labels: String = db
             .read({

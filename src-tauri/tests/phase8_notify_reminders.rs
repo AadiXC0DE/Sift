@@ -125,11 +125,18 @@ async fn p8_2_a_due_reminder_is_delivered_exactly_once() {
     assert_eq!(delivered[0].title, "Ada");
     assert_eq!(delivered[0].subject, "Lunch?");
     assert_eq!(
-        db.reminders_list(std::slice::from_ref(&acc), false).await.unwrap()[0].state,
+        db.reminders_list(std::slice::from_ref(&acc), false)
+            .await
+            .unwrap()[0]
+            .state,
         "delivered"
     );
     assert_eq!(recorder.shown(), 1);
-    assert_eq!(recorder.emitted(), 1, "the store is told which thread changed");
+    assert_eq!(
+        recorder.emitted(),
+        1,
+        "the store is told which thread changed"
+    );
 
     // The durable mark was written before the banner, so a second pass — a
     // restart, a racing scheduler — is silent.
@@ -154,12 +161,9 @@ async fn p8_2_a_denied_reminder_stays_visible_and_undelivered() {
     let (_dir, db, acc) = fixture().await;
     let recorder = Recorder::new(false, false);
     let now = sift::db::now_ms();
-    db.reminders_upsert(
-        &[(acc.clone(), "t1".to_string())],
-        now - 1_000,
-    )
-    .await
-    .unwrap();
+    db.reminders_upsert(&[(acc.clone(), "t1".to_string())], now - 1_000)
+        .await
+        .unwrap();
 
     let due_at = now;
     let denied = sift::reminders::deliver_due(&db, &recorder.host, due_at)
@@ -175,7 +179,10 @@ async fn p8_2_a_denied_reminder_stays_visible_and_undelivered() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].state, "due");
     assert!(rows[0].due);
-    let indicator = db.reminders_for_threads(&acc, vec!["t1".into()]).await.unwrap();
+    let indicator = db
+        .reminders_for_threads(&acc, vec!["t1".into()])
+        .await
+        .unwrap();
     assert_eq!(indicator.len(), 1, "the row keeps its reminder indicator");
     assert_eq!(
         db.reminders_due(due_at).await.unwrap().len(),
@@ -207,15 +214,8 @@ async fn p8_2_a_banner_the_os_refuses_is_not_marked_delivered() {
     db.reminders_upsert(&[(acc.clone(), "t1".to_string())], now - 1_000)
         .await
         .unwrap();
-    let outcome = sift::notify::deliver_reminder(
-        &db,
-        &recorder.host,
-        &acc,
-        "t1",
-        "Ada",
-        "Lunch?",
-    )
-    .await;
+    let outcome =
+        sift::notify::deliver_reminder(&db, &recorder.host, &acc, "t1", "Ada", "Lunch?").await;
     assert_eq!(outcome, Delivery::Denied);
     let rows = sift::reminders::list(&db, std::slice::from_ref(&acc), false)
         .await
@@ -232,7 +232,10 @@ async fn p8_2_deleting_the_target_or_the_account_cancels_the_reminder() {
     sift::reminders::set(&db, &[target(&acc)], now + 60_000)
         .await
         .unwrap();
-    assert_eq!(sift::reminders::next_deadline(&db).await.unwrap(), Some(now + 60_000));
+    assert_eq!(
+        sift::reminders::next_deadline(&db).await.unwrap(),
+        Some(now + 60_000)
+    );
     // A deadline already behind the clock is refused by the same path.
     assert_eq!(
         sift::reminders::set(&db, &[target(&acc)], now - 60_000)
@@ -289,10 +292,12 @@ async fn p8_2_deleting_the_target_or_the_account_cancels_the_reminder() {
     .unwrap();
     db.accounts_remove(&other.id).await.unwrap();
     assert!(db.accounts_get(&other.id).await.unwrap().is_none());
-    assert!(sift::reminders::list(&db, std::slice::from_ref(&other.id), true)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        sift::reminders::list(&db, std::slice::from_ref(&other.id), true)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(sift::reminders::next_deadline(&db).await.unwrap(), None);
 }
 
@@ -342,7 +347,11 @@ async fn p8_4_a_grouped_burst_notifies_once_and_does_not_double_notify() {
         .collect();
 
     let first = deliver_new_mail(&db, &recorder.host, &burst).await;
-    assert_eq!(first, vec![Delivery::Shown], "one summary, not five banners");
+    assert_eq!(
+        first,
+        vec![Delivery::Shown],
+        "one summary, not five banners"
+    );
     assert_eq!(recorder.shown(), 1);
 
     let second = deliver_new_mail(&db, &recorder.host, &burst).await;

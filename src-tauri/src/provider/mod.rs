@@ -318,7 +318,12 @@ impl SyncSink for DbSink {
                 for a in &b.attachments {
                     crate::db::attachments::attachments_put_conn(tx, a)?;
                 }
-                crate::db::imap::imap_put_uids_conn(tx, &b.account_id, &b.cursor.role, &b.uid_pairs)?;
+                crate::db::imap::imap_put_uids_conn(
+                    tx,
+                    &b.account_id,
+                    &b.cursor.role,
+                    &b.uid_pairs,
+                )?;
                 crate::db::imap::imap_set_folder_conn(tx, &b.account_id, &b.cursor)?;
                 // One recompute per affected thread, inside the same commit:
                 // the list refresh sees either the whole batch or none of it.
@@ -576,12 +581,7 @@ pub async fn store_parsed(
     // Snippet backfill: transports without server snippets (IMAP messages
     // past the snippet window) derive one from the fetched body. REST
     // snippets are never empty, so this is a no-op there.
-    if sink
-        .message_snippet(r)
-        .await
-        .unwrap_or_default()
-        .is_empty()
-    {
+    if sink.message_snippet(r).await.unwrap_or_default().is_empty() {
         let derived = text
             .filter(|s| !s.trim().is_empty())
             .map(|s| crate::provider::imap::message::snippet_of_text(&s))

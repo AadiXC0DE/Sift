@@ -68,17 +68,18 @@ pub fn parse_cache_limit(value: &str) -> i64 {
     if text.is_empty() {
         return DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES;
     }
-    let (digits, mult) = if let Some(v) = text.strip_suffix("GIB").or_else(|| text.strip_suffix("GB")) {
-        (v, 1024 * 1024 * 1024)
-    } else if let Some(v) = text.strip_suffix("MIB").or_else(|| text.strip_suffix("MB")) {
-        (v, 1024 * 1024)
-    } else if let Some(v) = text.strip_suffix("KIB").or_else(|| text.strip_suffix("KB")) {
-        (v, 1024)
-    } else if let Some(v) = text.strip_suffix('B') {
-        (v, 1)
-    } else {
-        (text.as_str(), 1)
-    };
+    let (digits, mult) =
+        if let Some(v) = text.strip_suffix("GIB").or_else(|| text.strip_suffix("GB")) {
+            (v, 1024 * 1024 * 1024)
+        } else if let Some(v) = text.strip_suffix("MIB").or_else(|| text.strip_suffix("MB")) {
+            (v, 1024 * 1024)
+        } else if let Some(v) = text.strip_suffix("KIB").or_else(|| text.strip_suffix("KB")) {
+            (v, 1024)
+        } else if let Some(v) = text.strip_suffix('B') {
+            (v, 1)
+        } else {
+            (text.as_str(), 1)
+        };
     let digits = digits.trim();
     if digits.is_empty() {
         return DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES;
@@ -259,7 +260,8 @@ impl Db {
                 }
             }
             // Cached attachment files and raw sources are owned by their rows.
-            let mut files = c.prepare("SELECT local_path FROM attachments WHERE local_path IS NOT NULL")?;
+            let mut files =
+                c.prepare("SELECT local_path FROM attachments WHERE local_path IS NOT NULL")?;
             for row in files.query_map([], |r| r.get::<_, String>(0))? {
                 out.insert(row?);
             }
@@ -360,7 +362,11 @@ pub async fn sweep_ephemeral(db: &Db, data_dir: &Path, budget: usize) -> Result<
     let keep_dirs = referenced_dirs(data_dir, &referenced);
     let cutoff = crate::db::now_ms() - SWEEP_MIN_AGE_MS;
     let mut processed = 0usize;
-    for root in [data_dir.join("attachments"), data_dir.join("compose-cache"), data_dir.join("raw")] {
+    for root in [
+        data_dir.join("attachments"),
+        data_dir.join("compose-cache"),
+        data_dir.join("raw"),
+    ] {
         if processed >= budget {
             break;
         }
@@ -445,7 +451,6 @@ pub fn remove_account_cache(data_dir: &Path, account_id: &str, draft_ids: &[Stri
     }
 }
 
-
 /// The periodic retention pass (P10.4).
 ///
 /// It runs one bounded batch per tick and then sleeps, so a huge cache
@@ -488,11 +493,20 @@ mod tests {
         assert_eq!(parse_cache_limit("0"), 0);
         // Junk falls back to the documented default rather than to zero.
         assert_eq!(parse_cache_limit(""), DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES);
-        assert_eq!(parse_cache_limit("lots"), DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES);
-        assert_eq!(parse_cache_limit("-5GB"), DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES);
+        assert_eq!(
+            parse_cache_limit("lots"),
+            DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES
+        );
+        assert_eq!(
+            parse_cache_limit("-5GB"),
+            DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES
+        );
         // Decimal amounts are supported, exponents and stray words are not.
         assert_eq!(parse_cache_limit("1.5GB"), 1_610_612_736);
-        assert_eq!(parse_cache_limit("1e9MB"), DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES);
+        assert_eq!(
+            parse_cache_limit("1e9MB"),
+            DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES
+        );
     }
 
     #[test]

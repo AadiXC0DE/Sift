@@ -128,8 +128,7 @@ pub async fn rule_block_sender(
     email: String,
     name: Option<String>,
 ) -> Result<MailRule, SiftError> {
-    let rule =
-        crate::rules::block_sender(&state.db, &account_id, &email, name.as_deref()).await?;
+    let rule = crate::rules::block_sender(&state.db, &account_id, &email, name.as_deref()).await?;
     let _ = app.emit(
         "rules:state",
         serde_json::json!({ "account_id": account_id }),
@@ -144,5 +143,8 @@ pub async fn rules_diagnostics(
     account_id: String,
 ) -> Result<Vec<MailRule>, SiftError> {
     let rules = state.db.rules_list(&account_id).await.map_err(db_error)?;
-    Ok(rules.into_iter().filter(|r| r.last_error.is_some()).collect())
+    Ok(rules
+        .into_iter()
+        .filter(|r| r.last_error.is_some())
+        .collect())
 }

@@ -62,10 +62,11 @@ fn raw_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawRec> {
 fn decode_cell(dz: Option<Vec<u8>>) -> Result<Option<Vec<u8>>> {
     match dz {
         None => Ok(None),
-        Some(b) => Ok(Some(
-            zstd::decode_all(b.as_slice())
-                .with_context(|| "attachment payload is not readable (zstd)")?,
-        )),
+        Some(b) => {
+            Ok(Some(zstd::decode_all(b.as_slice()).with_context(|| {
+                "attachment payload is not readable (zstd)"
+            })?))
+        }
     }
 }
 
@@ -168,7 +169,8 @@ impl Db {
                         mime: r.get("mime")?,
                         size: r.get("size")?,
                         is_inline: r.get::<_, i64>("is_inline")? != 0,
-                        downloaded: CacheState::parse(state.as_deref().unwrap_or("missing")).is_local()
+                        downloaded: CacheState::parse(state.as_deref().unwrap_or("missing"))
+                            .is_local()
                             || (lp.as_deref().is_some_and(|p| !p.is_empty()) || dz.is_some()),
                     })
                 })?
@@ -242,10 +244,7 @@ impl Db {
         let recs = self.attachments_records(m).await?;
         Ok(recs
             .into_iter()
-            .filter_map(|r| {
-                r.data
-                    .map(|d| (r.id, r.part_id, r.content_id, r.mime, d))
-            })
+            .filter_map(|r| r.data.map(|d| (r.id, r.part_id, r.content_id, r.mime, d)))
             .collect())
     }
 
@@ -289,7 +288,11 @@ impl Db {
         path: &str,
         decoded_size: u64,
     ) -> Result<()> {
-        let (aid, id, path) = (key.account_id.clone(), key.attachment_id.clone(), path.to_string());
+        let (aid, id, path) = (
+            key.account_id.clone(),
+            key.attachment_id.clone(),
+            path.to_string(),
+        );
         let size = i64::try_from(decoded_size).unwrap_or(i64::MAX);
         self.write(move |c| {
             c.execute(
@@ -305,7 +308,11 @@ impl Db {
     /// Move a row to a terminal cache state. `Corrupt` also drops the
     /// unreadable payload so a later successful fetch can replace it, while a
     /// valid file (if any) survives.
-    pub async fn attachment_set_state(&self, key: &AttachmentRefKey, state: CacheState) -> Result<()> {
+    pub async fn attachment_set_state(
+        &self,
+        key: &AttachmentRefKey,
+        state: CacheState,
+    ) -> Result<()> {
         let (aid, id) = (key.account_id.clone(), key.attachment_id.clone());
         self.write(move |c| {
             if state == CacheState::Corrupt {
@@ -420,9 +427,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let aid = seed_message(&db, "a@x.com", "m1").await;
-        db.attachments_put(put(&aid, "m1", "2", Some("invoice.pdf"), Some(vec![1, 2, 3])))
-            .await
-            .unwrap();
+        db.attachments_put(put(
+            &aid,
+            "m1",
+            "2",
+            Some("invoice.pdf"),
+            Some(vec![1, 2, 3]),
+        ))
+        .await
+        .unwrap();
         db.attachment_set_ready(&refkey(&aid, "att-2"), "/cache/att-2/invoice.pdf", 3)
             .await
             .unwrap();
@@ -446,9 +459,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
         let aid = seed_message(&db, "a@x.com", "m1").await;
-        db.attachments_put(put(&aid, "m1", "2", Some("invoice.pdf"), Some(vec![1, 2, 3])))
-            .await
-            .unwrap();
+        db.attachments_put(put(
+            &aid,
+            "m1",
+            "2",
+            Some("invoice.pdf"),
+            Some(vec![1, 2, 3]),
+        ))
+        .await
+        .unwrap();
         db.write(|c| {
             c.execute(
                 "UPDATE attachments SET data_z=?1 WHERE id='att-2'",
@@ -546,12 +565,24 @@ mod tests {
         let db = Db::open(dir.path()).unwrap();
         let a = seed_message(&db, "a@x.com", "same-id").await;
         let b = seed_message(&db, "b@x.com", "same-id").await;
-        db.attachments_put(put(&a, "same-id", "2", Some("a.pdf"), Some(b"AAAA".to_vec())))
-            .await
-            .unwrap();
-        db.attachments_put(put(&b, "same-id", "2", Some("b.pdf"), Some(b"BBBBBB".to_vec())))
-            .await
-            .unwrap();
+        db.attachments_put(put(
+            &a,
+            "same-id",
+            "2",
+            Some("a.pdf"),
+            Some(b"AAAA".to_vec()),
+        ))
+        .await
+        .unwrap();
+        db.attachments_put(put(
+            &b,
+            "same-id",
+            "2",
+            Some("b.pdf"),
+            Some(b"BBBBBB".to_vec()),
+        ))
+        .await
+        .unwrap();
         let ra = db
             .attachments_records(&MessageRef::new(&a, "same-id"))
             .await

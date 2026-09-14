@@ -91,7 +91,9 @@ pub async fn set(
             return Err(SiftError::NotFound("thread".into()));
         }
     }
-    db.reminders_upsert(&pairs, remind_at).await.map_err(db_error)?;
+    db.reminders_upsert(&pairs, remind_at)
+        .await
+        .map_err(db_error)?;
     let accounts: Vec<String> = pairs.iter().map(|(a, _)| a.clone()).collect();
     list(db, &accounts, false).await
 }
@@ -243,7 +245,9 @@ mod tests {
             account_id: "a".into(),
             thread_id: "t1".into(),
         }];
-        let rows = set(&db, &targets, crate::db::now_ms() + 60_000).await.unwrap();
+        let rows = set(&db, &targets, crate::db::now_ms() + 60_000)
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].state, "scheduled");
         let after: (i64, i64, i64, String) = db

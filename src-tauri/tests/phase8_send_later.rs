@@ -103,8 +103,10 @@ async fn send_op_count(db: &Db, account_id: &str) -> i64 {
 }
 
 /// Count the sends the provider actually received, and answer each one.
-async fn counting_server() -> (wiremock::MockServer, std::sync::Arc<std::sync::atomic::AtomicUsize>)
-{
+async fn counting_server() -> (
+    wiremock::MockServer,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     let server = wiremock::MockServer::start().await;
@@ -128,7 +130,10 @@ async fn counting_server() -> (wiremock::MockServer, std::sync::Arc<std::sync::a
 async fn p8_1_a_scheduled_send_waits_then_leaves_exactly_once() {
     let _g = lock_env();
     let (server, hits) = counting_server().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).unwrap();
@@ -185,7 +190,10 @@ async fn p8_1_a_scheduled_send_waits_then_leaves_exactly_once() {
 async fn p8_1_an_offline_deadline_stays_queued_until_the_network_returns() {
     let _g = lock_env();
     let (server, hits) = counting_server().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).unwrap();
@@ -306,21 +314,27 @@ impl TimeZone for SyntheticZone {
     fn offset_from_local_date(&self, local: &chrono::NaiveDate) -> LocalResult<FixedOffset> {
         // Noon is never inside one of these transitions, so the date's offset
         // is the offset of its midday.
-        LocalResult::Single(self.offset_of(
-            local.and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp_millis(),
-        ))
+        LocalResult::Single(
+            self.offset_of(
+                local
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap()
+                    .and_utc()
+                    .timestamp_millis(),
+            ),
+        )
     }
 
     fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<FixedOffset> {
         if self.gap {
-            let end = self.local_transition
-                + ChronoDuration::seconds((self.after - self.before) as i64);
+            let end =
+                self.local_transition + ChronoDuration::seconds((self.after - self.before) as i64);
             if *local >= self.local_transition && *local < end {
                 return LocalResult::None;
             }
         } else {
-            let start = self.local_transition
-                - ChronoDuration::seconds((self.before - self.after) as i64);
+            let start =
+                self.local_transition - ChronoDuration::seconds((self.before - self.after) as i64);
             if *local >= start && *local < self.local_transition {
                 // The earlier occurrence comes first in UTC.
                 return LocalResult::Ambiguous(offset(self.before), offset(self.after));
@@ -334,7 +348,12 @@ impl TimeZone for SyntheticZone {
     }
 
     fn offset_from_utc_date(&self, utc: &chrono::NaiveDate) -> FixedOffset {
-        self.offset_of(utc.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis())
+        self.offset_of(
+            utc.and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp_millis(),
+        )
     }
 
     fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> FixedOffset {
@@ -348,8 +367,8 @@ impl TimeZone for SyntheticZone {
 fn p8_1_a_skipped_local_time_resolves_after_the_gap() {
     let zone = SyntheticZone::spring_forward();
     let skipped = naive("2026-03-08T02:30:00Z");
-    let resolved = resolve_in(&zone, skipped)
-        .expect("a skipped wall time still resolves to a real instant");
+    let resolved =
+        resolve_in(&zone, skipped).expect("a skipped wall time still resolves to a real instant");
     // 02:30 does not exist; the first instant after the gap is 03:00 EDT.
     assert_eq!(resolved.timestamp_millis(), utc("2026-03-08T07:00:00Z"));
 
@@ -401,13 +420,18 @@ async fn p8_1_a_timezone_change_does_not_move_the_stored_instant() {
         now,
     )
     .unwrap();
-    db.drafts_reschedule_send(op_id, moved.clone()).await.unwrap();
+    db.drafts_reschedule_send(op_id, moved.clone())
+        .await
+        .unwrap();
 
     let stored = db.outbox_get(op_id).await.unwrap().unwrap();
     assert_eq!(stored.not_before, instant, "the deadline is absolute");
     assert_eq!(moved.not_before, berlin.not_before);
     assert_eq!(moved.scheduled_at, Some(instant));
-    assert_eq!(moved.scheduled_timezone.as_deref(), Some("America/New_York"));
+    assert_eq!(
+        moved.scheduled_timezone.as_deref(),
+        Some("America/New_York")
+    );
     // The description names the stored zone, so the displayed time is never
     // ambiguous about which wall clock it belongs to.
     let described = sift::send_later::describe(
@@ -454,7 +478,13 @@ async fn p8_1_edits_and_cancels_stop_at_the_claim_boundary() {
 
     let now = sift::db::now_ms();
     let instant = (now + 3_600_000) / 60_000 * 60_000;
-    let (op_id, _) = queued(&db, &acc.id, dir.path(), &plan(&custom(instant, "UTC"), now).unwrap()).await;
+    let (op_id, _) = queued(
+        &db,
+        &acc.id,
+        dir.path(),
+        &plan(&custom(instant, "UTC"), now).unwrap(),
+    )
+    .await;
 
     // Edit before the claim: the same operation moves, and exactly one send
     // exists for the revision.
@@ -477,16 +507,29 @@ async fn p8_1_edits_and_cancels_stop_at_the_claim_boundary() {
     }
 
     // A claimed operation is out of reach for both, with the state named.
-    let (claimed_op, _) = queued(&db, &acc.id, dir.path(), &plan(&custom(later, "UTC"), now).unwrap()).await;
-    db.outbox_set(claimed_op, "pending", 0, 0, None).await.unwrap();
+    let (claimed_op, _) = queued(
+        &db,
+        &acc.id,
+        dir.path(),
+        &plan(&custom(later, "UTC"), now).unwrap(),
+    )
+    .await;
+    db.outbox_set(claimed_op, "pending", 0, 0, None)
+        .await
+        .unwrap();
     let claimed = db.outbox_claim(&acc.id).await.unwrap().expect("due now");
     assert_eq!(claimed.id, claimed_op);
     let err = db
-        .drafts_reschedule_send(claimed_op, plan(&custom(later + 60_000, "UTC"), now).unwrap())
+        .drafts_reschedule_send(
+            claimed_op,
+            plan(&custom(later + 60_000, "UTC"), now).unwrap(),
+        )
         .await
         .unwrap_err();
     assert_eq!(
-        err.downcast_ref::<sift::errors::SiftError>().unwrap().code(),
+        err.downcast_ref::<sift::errors::SiftError>()
+            .unwrap()
+            .code(),
         "send_already_claimed"
     );
     match db.drafts_cancel_send_detailed(claimed_op).await.unwrap() {

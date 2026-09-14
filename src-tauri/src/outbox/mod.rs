@@ -45,10 +45,7 @@ pub fn send_request_from_payload(
     fallback_from: &str,
 ) -> Result<SendRequest, SiftError> {
     let thread_id = payload["threadId"].as_str().map(|s| s.to_string());
-    if let Some(path) = payload["rawPath"]
-        .as_str()
-        .filter(|p| !p.trim().is_empty())
-    {
+    if let Some(path) = payload["rawPath"].as_str().filter(|p| !p.trim().is_empty()) {
         let raw = std::fs::read(path).map_err(|e| {
             SiftError::app(
                 "storage",
@@ -67,10 +64,8 @@ pub fn send_request_from_payload(
                 false,
             ));
         }
-        let recipients: Vec<String> = serde_json::from_value(
-            payload["envelopeRecipients"].clone(),
-        )
-        .unwrap_or_default();
+        let recipients: Vec<String> =
+            serde_json::from_value(payload["envelopeRecipients"].clone()).unwrap_or_default();
         if recipients.is_empty() {
             return Err(SiftError::app("no_recipients", "no recipients", false));
         }
@@ -368,7 +363,10 @@ async fn run_claimed(
         }
     };
     match outcome {
-        Outcome::Done { mut result, already } => {
+        Outcome::Done {
+            mut result,
+            already,
+        } => {
             if already {
                 // Evidence, not decoration: "the provider says this was
                 // already in the requested state" is why no work was done.
@@ -393,13 +391,15 @@ async fn run_claimed(
                     .as_array()
                     .map(|list| {
                         list.iter()
-                            .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(str::to_string))
+                            .filter_map(|m| {
+                                m.get("id").and_then(|i| i.as_str()).map(str::to_string)
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
                 let _ = db.imap_forget_messages(account_id, &ids).await;
-                let paths: Vec<String> = serde_json::from_value(payload["cachePaths"].clone())
-                    .unwrap_or_default();
+                let paths: Vec<String> =
+                    serde_json::from_value(payload["cachePaths"].clone()).unwrap_or_default();
                 crate::actions::cleanup_deleted_cache(db, &paths).await;
             }
             Ok(true)
@@ -487,7 +487,11 @@ async fn execute_create_label(
     account_id: &str,
     payload: &serde_json::Value,
 ) -> Outcome {
-    let name = payload["name"].as_str().unwrap_or_default().trim().to_string();
+    let name = payload["name"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if name.is_empty() {
         return Outcome::Failure {
             code: "payload_invalid".into(),
@@ -497,11 +501,7 @@ async fn execute_create_label(
         };
     }
     // Adopt an existing label rather than creating a second one.
-    if let Some(existing) = db
-        .label_id_by_name(account_id, &name)
-        .await
-        .unwrap_or(None)
-    {
+    if let Some(existing) = db.label_id_by_name(account_id, &name).await.unwrap_or(None) {
         if !existing.starts_with("sift-local:") {
             return Outcome::Done {
                 already: true,
@@ -560,7 +560,11 @@ async fn reconcile_send(db: &Db, provider: &dyn Provider, op: &Op) -> Result<boo
     let rfc = op
         .rfc_message_id
         .clone()
-        .or_else(|| op.payload_value()["rfcMessageId"].as_str().map(str::to_string))
+        .or_else(|| {
+            op.payload_value()["rfcMessageId"]
+                .as_str()
+                .map(str::to_string)
+        })
         .unwrap_or_default();
     if rfc.trim().is_empty() {
         db.outbox_reschedule_reconcile(op.id, i64::MAX)
@@ -661,7 +665,10 @@ pub fn label_operation_key(account_id: &str, name: &str) -> String {
 }
 
 /// A draft's send identity, resolved from its account.
-pub async fn draft_identity(db: &Db, draft: &Draft) -> Result<crate::outgoing::Identity, SiftError> {
+pub async fn draft_identity(
+    db: &Db,
+    draft: &Draft,
+) -> Result<crate::outgoing::Identity, SiftError> {
     let account = db
         .accounts_get(&draft.account_id)
         .await

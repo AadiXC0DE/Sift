@@ -11,8 +11,8 @@ pub mod labels;
 pub mod logging;
 pub mod mailto;
 pub mod notify;
-pub mod outgoing;
 pub mod outbox;
+pub mod outgoing;
 pub mod provider;
 pub mod reminders;
 pub mod render;
@@ -20,10 +20,10 @@ pub mod retention;
 pub mod rules;
 pub mod runtime;
 pub mod scheduler;
-pub mod send_later;
-pub mod snooze;
 pub mod search;
 pub mod secrets;
+pub mod send_later;
+pub mod snooze;
 pub mod sync;
 pub mod unsubscribe;
 pub mod uri_scheme;
@@ -220,11 +220,7 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             let uri = req.uri().clone();
             let (aid, mid, part) = {
                 let host = uri.host().unwrap_or_default().to_string();
-                let path: Vec<&str> = uri
-                    .path()
-                    .trim_start_matches('/')
-                    .splitn(2, '/')
-                    .collect();
+                let path: Vec<&str> = uri.path().trim_start_matches('/').splitn(2, '/').collect();
                 match (host.is_empty(), path.as_slice()) {
                     (false, [mid, part]) => (host, mid.to_string(), part.to_string()),
                     _ => (String::new(), String::new(), String::new()),

@@ -65,9 +65,7 @@ fn condition_matches(c: &RuleCondition, msg: &RuleMessage) -> bool {
         "recipient" => recipient_addresses(msg)
             .iter()
             .any(|a| address_matches(a, &c.op, &needle)),
-        "subject" => {
-            c.op == "contains" && msg.subject.to_lowercase().contains(&needle)
-        }
+        "subject" => c.op == "contains" && msg.subject.to_lowercase().contains(&needle),
         "hasAttachment" => c.op == "isTrue" && msg.has_attachments,
         _ => false,
     }
@@ -241,7 +239,11 @@ fn apply_rules_conn(
 /// The caller decides when to run this; it is deliberately not part of the
 /// ingest transaction, because the point of the queue is that a rule can never
 /// slow down (or fail) the metadata commit.
-pub async fn process_queue(db: &Db, account_id: &str, foreground_busy: bool) -> Result<ApplyReport, SiftError> {
+pub async fn process_queue(
+    db: &Db,
+    account_id: &str,
+    foreground_busy: bool,
+) -> Result<ApplyReport, SiftError> {
     if foreground_busy {
         return Ok(ApplyReport::default());
     }
@@ -268,7 +270,11 @@ pub async fn process_queue(db: &Db, account_id: &str, foreground_busy: bool) -> 
     let msgs: Vec<RuleMessage> = {
         let mut out = Vec::with_capacity(entries.len());
         for e in &entries {
-            if let Some(m) = db.rule_message(&e.account_id, &e.message_id).await.map_err(db_error)? {
+            if let Some(m) = db
+                .rule_message(&e.account_id, &e.message_id)
+                .await
+                .map_err(db_error)?
+            {
                 out.push(m);
             }
         }
@@ -544,7 +550,10 @@ mod tests {
             vec![RuleCondition::new("subject", "contains", "invoice")],
             vec![RuleAction::new("star", None)],
         );
-        assert!(matches(&r, &msg("a@b", "Your INVOICE is ready", "me@x", false)));
+        assert!(matches(
+            &r,
+            &msg("a@b", "Your INVOICE is ready", "me@x", false)
+        ));
         assert!(!matches(&r, &msg("a@b", "Receipt", "me@x", false)));
 
         let r = rule(
@@ -576,7 +585,10 @@ mod tests {
         assert_eq!(a, b);
         // A different revision, account or message set is a different
         // operation.
-        assert_ne!(a, rule_operation_key("acct", "r1", 3, &["m1".into(), "m2".into()]));
+        assert_ne!(
+            a,
+            rule_operation_key("acct", "r1", 3, &["m1".into(), "m2".into()])
+        );
         assert_ne!(a, rule_operation_key("acct2", "r1", 2, &["m1".into()]));
         assert_ne!(a, rule_operation_key("acct", "r1", 2, &["m1".into()]));
     }

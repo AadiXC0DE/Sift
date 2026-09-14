@@ -43,9 +43,7 @@ pub const TOMORROW_HOUR: u32 = 8;
 
 /// One choice the composer renders.
 pub fn options(now_ms: i64, timezone: Option<&str>) -> Vec<SendLaterOption> {
-    let tz = timezone
-        .map(str::to_string)
-        .unwrap_or_else(system_timezone);
+    let tz = timezone.map(str::to_string).unwrap_or_else(system_timezone);
     let tomorrow = tomorrow_at(now_ms, TOMORROW_HOUR).map(|(instant, local)| SendSchedule {
         not_before: instant,
         scheduled_at: Some(instant),
@@ -87,11 +85,7 @@ pub fn tomorrow_at(now_ms: i64, hour: u32) -> Option<(i64, String)> {
 /// zone with a known transition instead of whatever zone the machine happens
 /// to run in — the skipped and repeated hours are the part that must not be
 /// left to the platform to demonstrate.
-pub fn tomorrow_at_in<Tz: TimeZone>(
-    tz: &Tz,
-    now_ms: i64,
-    hour: u32,
-) -> Option<(i64, String)>
+pub fn tomorrow_at_in<Tz: TimeZone>(tz: &Tz, now_ms: i64, hour: u32) -> Option<(i64, String)>
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -201,8 +195,14 @@ pub fn parse_local_time(value: &str) -> Result<NaiveDateTime, SiftError> {
             "The chosen time could not be read. Pick the date and time again.",
         ));
     }
-    let (hours, minutes) = (bytes[11..13].iter().fold(0u32, |a, b| a * 10 + (b - b'0') as u32),
-                            bytes[14..16].iter().fold(0u32, |a, b| a * 10 + (b - b'0') as u32));
+    let (hours, minutes) = (
+        bytes[11..13]
+            .iter()
+            .fold(0u32, |a, b| a * 10 + (b - b'0') as u32),
+        bytes[14..16]
+            .iter()
+            .fold(0u32, |a, b| a * 10 + (b - b'0') as u32),
+    );
     if hours > 23 || minutes > 59 {
         return Err(invalid("That is not a time of day Sift can use."));
     }
@@ -230,13 +230,14 @@ pub fn plan(request: &ScheduleRequest, now_ms: i64) -> Result<SendSchedule, Sift
             })
         }
         "custom" => {
-            let local_time = request.local_time.clone().ok_or_else(|| {
-                invalid("Pick the date and time you want this to send at.")
-            })?;
+            let local_time = request
+                .local_time
+                .clone()
+                .ok_or_else(|| invalid("Pick the date and time you want this to send at."))?;
             let naive = parse_local_time(&local_time)?;
-            let instant = request.not_before.ok_or_else(|| {
-                invalid("Pick the date and time you want this to send at.")
-            })?;
+            let instant = request
+                .not_before
+                .ok_or_else(|| invalid("Pick the date and time you want this to send at."))?;
             validate_instant(instant, now_ms)?;
             // The instant and the wall time must describe the same moment as
             // the platform resolves it. A mismatch means one of the two was
@@ -244,11 +245,9 @@ pub fn plan(request: &ScheduleRequest, now_ms: i64) -> Result<SendSchedule, Sift
             // schedule that disagrees with itself.
             match resolve_local(naive, now_ms) {
                 Some(resolved) if (resolved.timestamp_millis() - instant).abs() <= 60_000 => {}
-                _ => {
-                    return Err(invalid(
-                        "That date and time do not line up with this device's clock. Pick it again.",
-                    ))
-                }
+                _ => return Err(invalid(
+                    "That date and time do not line up with this device's clock. Pick it again.",
+                )),
             }
             Ok(SendSchedule {
                 not_before: instant,
@@ -329,14 +328,9 @@ fn human_local(local: &str) -> String {
         .get(month.saturating_sub(1))
         .copied()
         .unwrap_or_default();
-    format!(
-        "{} {} {}",
-        parts[2].trim_start_matches('0'),
-        name,
-        time
-    )
-    .trim()
-    .to_string()
+    format!("{} {} {}", parts[2].trim_start_matches('0'), name, time)
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]

@@ -23,7 +23,11 @@ fn unsafe_component(id: &str) -> bool {
 
 /// Per-attachment cache directory. The ids are opaque provider/row keys, but
 /// they are still checked so nothing can escape the cache root.
-pub fn attachment_dir(data_dir: &Path, account_id: &str, attachment_id: &str) -> io::Result<PathBuf> {
+pub fn attachment_dir(
+    data_dir: &Path,
+    account_id: &str,
+    attachment_id: &str,
+) -> io::Result<PathBuf> {
     if unsafe_component(account_id) || unsafe_component(attachment_id) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -46,10 +50,7 @@ pub struct TempFile {
 impl TempFile {
     pub async fn create(dir: &Path, basename: &str) -> io::Result<Self> {
         tokio::fs::create_dir_all(dir).await?;
-        let path = dir.join(format!(
-            "{basename}.part-{}",
-            uuid::Uuid::now_v7().simple()
-        ));
+        let path = dir.join(format!("{basename}.part-{}", uuid::Uuid::now_v7().simple()));
         let file = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -111,7 +112,11 @@ pub async fn copy_atomic(src: &Path, dest: &Path) -> io::Result<()> {
             tokio::fs::create_dir_all(parent).await?;
         }
     }
-    let temp = PathBuf::from(format!("{}.part-{}", dest.display(), uuid::Uuid::now_v7().simple()));
+    let temp = PathBuf::from(format!(
+        "{}.part-{}",
+        dest.display(),
+        uuid::Uuid::now_v7().simple()
+    ));
     let result = async {
         tokio::fs::copy(src, &temp).await?;
         if let Ok(f) = tokio::fs::OpenOptions::new().write(true).open(&temp).await {

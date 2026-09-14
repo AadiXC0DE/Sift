@@ -44,11 +44,7 @@ pub struct RawSource {
 /// an unreachable provider is reported as "not downloaded yet", because that is
 /// the actionable truth: connecting once makes it work offline afterwards.
 async fn raw_bytes(state: &AppState, message: &MessageRef) -> Result<(Vec<u8>, bool), SiftError> {
-    let exists = state
-        .db
-        .message_thread(message)
-        .await
-        .map_err(db_error)?;
+    let exists = state.db.message_thread(message).await.map_err(db_error)?;
     if exists.is_none() {
         return Err(SiftError::NotFound("message".into()));
     }
@@ -161,9 +157,9 @@ pub async fn message_view_source(
 pub async fn write_raw_export(bytes: &[u8], destination: &Path) -> Result<(), SiftError> {
     let digest = sha256_hex(bytes);
     let tmp = destination.with_extension("eml.part");
-    tokio::fs::write(&tmp, bytes)
-        .await
-        .map_err(|e| SiftError::app("storage", format!("could not write the export: {e}"), false))?;
+    tokio::fs::write(&tmp, bytes).await.map_err(|e| {
+        SiftError::app("storage", format!("could not write the export: {e}"), false)
+    })?;
     let written = tokio::fs::read(&tmp).await.unwrap_or_default();
     if sha256_hex(&written) != digest {
         let _ = tokio::fs::remove_file(&tmp).await;

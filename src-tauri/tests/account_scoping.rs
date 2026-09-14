@@ -115,13 +115,37 @@ async fn identical_provider_ids_stay_isolated_per_account() {
 
     // Search isolation: the term exists only in account A's body.
     let hits = db
-        .fts_search_local(std::slice::from_ref(&a), "alpha", None, None, None, None, None, None, None, None, 10)
+        .fts_search_local(
+            std::slice::from_ref(&a),
+            "alpha",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
         .await
         .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].1, a);
     let none = db
-        .fts_search_local(std::slice::from_ref(&b), "alpha", None, None, None, None, None, None, None, None, 10)
+        .fts_search_local(
+            std::slice::from_ref(&b),
+            "alpha",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
         .await
         .unwrap();
     assert!(none.is_empty(), "account B must not see account A's body");
@@ -157,7 +181,13 @@ async fn identical_provider_ids_stay_isolated_per_account() {
     assert_eq!(db.attachments_records(&mb).await.unwrap().len(), 1);
 
     let violations: i64 = db
-        .read(|c| Ok(c.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?))
+        .read(|c| {
+            Ok(
+                c.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
         .await
         .unwrap();
     assert_eq!(violations, 0);
@@ -173,7 +203,15 @@ async fn removal_cleans_every_scoped_table() {
     let b = db.new_account("b@x.com", None, None).await.unwrap().id;
 
     for (aid, tag) in [(&a, "a"), (&b, "b")] {
-        seed_message(&db, aid, &format!("m-{tag}"), &format!("t-{tag}"), "s", &["INBOX"]).await;
+        seed_message(
+            &db,
+            aid,
+            &format!("m-{tag}"),
+            &format!("t-{tag}"),
+            "s",
+            &["INBOX"],
+        )
+        .await;
         db.bodies_put(BodyPut {
             account_id: aid.clone(),
             message_id: format!("m-{tag}"),
@@ -293,7 +331,11 @@ async fn removal_cleans_every_scoped_table() {
 
     // The sibling account is intact.
     assert_eq!(
-        db.drafts_list(std::slice::from_ref(&b), None, 10).await.unwrap().drafts.len(),
+        db.drafts_list(std::slice::from_ref(&b), None, 10)
+            .await
+            .unwrap()
+            .drafts
+            .len(),
         1
     );
     assert_eq!(
@@ -305,7 +347,13 @@ async fn removal_cleans_every_scoped_table() {
     );
     assert_eq!(db.outbox_pending_count(&b).await.unwrap(), 1);
     let violations: i64 = db
-        .read(|c| Ok(c.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?))
+        .read(|c| {
+            Ok(
+                c.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
         .await
         .unwrap();
     assert_eq!(violations, 0);
@@ -335,7 +383,8 @@ async fn v6_upgrade_preserves_bodies_bytes_fts_and_reports_orphans() {
         ] {
             conn.execute_batch(sql).unwrap();
         }
-        conn.execute("UPDATE schema_version SET version=6", []).unwrap();
+        conn.execute("UPDATE schema_version SET version=6", [])
+            .unwrap();
         conn.execute_batch(
             "INSERT INTO accounts (id,email,created_at) VALUES ('acc','a@x.com',1);
              INSERT INTO messages (id,account_id,thread_id,internal_date,subject,body_state)
@@ -351,7 +400,10 @@ async fn v6_upgrade_preserves_bodies_bytes_fts_and_reports_orphans() {
         conn.execute(
             "INSERT INTO attachments (id,message_id,part_id,filename,mime,size,data_z)
              VALUES ('att-2','hex1','2','invoice.pdf','application/pdf',?,?)",
-            params![attachment_bytes.len() as i64, database_bytes("%PDF-1.4 exact payload")],
+            params![
+                attachment_bytes.len() as i64,
+                database_bytes("%PDF-1.4 exact payload")
+            ],
         )
         .unwrap();
         // Pre-existing orphans (deletes that ran without foreign keys on).
@@ -379,7 +431,11 @@ async fn v6_upgrade_preserves_bodies_bytes_fts_and_reports_orphans() {
     assert_eq!(version, sift::db::SCHEMA_VERSION);
 
     let (_, text, remote, _, _, _) = db.bodies_get(&m).await.unwrap().expect("body kept");
-    assert_eq!(text.as_deref(), Some(body_text), "body text is byte-for-byte");
+    assert_eq!(
+        text.as_deref(),
+        Some(body_text),
+        "body text is byte-for-byte"
+    );
     assert_eq!(remote, 2, "render metadata kept");
 
     let recs = db.attachments_records(&m).await.unwrap();
@@ -402,7 +458,19 @@ async fn v6_upgrade_preserves_bodies_bytes_fts_and_reports_orphans() {
         .unwrap();
     assert_eq!(fts_count, msg_count);
     let hits = db
-        .fts_search_local(std::slice::from_ref(&"acc".to_string()), "cached", None, None, None, None, None, None, None, None, 10)
+        .fts_search_local(
+            std::slice::from_ref(&"acc".to_string()),
+            "cached",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            10,
+        )
         .await
         .unwrap();
     assert_eq!(hits.len(), 1, "rebuilt FTS still matches the cached body");
@@ -442,7 +510,13 @@ async fn v6_upgrade_preserves_bodies_bytes_fts_and_reports_orphans() {
     assert_eq!(live_labels, 0);
 
     let violations: i64 = db
-        .read(|c| Ok(c.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?))
+        .read(|c| {
+            Ok(
+                c.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
         .await
         .unwrap();
     assert_eq!(violations, 0);

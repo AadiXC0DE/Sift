@@ -128,4 +128,3 @@ pub async fn reminders_open_count(
         .await
         .map_err(db_error)
 }
-

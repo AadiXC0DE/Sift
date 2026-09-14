@@ -4,8 +4,8 @@
 //! drives the guided fix in the setup wizard (Step D) and the re-auth banner.
 //! `code` values are part of the IPC contract - do not rename without
 //! updating the wizard copy table.
-use crate::errors::SiftError;
 use super::proto::ResponseCode;
+use crate::errors::SiftError;
 
 fn app(code: &str, message: impl Into<String>, retryable: bool) -> SiftError {
     SiftError::app(code, message, retryable)

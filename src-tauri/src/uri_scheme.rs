@@ -87,12 +87,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(b, vec![1, 2, 3]);
-        let rec = db.attachment_resolve(&r, "logo@example.test").await.unwrap().unwrap();
+        let rec = db
+            .attachment_resolve(&r, "logo@example.test")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(rec.part_id, "2");
-        assert_eq!(rec.locator_for(crate::provider::ProviderKind::GmailImap), Some("2"));
+        assert_eq!(
+            rec.locator_for(crate::provider::ProviderKind::GmailImap),
+            Some("2")
+        );
         // No REST attachment id on this row: the REST transport has no locator
         // for it, which is an error rather than a fabricated request.
-        assert_eq!(rec.locator_for(crate::provider::ProviderKind::GmailApi), None);
+        assert_eq!(
+            rec.locator_for(crate::provider::ProviderKind::GmailApi),
+            None
+        );
     }
 
     /// P4.2: a scheme key from another account never resolves.

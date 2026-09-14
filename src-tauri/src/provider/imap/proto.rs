@@ -715,7 +715,10 @@ fn parse_fetch_attrs(c: &mut Cur) -> Result<Vec<FetchAttr>, ParseError> {
                 // malformed BODYSTRUCTURE (or bare BODY) must surface its
                 // typed error — e.g. the nesting cap (P2.4) — instead of
                 // being skipped as opaque `Raw`.
-                if matches!(attr_name(&c.b[attr_start..]).as_str(), "BODY" | "BODYSTRUCTURE") {
+                if matches!(
+                    attr_name(&c.b[attr_start..]).as_str(),
+                    "BODY" | "BODYSTRUCTURE"
+                ) {
                     return Err(e);
                 }
                 // Rewind and skip the whole attribute, not just the part the
@@ -927,7 +930,9 @@ fn parse_bodystructure(c: &mut Cur) -> Result<BodyStruct, ParseError> {
 
 fn parse_bodystructure_at(c: &mut Cur, depth: usize) -> Result<BodyStruct, ParseError> {
     if depth > MAX_BODY_NESTING {
-        return Err(ParseError::Malformed("BODYSTRUCTURE nesting too deep".into()));
+        return Err(ParseError::Malformed(
+            "BODYSTRUCTURE nesting too deep".into(),
+        ));
     }
     if !c.eat(b'(') {
         return Err(ParseError::Malformed("BODYSTRUCTURE (".into()));
@@ -975,8 +980,7 @@ fn parse_bodystructure_at(c: &mut Cur, depth: usize) -> Result<BodyStruct, Parse
             // text/* has an extra line count.
             lines = Some(c.number()?);
             c.eat_ws();
-        } else if mime.eq_ignore_ascii_case("message") && subtype.eq_ignore_ascii_case("rfc822")
-        {
+        } else if mime.eq_ignore_ascii_case("message") && subtype.eq_ignore_ascii_case("rfc822") {
             // message/rfc822 carries the encapsulated message inline:
             // body-fld-envelope, body-fld-body, body-fld-lines (RFC 3501).
             // The raw message is what section N returns; its own parts are
@@ -1484,12 +1488,14 @@ mod tests {
             attrs.iter().find(|a| matches!(a, FetchAttr::WholeMessage { .. })),
             Some(FetchAttr::WholeMessage { bytes, .. }) if bytes == b"body"
         ));
-        assert!(!attrs.iter().any(|a| matches!(a, FetchAttr::BodySection { .. })));
+        assert!(!attrs
+            .iter()
+            .any(|a| matches!(a, FetchAttr::BodySection { .. })));
 
-        let attrs = fetch_attrs_of(
-            "* 1 FETCH (UID 1 BODY[HEADER.FIELDS (FROM)] {3}\r\nhi\n)",
-        );
-        assert!(attrs.iter().any(|a| matches!(a, FetchAttr::HeaderFields(_))));
+        let attrs = fetch_attrs_of("* 1 FETCH (UID 1 BODY[HEADER.FIELDS (FROM)] {3}\r\nhi\n)");
+        assert!(attrs
+            .iter()
+            .any(|a| matches!(a, FetchAttr::HeaderFields(_))));
 
         let attrs = fetch_attrs_of("* 1 FETCH (UID 1 BODY[2.1]<10> {2}\r\nab)");
         assert!(matches!(

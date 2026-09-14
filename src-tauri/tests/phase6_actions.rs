@@ -89,14 +89,22 @@ async fn p6_3_cross_account_gesture_is_one_group_and_undo_restores_both() {
         .operations
         .iter()
         .all(|op| op.undo_group.as_deref() == Some("g1")));
-    assert!(!labels_of(&db, &a.id, "m1").await.contains(&"INBOX".to_string()));
-    assert!(!labels_of(&db, &b.id, "m2").await.contains(&"INBOX".to_string()));
+    assert!(!labels_of(&db, &a.id, "m1")
+        .await
+        .contains(&"INBOX".to_string()));
+    assert!(!labels_of(&db, &b.id, "m2")
+        .await
+        .contains(&"INBOX".to_string()));
 
     let (undone, failures) = actions::undo_gesture(&db, "g1").await.unwrap();
     assert!(failures.is_empty());
     assert_eq!(undone.len(), 2);
-    assert!(labels_of(&db, &a.id, "m1").await.contains(&"INBOX".to_string()));
-    assert!(labels_of(&db, &b.id, "m2").await.contains(&"INBOX".to_string()));
+    assert!(labels_of(&db, &a.id, "m1")
+        .await
+        .contains(&"INBOX".to_string()));
+    assert!(labels_of(&db, &b.id, "m2")
+        .await
+        .contains(&"INBOX".to_string()));
 }
 
 /// Undo of a *done* operation is a new operation carrying the exact inverse —
@@ -137,9 +145,16 @@ async fn p6_3_undo_after_done_compensates_with_the_exact_inverse() {
     assert_eq!(add, vec!["INBOX".to_string()]);
     assert!(remove.is_empty());
     // Locally restored, and the untouched message is untouched.
-    assert!(labels_of(&db, &a.id, "m1").await.contains(&"INBOX".to_string()));
-    assert!(labels_of(&db, &a.id, "m3").await.contains(&"INBOX".to_string()));
-    assert_eq!(labels_of(&db, &a.id, "m2").await, vec!["UNREAD".to_string()]);
+    assert!(labels_of(&db, &a.id, "m1")
+        .await
+        .contains(&"INBOX".to_string()));
+    assert!(labels_of(&db, &a.id, "m3")
+        .await
+        .contains(&"INBOX".to_string()));
+    assert_eq!(
+        labels_of(&db, &a.id, "m2").await,
+        vec!["UNREAD".to_string()]
+    );
 }
 
 /// A failure before the enqueue rolls the whole account back: no optimistic
@@ -186,7 +201,10 @@ async fn p6_3_a_failed_enqueue_leaves_no_optimistic_mutation() {
         })
         .await
         .unwrap();
-    assert_eq!(in_inbox, 1, "the thread aggregate was not left half-updated");
+    assert_eq!(
+        in_inbox, 1,
+        "the thread aggregate was not left half-updated"
+    );
 }
 
 /// An Undo of an in-flight gesture waits for its resolution before
@@ -237,15 +255,10 @@ async fn p6_5_offline_snooze_queues_the_label_and_undo_clears_the_timer() {
     let a = account(&db, "a@x.com").await;
     seed(&db, &a.id, "t1", &[("m1", &["INBOX", "UNREAD"])]).await;
     let targets = vec![target(&a.id, "t1")];
-    let (outcome, failures) = sift::snooze::snooze_set(
-        &db,
-        "g1",
-        &targets,
-        sift::db::now_ms() + 3_600_000,
-        false,
-    )
-    .await
-    .unwrap();
+    let (outcome, failures) =
+        sift::snooze::snooze_set(&db, "g1", &targets, sift::db::now_ms() + 3_600_000, false)
+            .await
+            .unwrap();
     assert!(failures.is_empty());
     assert_eq!(outcome.operations.len(), 1);
     let snooze_op = &outcome.operations[0];
@@ -270,8 +283,13 @@ async fn p6_5_offline_snooze_queues_the_label_and_undo_clears_the_timer() {
         .read(|c| Ok(c.query_row("SELECT count(*) FROM snoozes", [], |r| r.get(0))?))
         .await
         .unwrap();
-    assert_eq!(sleepers, 0, "undo removes the timer, not only the label change");
-    assert!(labels_of(&db, &a.id, "m1").await.contains(&"INBOX".to_string()));
+    assert_eq!(
+        sleepers, 0,
+        "undo removes the timer, not only the label change"
+    );
+    assert!(labels_of(&db, &a.id, "m1")
+        .await
+        .contains(&"INBOX".to_string()));
 }
 
 /// Waking applies Inbox (plus Unread when configured) and removes the Snoozed
@@ -443,9 +461,10 @@ async fn p6_4_deletion_queues_identities_before_removing_rows() {
     .unwrap();
 
     let targets = vec![target(&a.id, "t1")];
-    let (outcome, failures) = actions::apply_gesture(&db, "g1", &targets, &ActionKind::DeleteForever)
-        .await
-        .unwrap();
+    let (outcome, failures) =
+        actions::apply_gesture(&db, "g1", &targets, &ActionKind::DeleteForever)
+            .await
+            .unwrap();
     assert!(failures.is_empty());
     assert_eq!(outcome.operations.len(), 1);
     let op = &outcome.operations[0];
@@ -475,9 +494,10 @@ async fn p6_4_deletion_queues_identities_before_removing_rows() {
 
     // A message that is not in Trash/Spam is refused, and nothing is removed.
     let targets = vec![target(&a.id, "t2")];
-    let (outcome, failures) = actions::apply_gesture(&db, "g2", &targets, &ActionKind::DeleteForever)
-        .await
-        .unwrap();
+    let (outcome, failures) =
+        actions::apply_gesture(&db, "g2", &targets, &ActionKind::DeleteForever)
+            .await
+            .unwrap();
     assert!(outcome.operations.is_empty());
     assert_eq!(failures[0].code, "not_in_trash");
     let still_there: i64 = db
@@ -509,10 +529,9 @@ async fn p6_4_an_offline_deletion_survives_a_restart() {
         account_id = a.id.clone();
         seed(&db, &a.id, "t1", &[("m9", &["TRASH"])]).await;
         let targets = vec![target(&a.id, "t1")];
-        let (outcome, _) =
-            actions::apply_gesture(&db, "g1", &targets, &ActionKind::DeleteForever)
-                .await
-                .unwrap();
+        let (outcome, _) = actions::apply_gesture(&db, "g1", &targets, &ActionKind::DeleteForever)
+            .await
+            .unwrap();
         op_id = outcome.operations[0].id;
     }
     let db = Db::open(dir.path()).unwrap();
@@ -546,6 +565,9 @@ async fn p6_4_a_failed_deletion_stays_visible_and_recoverable() {
     db.outbox_prune(0).await.unwrap();
     let row = db.outbox_get(op).await.unwrap().unwrap();
     assert_eq!(row.state, "failed");
-    assert!(row.payload.contains("m9"), "a failed deletion stays recoverable");
+    assert!(
+        row.payload.contains("m9"),
+        "a failed deletion stays recoverable"
+    );
     assert_eq!(row.failure_code.as_deref(), Some("delete_target_moved"));
 }

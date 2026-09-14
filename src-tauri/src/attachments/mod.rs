@@ -38,9 +38,5 @@ pub fn progress_sink(app: &tauri::AppHandle) -> service::ProgressSink {
 /// Runtime bound to the app: the configured data directory plus a Tauri
 /// progress emitter.
 pub fn runtime_for(state: &AppState, app: &tauri::AppHandle) -> AttachmentRuntime {
-    AttachmentRuntime::with_progress(
-        state.db.clone(),
-        state.data_dir.clone(),
-        progress_sink(app),
-    )
+    AttachmentRuntime::with_progress(state.db.clone(), state.data_dir.clone(), progress_sink(app))
 }

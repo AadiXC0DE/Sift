@@ -60,7 +60,10 @@ fn p9_t01_blocked_rendering_has_no_external_target() {
 
     let blocked = policy::block_remote_content(&sanitized.html);
     let leaks = external_urls(&blocked);
-    assert!(leaks.is_empty(), "blocked read still points outside: {leaks:?}");
+    assert!(
+        leaks.is_empty(),
+        "blocked read still points outside: {leaks:?}"
+    );
     assert!(!blocked.contains("autoplay"));
     assert!(
         blocked.contains(policy::BLOCKED_PIXEL),
@@ -143,7 +146,9 @@ async fn p9_t05_permission_generation_moves_with_every_preference_change() {
     let g2 = db.privacy_generation(&second.id).await.unwrap();
     assert_eq!((g1, g2), (0, 0));
 
-    db.sender_allow(&first.id, "news@example.com").await.unwrap();
+    db.sender_allow(&first.id, "news@example.com")
+        .await
+        .unwrap();
     db.privacy_bump_generations(Some(std::slice::from_ref(&first.id)))
         .await
         .unwrap();
@@ -166,25 +171,43 @@ async fn p9_t06_sender_memory_is_account_scoped_and_revocable() {
     let db = Db::open(dir.path()).unwrap();
     let first = db.new_account("one@example.com", None, None).await.unwrap();
     let second = db.new_account("two@example.com", None, None).await.unwrap();
-    db.sender_allow(&first.id, "News@Example.com").await.unwrap();
+    db.sender_allow(&first.id, "News@Example.com")
+        .await
+        .unwrap();
 
-    assert!(db.sender_allowed(&first.id, "news@example.com").await.unwrap());
-    assert!(!db.sender_allowed(&first.id, "other@example.com").await.unwrap());
+    assert!(db
+        .sender_allowed(&first.id, "news@example.com")
+        .await
+        .unwrap());
+    assert!(!db
+        .sender_allowed(&first.id, "other@example.com")
+        .await
+        .unwrap());
     assert!(
-        !db.sender_allowed(&second.id, "news@example.com").await.unwrap(),
+        !db.sender_allowed(&second.id, "news@example.com")
+            .await
+            .unwrap(),
         "a remembered sender never leaks across accounts"
     );
     // It survives a restart...
     drop(db);
     let db = Db::open(dir.path()).unwrap();
-    assert!(db.sender_allowed(&first.id, "news@example.com").await.unwrap());
+    assert!(db
+        .sender_allowed(&first.id, "news@example.com")
+        .await
+        .unwrap());
     assert_eq!(
         db.sender_allow_list(&first.id).await.unwrap(),
         vec!["news@example.com".to_string()]
     );
     // ...and can be revoked.
-    db.sender_revoke(&first.id, "news@example.com").await.unwrap();
-    assert!(!db.sender_allowed(&first.id, "news@example.com").await.unwrap());
+    db.sender_revoke(&first.id, "news@example.com")
+        .await
+        .unwrap();
+    assert!(!db
+        .sender_allowed(&first.id, "news@example.com")
+        .await
+        .unwrap());
     assert!(db.sender_allow_list(&first.id).await.unwrap().is_empty());
 }
 
@@ -308,7 +331,9 @@ async fn p9_t09_a_remembered_sender_changes_the_read_without_a_policy_change() {
         .unwrap();
     assert!(!body.remote_images_allowed);
 
-    db.sender_allow(&account.id, "news@example.com").await.unwrap();
+    db.sender_allow(&account.id, "news@example.com")
+        .await
+        .unwrap();
     db.privacy_bump_generations(Some(std::slice::from_ref(&account.id)))
         .await
         .unwrap();
@@ -352,7 +377,9 @@ async fn p9_t10_block_mode_loads_nothing_even_for_a_remembered_sender() {
         "<img src=\"https://images.example.com/a.png\">",
     )
     .await;
-    db.sender_allow(&account.id, "news@example.com").await.unwrap();
+    db.sender_allow(&account.id, "news@example.com")
+        .await
+        .unwrap();
     db.privacy_set_mode(RemoteContentMode::Block).await.unwrap();
     let body = sift::commands::threads::message_body_for(&state, &account.id, "m1")
         .await
@@ -399,7 +426,9 @@ async fn legacy_database(dir: &std::path::Path, remote_images: &str) -> Db {
     .await
     .unwrap();
     db.write(|c| {
-        c.execute_batch(include_str!("../src/db/migrations/0013_remote_content_policy.sql"))?;
+        c.execute_batch(include_str!(
+            "../src/db/migrations/0013_remote_content_policy.sql"
+        ))?;
         Ok(())
     })
     .await
@@ -646,7 +675,10 @@ async fn p9_t25_loopback_private_and_link_local_targets_are_refused() {
     // A name that resolves to loopback is refused the same way.
     let named = url::Url::parse("https://localhost/u").unwrap();
     assert_eq!(
-        unsubscribe::resolve_public(&named).await.unwrap_err().reason(),
+        unsubscribe::resolve_public(&named)
+            .await
+            .unwrap_err()
+            .reason(),
         "blocked_target"
     );
     for target in [
@@ -681,7 +713,9 @@ async fn p9_t26_unsubscribe_from_a_message_never_acts_without_evidence() {
         internal_date: 1,
         from_email: Some("news@example.com".into()),
         subject: "newsletter".into(),
-        list_unsubscribe: Some("<https://10.0.0.5/u>, <mailto:leave@example.com?subject=Unsubscribe%20me>".into()),
+        list_unsubscribe: Some(
+            "<https://10.0.0.5/u>, <mailto:leave@example.com?subject=Unsubscribe%20me>".into(),
+        ),
         list_unsubscribe_post: true,
         list_unsubscribe_post_value: Some("List-Unsubscribe=One-Click".into()),
         label_ids: vec!["INBOX".into()],
@@ -790,7 +824,9 @@ async fn p9_t28_a_message_without_an_unsubscribe_header_says_so() {
     // id alone is not a cross-account key.
     let other = db.new_account("two@example.com", None, None).await.unwrap();
     let missing = MessageRef::new(other.id.clone(), "m1");
-    assert!(sift::commands::search::unsubscribe_for(&db, &missing.account_id, "m1")
-        .await
-        .is_err());
+    assert!(
+        sift::commands::search::unsubscribe_for(&db, &missing.account_id, "m1")
+            .await
+            .is_err()
+    );
 }

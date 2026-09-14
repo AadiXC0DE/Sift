@@ -10,8 +10,8 @@ mod support;
 use base64::Engine as _;
 use sift::db::Db;
 use sift::provider::imap::conn::ImapPool;
-use sift::provider::imap::provider::GmailImapProvider;
 use sift::provider::imap::ids::ImapSection;
+use sift::provider::imap::provider::GmailImapProvider;
 use sift::provider::{DbSink, Provider};
 
 fn pool_for(port: u16) -> ImapPool {
@@ -137,7 +137,11 @@ async fn p1_t01_exact_wire_bytes_for_sections() {
     // A section absent from BODYSTRUCTURE is refused before any section read.
     let before = ctx.fake.commands().len();
     for absent in ["1.2", "2.1.3", "3"] {
-        let e = ctx.provider.fetch_attachment(&mid, absent).await.unwrap_err();
+        let e = ctx
+            .provider
+            .fetch_attachment(&mid, absent)
+            .await
+            .unwrap_err();
         assert_eq!(
             err_code(&e),
             "attachment_part_missing",
@@ -193,10 +197,7 @@ async fn p1_t01_builder_renders_partial_section_items() {
         .peek_partial(Some(ImapSection::parse("1").unwrap()), 0, Some(2048));
     assert_eq!(items.wire(), "(UID BODY.PEEK[1]<0.2048>)");
     // The partial form is accepted by the strict parser and stays one item.
-    assert!(support::fake_imap::parse_fetch_args_for_test(&format!(
-        "{uid} {items}"
-    ))
-    .is_ok());
+    assert!(support::fake_imap::parse_fetch_args_for_test(&format!("{uid} {items}")).is_ok());
 }
 
 // -- P1.2: strict fake server ----------------------------------------------
@@ -269,8 +270,8 @@ async fn p1_t02_decoded_bytes_and_length_are_exact() {
     let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
     let b64 = base64::engine::general_purpose::STANDARD;
     let cases: Vec<Vec<u8>> = vec![
-        vec![],                                                    // zero-byte
-        vec![0x00, 0x00, 0x00, 0x00],                              // NULs
+        vec![],                                                     // zero-byte
+        vec![0x00, 0x00, 0x00, 0x00],                               // NULs
         vec![0x80, 0xff, 0xfe, 0xc3, 0xa9, 0x0a, 0x0d, 0x1b, 0x7f], // > 0x7f + control
         b"PDFDATA-exact".to_vec(),
         (0u8..=255).collect(),
@@ -632,12 +633,7 @@ async fn p1_t05_consumer_cancel_does_not_cancel_shared_download() {
             .encode(b"CANCELLABLE")
             .into_bytes(),
     );
-    ctx.fake
-        .state
-        .lock()
-        .unwrap()
-        .behavior
-        .completion_delay_ms = 400;
+    ctx.fake.state.lock().unwrap().behavior.completion_delay_ms = 400;
 
     let p1 = ctx.provider.clone();
     let p2 = ctx.provider.clone();
@@ -922,7 +918,8 @@ async fn p24_quoted_printable_section_stream_exact() {
 async fn p24_malformed_base64_is_decode_failed() {
     let ctx = synced().await;
     let (mid, dec) = pdf_message(&ctx.db, &ctx.acc.id).await;
-    ctx.fake.set_section_bytes(dec, "2", b"@@@not-base64@@@".to_vec());
+    ctx.fake
+        .set_section_bytes(dec, "2", b"@@@not-base64@@@".to_vec());
     let (res, _, done, _) = collect_stream(&ctx.provider, &mid, "2").await;
     let e = res.unwrap_err();
     assert_eq!(
@@ -996,7 +993,10 @@ async fn p24_mid_stream_drop_never_returns_partial_bytes() {
         "a dropped literal surfaces as a transport error, got {code}"
     );
     assert_eq!(done, None, "a dropped stream must not claim completion");
-    assert!(data.len() < payload.len(), "no complete payload from a drop");
+    assert!(
+        data.len() < payload.len(),
+        "no complete payload from a drop"
+    );
 
     // Clearing the fault lets a fresh attempt complete byte-exact.
     ctx.fake
@@ -1094,7 +1094,9 @@ async fn p27_single_part_attachment_row_is_ingested() {
         atts.len(),
         1,
         "single-part attachment appears once: {:?}",
-        atts.iter().map(|a| (&a.filename, &a.mime)).collect::<Vec<_>>()
+        atts.iter()
+            .map(|a| (&a.filename, &a.mime))
+            .collect::<Vec<_>>()
     );
     let (part_id, filename): (String, Option<String>) = db
         .read({

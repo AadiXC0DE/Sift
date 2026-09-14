@@ -31,7 +31,6 @@ pub use crate::retention::DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES;
 
 const ATTACHMENT_CACHE_DIR: &str = "attachments";
 
-
 fn storage_error(e: anyhow::Error) -> SiftError {
     SiftError::app("storage", e.to_string(), false)
 }

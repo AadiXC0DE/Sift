@@ -238,11 +238,7 @@ impl SyncSink for FlakySink {
     ) -> anyhow::Result<Vec<(Vec<String>, Vec<String>)>> {
         self.inner.label_intents(account, message_id).await
     }
-    async fn delete_message(
-        &self,
-        r: &sift::dto::MessageRef,
-        thread: &str,
-    ) -> anyhow::Result<()> {
+    async fn delete_message(&self, r: &sift::dto::MessageRef, thread: &str) -> anyhow::Result<()> {
         self.inner.delete_message(r, thread).await
     }
     async fn message_labels(&self, r: &sift::dto::MessageRef) -> anyhow::Result<Vec<String>> {
@@ -280,7 +276,9 @@ impl SyncSink for FlakySink {
         limit: i64,
         min_date: i64,
     ) -> anyhow::Result<Vec<sift::dto::MessageRef>> {
-        self.inner.next_bodies_to_fetch(account, limit, min_date).await
+        self.inner
+            .next_bodies_to_fetch(account, limit, min_date)
+            .await
     }
     async fn store_body(&self, b: sift::db::bodies::BodyPut) -> anyhow::Result<()> {
         self.inner.store_body(b).await
@@ -330,11 +328,7 @@ impl SyncSink for FlakySink {
     ) -> anyhow::Result<()> {
         self.inner.imap_delete_uids(account, role, uids).await
     }
-    async fn imap_uid_map(
-        &self,
-        account: &str,
-        role: &str,
-    ) -> anyhow::Result<Vec<(i64, String)>> {
+    async fn imap_uid_map(&self, account: &str, role: &str) -> anyhow::Result<Vec<(i64, String)>> {
         self.inner.imap_uid_map(account, role).await
     }
     async fn uids_for_message(
@@ -511,12 +505,20 @@ async fn p45_untrash_into_archive_does_not_infer_inbox() {
             .expect("a single-message inbox thread in All Mail");
         (m.msgid, format!("{:x}", m.msgid))
     };
-    assert!(labels_of(&ctx.db, &ctx.acc.id, &hex).await.contains(&"INBOX".to_string()));
+    assert!(labels_of(&ctx.db, &ctx.acc.id, &hex)
+        .await
+        .contains(&"INBOX".to_string()));
 
     // Another client trashes it.
     {
         let mut st = ctx.fake.state.lock().unwrap();
-        let uid = st.msgs.get_mut(&target).unwrap().folders.remove("all").unwrap();
+        let uid = st
+            .msgs
+            .get_mut(&target)
+            .unwrap()
+            .folders
+            .remove("all")
+            .unwrap();
         let next = *st.next_uid.get("trash").unwrap();
         st.next_uid.insert("trash".into(), next + 1);
         st.modseq += 1;
@@ -529,7 +531,10 @@ async fn p45_untrash_into_archive_does_not_infer_inbox() {
         let _ = uid;
     }
     let sink = DbSink::new(ctx.db.clone());
-    assert!(matches!(tick(&ctx, &sink).await, PartialOutcome::Synced { .. }));
+    assert!(matches!(
+        tick(&ctx, &sink).await,
+        PartialOutcome::Synced { .. }
+    ));
     let trashed = labels_of(&ctx.db, &ctx.acc.id, &hex).await;
     assert!(trashed.contains(&"TRASH".to_string()), "{trashed:?}");
 
@@ -546,7 +551,10 @@ async fn p45_untrash_into_archive_does_not_infer_inbox() {
         m.labels.retain(|l| l != "TRASH" && l != "INBOX");
         m.modseq = ms;
     }
-    assert!(matches!(tick(&ctx, &sink).await, PartialOutcome::Synced { .. }));
+    assert!(matches!(
+        tick(&ctx, &sink).await,
+        PartialOutcome::Synced { .. }
+    ));
     let restored = labels_of(&ctx.db, &ctx.acc.id, &hex).await;
     assert!(!restored.contains(&"TRASH".to_string()), "{restored:?}");
     assert!(
@@ -610,16 +618,18 @@ async fn p45_pending_label_intent_survives_an_old_snapshot() {
         let m = st
             .msgs
             .values()
-            .find(|m| {
-                m.folders.contains_key("all") && m.labels.contains(&"INBOX".to_string())
-            })
+            .find(|m| m.folders.contains_key("all") && m.labels.contains(&"INBOX".to_string()))
             .expect("an inbox message");
         (m.msgid, format!("{:x}", m.msgid))
     };
     let account = ctx.acc.id.clone();
     // The user archives offline: the local row changes and the op is queued.
     ctx.db
-        .apply_label_change(&sift::dto::MessageRef::new(&account, &hex), &[], &["INBOX".into()])
+        .apply_label_change(
+            &sift::dto::MessageRef::new(&account, &hex),
+            &[],
+            &["INBOX".into()],
+        )
         .await
         .unwrap();
     ctx.db
@@ -632,7 +642,9 @@ async fn p45_pending_label_intent_survives_an_old_snapshot() {
         )
         .await
         .unwrap();
-    assert!(!labels_of(&ctx.db, &account, &hex).await.contains(&"INBOX".to_string()));
+    assert!(!labels_of(&ctx.db, &account, &hex)
+        .await
+        .contains(&"INBOX".to_string()));
 
     // The server still reports INBOX (an old snapshot) and a delta arrives.
     let bump = |st: &mut support::fake_imap::State| {
@@ -650,9 +662,14 @@ async fn p45_pending_label_intent_survives_an_old_snapshot() {
         bump(&mut st);
     }
     let sink = DbSink::new(ctx.db.clone());
-    assert!(matches!(tick(&ctx, &sink).await, PartialOutcome::Synced { .. }));
+    assert!(matches!(
+        tick(&ctx, &sink).await,
+        PartialOutcome::Synced { .. }
+    ));
     assert!(
-        !labels_of(&ctx.db, &account, &hex).await.contains(&"INBOX".to_string()),
+        !labels_of(&ctx.db, &account, &hex)
+            .await
+            .contains(&"INBOX".to_string()),
         "the queued archive intent must win over the stale snapshot"
     );
 
@@ -668,9 +685,14 @@ async fn p45_pending_label_intent_survives_an_old_snapshot() {
         let mut st = ctx.fake.state.lock().unwrap();
         bump(&mut st);
     }
-    assert!(matches!(tick(&ctx, &sink).await, PartialOutcome::Synced { .. }));
+    assert!(matches!(
+        tick(&ctx, &sink).await,
+        PartialOutcome::Synced { .. }
+    ));
     assert!(
-        labels_of(&ctx.db, &account, &hex).await.contains(&"INBOX".to_string()),
+        labels_of(&ctx.db, &account, &hex)
+            .await
+            .contains(&"INBOX".to_string()),
         "with no queued intent the server state applies unchanged"
     );
 }

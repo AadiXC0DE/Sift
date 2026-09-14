@@ -9,8 +9,8 @@
 use super::compile;
 use super::cursor::{self, Cursor, SortKind};
 use super::query::Parsed;
-use crate::db::Db;
 use crate::db::threads::thread_row_from;
+use crate::db::Db;
 use crate::dto::ThreadRow;
 use anyhow::{Context, Result};
 use rusqlite::types::Value;

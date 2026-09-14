@@ -189,9 +189,11 @@ fn schema_version(conn: &Connection) -> Result<Option<i64>> {
     if !has_version {
         return Ok(None);
     }
-    Ok(Some(
-        conn.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?,
-    ))
+    Ok(Some(conn.query_row(
+        "SELECT version FROM schema_version",
+        [],
+        |r| r.get(0),
+    )?))
 }
 
 /// Snapshot the database before an upgrade using SQLite's own consistent
@@ -236,9 +238,9 @@ fn register_migration_functions(conn: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let raw: Option<Vec<u8>> = ctx.get(0)?;
-            Ok(raw.and_then(|b| zstd::decode_all(b.as_slice()).ok()).map(|v| {
-                String::from_utf8_lossy(&v).into_owned()
-            }))
+            Ok(raw
+                .and_then(|b| zstd::decode_all(b.as_slice()).ok())
+                .map(|v| String::from_utf8_lossy(&v).into_owned()))
         },
     )
     .context("register zstd_text")?;
@@ -297,7 +299,9 @@ fn apply_migrations(conn: &mut Connection, limit: i64, fail_after: Option<i64>) 
     // is 0008's job. A violation that *survives* the sequence is a real failure
     // and stops the open before sync starts.
     let violations: i64 = conn
-        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
         .context("foreign_key_check")?;
     if violations > 0 {
         anyhow::bail!(
@@ -549,7 +553,9 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let conn = pool.get().unwrap();
                 barrier.wait();
-                let fk: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+                let fk: i64 = conn
+                    .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+                    .unwrap();
                 let jm: String = conn
                     .query_row("PRAGMA journal_mode", [], |r| r.get(0))
                     .unwrap();
@@ -591,11 +597,15 @@ mod tests {
                 .unwrap();
             assert_eq!(v, SCHEMA_VERSION);
             let violations: i64 = conn
-                .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+                .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             assert_eq!(violations, 0);
             let recovery: i64 = conn
-                .query_row("SELECT count(*) FROM migration_recovery_rows", [], |r| r.get(0))
+                .query_row("SELECT count(*) FROM migration_recovery_rows", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             assert_eq!(recovery, 0, "fresh install has nothing to rehome");
         }
@@ -633,7 +643,9 @@ mod tests {
             .unwrap();
         assert_eq!(subject, "hello");
         let violations: i64 = conn
-            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(violations, 0);
     }
@@ -707,11 +719,15 @@ mod tests {
             .unwrap();
         assert_eq!(fts, 1);
         let violations: i64 = conn
-            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(violations, 0);
         // A pre-migration snapshot was taken before the structural rebuild.
-        let backups = std::fs::read_dir(dir.path().join("backups")).unwrap().count();
+        let backups = std::fs::read_dir(dir.path().join("backups"))
+            .unwrap()
+            .count();
         assert_eq!(backups, 1);
     }
 

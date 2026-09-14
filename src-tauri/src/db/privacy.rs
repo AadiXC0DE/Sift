@@ -89,15 +89,16 @@ impl Db {
     pub async fn privacy_bump_generations(&self, account_ids: Option<&[String]>) -> Result<()> {
         let targets: Vec<String> = match account_ids {
             Some(ids) => ids.to_vec(),
-            None => self
-                .read(|c| {
+            None => {
+                self.read(|c| {
                     let mut statement = c.prepare("SELECT id FROM accounts")?;
                     let rows: Vec<String> = statement
                         .query_map([], |r| r.get(0))?
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(rows)
                 })
-                .await?,
+                .await?
+            }
         };
         for account in targets {
             let next = self.privacy_generation(&account).await? + 1;
@@ -110,10 +111,7 @@ impl Db {
     /// Is this sender permanently allowed **for this account**? A sender
     /// preference never leaks between accounts.
     pub async fn sender_allowed(&self, account_id: &str, email: &str) -> Result<bool> {
-        let (account, sender) = (
-            account_id.to_string(),
-            email.trim().to_ascii_lowercase(),
-        );
+        let (account, sender) = (account_id.to_string(), email.trim().to_ascii_lowercase());
         self.read(move |c| {
             Ok(c.query_row(
                 "SELECT allow_remote_images FROM sender_prefs WHERE account_id=? AND email=?",
@@ -127,10 +125,7 @@ impl Db {
     }
 
     pub async fn sender_allow(&self, account_id: &str, email: &str) -> Result<()> {
-        let (account, sender) = (
-            account_id.to_string(),
-            email.trim().to_ascii_lowercase(),
-        );
+        let (account, sender) = (account_id.to_string(), email.trim().to_ascii_lowercase());
         if sender.is_empty() {
             anyhow::bail!("cannot remember a sender without an address");
         }
@@ -147,10 +142,7 @@ impl Db {
     /// Revoke a remembered sender. The row is deleted (not merely disabled) so
     /// the allow-list in the privacy panel reflects exactly what is allowed.
     pub async fn sender_revoke(&self, account_id: &str, email: &str) -> Result<()> {
-        let (account, sender) = (
-            account_id.to_string(),
-            email.trim().to_ascii_lowercase(),
-        );
+        let (account, sender) = (account_id.to_string(), email.trim().to_ascii_lowercase());
         self.write(move |c| {
             c.execute(
                 "DELETE FROM sender_prefs WHERE account_id=? AND email=?",

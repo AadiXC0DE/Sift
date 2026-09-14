@@ -34,16 +34,10 @@ fn bench_search(c: &mut Criterion) {
         &runtime,
         &fixture.db,
         "search candidate (filtered)",
-        &sift::search::compile::candidate_query(
-            filtered.ast.as_ref(),
-            &accounts,
-            true,
-            None,
-            101,
-        )
-        .unwrap()
-        .sql
-        .clone(),
+        &sift::search::compile::candidate_query(filtered.ast.as_ref(), &accounts, true, None, 101)
+            .unwrap()
+            .sql
+            .clone(),
     );
 
     c.bench_function("search_page_100k_plain", |b| {
@@ -73,20 +67,24 @@ fn bench_search(c: &mut Criterion) {
     // A deep page must cost about the same as the first: it is a keyset, not
     // an offset.
     let first = runtime
-        .block_on(local::search_page(&fixture.db, &accounts, &plain, None, "bench", 100))
+        .block_on(local::search_page(
+            &fixture.db,
+            &accounts,
+            &plain,
+            None,
+            "bench",
+            100,
+        ))
         .unwrap();
-    let mut cursor = first
-        .next_cursor
-        .as_deref()
-        .map(|raw| {
-            sift::search::cursor::expect(
-                raw,
-                sift::search::cursor::SortKind::Search,
-                "bench",
-                &plain.fingerprint(),
-            )
-            .unwrap()
-        });
+    let mut cursor = first.next_cursor.as_deref().map(|raw| {
+        sift::search::cursor::expect(
+            raw,
+            sift::search::cursor::SortKind::Search,
+            "bench",
+            &plain.fingerprint(),
+        )
+        .unwrap()
+    });
     for _ in 0..20 {
         let page = runtime
             .block_on(local::search_page(

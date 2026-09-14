@@ -106,7 +106,10 @@ async fn p10_4_eviction_is_lru_and_spares_pinned_and_in_use_files() {
         .unwrap()
         .into_iter()
         .find(|c| c.attachment_id == "a-old");
-    assert!(forgotten.is_none(), "an evicted row is no longer a candidate");
+    assert!(
+        forgotten.is_none(),
+        "an evicted row is no longer a candidate"
+    );
     let (state, filename): (String, String) = db
         .read({
             let a = acc.clone();
@@ -121,7 +124,10 @@ async fn p10_4_eviction_is_lru_and_spares_pinned_and_in_use_files() {
         .await
         .unwrap();
     assert_eq!(state, "missing");
-    assert_eq!(filename, "application/octet-stream", "identity survives eviction");
+    assert_eq!(
+        filename, "application/octet-stream",
+        "identity survives eviction"
+    );
 
     // Releasing the lease changes nothing about what was already decided.
     drop(lease);
@@ -141,7 +147,9 @@ async fn p10_4_a_zero_cap_clears_the_cache_and_a_sufficient_cap_does_not() {
     assert_eq!(no_need.evicted, 0);
     assert!(file.exists());
 
-    let cleared = sift::retention::enforce_attachment_cap(&db, 0).await.unwrap();
+    let cleared = sift::retention::enforce_attachment_cap(&db, 0)
+        .await
+        .unwrap();
     assert_eq!(cleared.evicted, 1);
     assert!(!file.exists());
 }
@@ -217,8 +225,14 @@ async fn p10_4_the_sweep_spares_drafts_pending_sends_and_saved_files() {
     assert!(swept > 0);
     assert!(!orphan.exists(), "an unreferenced abandoned file is swept");
     assert!(draft_file.exists(), "a draft's attachment is never swept");
-    assert!(pending_file.exists(), "a pending send's payload is never swept");
-    assert!(saved.exists(), "a user-saved file is not the app's to delete");
+    assert!(
+        pending_file.exists(),
+        "a pending send's payload is never swept"
+    );
+    assert!(
+        saved.exists(),
+        "a user-saved file is not the app's to delete"
+    );
 }
 
 /// P10.4: the Storage panel's numbers are the files that exist.
@@ -231,22 +245,32 @@ async fn p10_4_storage_totals_equal_the_files_sift_manages() {
     std::fs::create_dir_all(&draft_dir).unwrap();
     std::fs::write(draft_dir.join("staged.bin"), vec![3u8; 700]).unwrap();
 
-    let usage = sift::commands::storage::measure(&db, dir.path()).await.unwrap();
+    let usage = sift::commands::storage::measure(&db, dir.path())
+        .await
+        .unwrap();
     assert_eq!(usage.attachments.bytes, 2_000);
     assert_eq!(usage.attachments.items, 2);
     assert_eq!(usage.draft_cache.bytes, 700);
     assert_eq!(usage.draft_cache.items, 1);
-    assert_eq!(usage.pinned_bytes, 500, "pinned bytes are reported, not evicted");
+    assert_eq!(
+        usage.pinned_bytes, 500,
+        "pinned bytes are reported, not evicted"
+    );
     assert_eq!(
         usage.total_bytes,
-        usage.metadata.bytes + usage.bodies.bytes + usage.attachments.bytes + usage.draft_cache.bytes,
+        usage.metadata.bytes
+            + usage.bodies.bytes
+            + usage.attachments.bytes
+            + usage.draft_cache.bytes,
         "the total is the sum of the categories it shows"
     );
     assert!(usage.attachment_cache_limit_bytes > 0);
 
     // Clearing releases the unpinned files and leaves the pin alone — and the
     // freshly measured totals say exactly that.
-    let cleared = sift::commands::storage::clear_attachment_cache(&db, dir.path()).await.unwrap();
+    let cleared = sift::commands::storage::clear_attachment_cache(&db, dir.path())
+        .await
+        .unwrap();
     assert!(!in_use_file.exists());
     assert!(pinned_file.exists(), "clearing the cache honours a pin");
     assert_eq!(cleared.attachments.bytes, 500);
@@ -260,7 +284,10 @@ async fn p10_4_storage_totals_equal_the_files_sift_manages() {
         (500, 1),
         "the measured bucket and the filesystem agree"
     );
-    assert_eq!(cleared.draft_cache.bytes, 700, "draft staging is a different bucket");
+    assert_eq!(
+        cleared.draft_cache.bytes, 700,
+        "draft staging is a different bucket"
+    );
 }
 
 /// P10.4: removing an account removes what it owned on disk, after its rows are
@@ -281,7 +308,13 @@ async fn p10_4_removing_an_account_removes_only_its_cache() {
 
     assert!(!file.exists());
     assert!(!raw_dir.exists());
-    assert!(neighbour.join("keep.bin").exists(), "another account is untouched");
+    assert!(
+        neighbour.join("keep.bin").exists(),
+        "another account is untouched"
+    );
     assert!(db.accounts_get(&acc).await.unwrap().is_none());
-    assert_eq!(sift::commands::storage::dir_usage(&dir.path().join("attachments")), (15, 1));
+    assert_eq!(
+        sift::commands::storage::dir_usage(&dir.path().join("attachments")),
+        (15, 1)
+    );
 }

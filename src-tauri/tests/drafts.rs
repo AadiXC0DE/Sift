@@ -92,14 +92,19 @@ async fn p51_offline_draft_survives_restart_with_every_field() {
 async fn p52_debounced_sync_creates_once_then_updates_in_place() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/gmail/v1/users/me/drafts"))
         .respond_with(|req: &wiremock::Request| {
             let body: serde_json::Value =
                 serde_json::from_str(&String::from_utf8_lossy(&req.body)).unwrap_or_default();
             assert!(
-                body["message"]["raw"].as_str().is_some_and(|r| !r.is_empty()),
+                body["message"]["raw"]
+                    .as_str()
+                    .is_some_and(|r| !r.is_empty()),
                 "the draft content must be sent as raw MIME"
             );
             wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -111,11 +116,15 @@ async fn p52_debounced_sync_creates_once_then_updates_in_place() {
         .mount(&server)
         .await;
     wiremock::Mock::given(wiremock::matchers::method("PUT"))
-        .and(wiremock::matchers::path("/gmail/v1/users/me/drafts/draft-1"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": "draft-1",
-            "message": {"id": "msg-2", "threadId": "t1"}
-        })))
+        .and(wiremock::matchers::path(
+            "/gmail/v1/users/me/drafts/draft-1",
+        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "draft-1",
+                "message": {"id": "msg-2", "threadId": "t1"}
+            })),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -159,8 +168,15 @@ async fn p52_debounced_sync_creates_once_then_updates_in_place() {
         1,
         "a burst of edits coalesces into one queued sync"
     );
-    let page = db.drafts_list(std::slice::from_ref(&acc.id), None, 10).await.unwrap();
-    assert_eq!(page.drafts.len(), 1, "one local draft, even after three saves");
+    let page = db
+        .drafts_list(std::slice::from_ref(&acc.id), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.drafts.len(),
+        1,
+        "one local draft, even after three saves"
+    );
 
     // The debounced op is not due immediately.
     assert!(!sift::outbox::drain_one(&db, &provider, &acc.id, true)
@@ -168,7 +184,13 @@ async fn p52_debounced_sync_creates_once_then_updates_in_place() {
         .unwrap());
     // Make it due; the sync pushes the newest revision.
     let op: i64 = db
-        .read(move |c| Ok(c.query_row("SELECT id FROM outbox_ops WHERE kind='draft_sync'", [], |r| r.get(0))?))
+        .read(move |c| {
+            Ok(c.query_row(
+                "SELECT id FROM outbox_ops WHERE kind='draft_sync'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
         .await
         .unwrap();
     db.outbox_set(op, "pending", 0, 0, None).await.unwrap();
@@ -196,7 +218,13 @@ async fn p52_debounced_sync_creates_once_then_updates_in_place() {
         .await
         .unwrap();
     let op: i64 = db
-        .read(move |c| Ok(c.query_row("SELECT id FROM outbox_ops WHERE kind='draft_sync' AND state='pending'", [], |r| r.get(0))?))
+        .read(move |c| {
+            Ok(c.query_row(
+                "SELECT id FROM outbox_ops WHERE kind='draft_sync' AND state='pending'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
         .await
         .unwrap();
     db.outbox_set(op, "pending", 0, 0, None).await.unwrap();
@@ -214,7 +242,10 @@ async fn p52_debounced_sync_creates_once_then_updates_in_place() {
 async fn p52_failed_and_cancelled_syncs_cannot_erase_local_content() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     // Gmail refuses every draft write (permission revoked, quota, …).
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/gmail/v1/users/me/drafts"))
@@ -258,10 +289,19 @@ async fn p52_failed_and_cancelled_syncs_cannot_erase_local_content() {
         .outbox_enqueue_draft_sync(&acc.id, &saved.local_id, saved.revision)
         .await
         .unwrap();
-    let cancelled = db.outbox_cancel_draft_sync(&acc.id, &saved.local_id).await.unwrap();
+    let cancelled = db
+        .outbox_cancel_draft_sync(&acc.id, &saved.local_id)
+        .await
+        .unwrap();
     assert_eq!(cancelled, 1);
     let state: String = db
-        .read(move |c| Ok(c.query_row("SELECT state FROM outbox_ops WHERE id=?", rusqlite::params![op], |r| r.get(0))?))
+        .read(move |c| {
+            Ok(c.query_row(
+                "SELECT state FROM outbox_ops WHERE id=?",
+                rusqlite::params![op],
+                |r| r.get(0),
+            )?)
+        })
         .await
         .unwrap();
     assert_eq!(state, "cancelled");
@@ -280,12 +320,17 @@ async fn p52_failed_and_cancelled_syncs_cannot_erase_local_content() {
 async fn p52_remote_only_gmail_draft_is_imported_editable() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path("/gmail/v1/users/me/drafts"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "drafts": [{"id": "r1", "message": {"id": "m1", "threadId": "t1"}}]
-        })))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "drafts": [{"id": "r1", "message": {"id": "m1", "threadId": "t1"}}]
+            })),
+        )
         .mount(&server)
         .await;
 
@@ -323,7 +368,10 @@ async fn p52_remote_only_gmail_draft_is_imported_editable() {
         .unwrap();
     assert_eq!(report.imported.len(), 1);
 
-    let page = db.drafts_list(std::slice::from_ref(&acc.id), None, 10).await.unwrap();
+    let page = db
+        .drafts_list(std::slice::from_ref(&acc.id), None, 10)
+        .await
+        .unwrap();
     assert_eq!(page.drafts.len(), 1);
     let imported = &page.drafts[0];
     assert_eq!(imported.subject, "Written in Gmail");
@@ -337,7 +385,11 @@ async fn p52_remote_only_gmail_draft_is_imported_editable() {
         .unwrap();
     assert!(again.imported.is_empty() && again.adopted.is_empty());
     assert_eq!(
-        db.drafts_list(std::slice::from_ref(&acc.id), None, 10).await.unwrap().drafts.len(),
+        db.drafts_list(std::slice::from_ref(&acc.id), None, 10)
+            .await
+            .unwrap()
+            .drafts
+            .len(),
         1
     );
     std::env::remove_var("SIFT_GMAIL_BASE");
@@ -349,7 +401,10 @@ async fn p52_remote_only_gmail_draft_is_imported_editable() {
 async fn p51_send_keeps_the_draft_and_freezes_its_revision() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/gmail/v1/users/me/messages/send"))
         .respond_with(|req: &wiremock::Request| {
@@ -392,7 +447,11 @@ async fn p51_send_keeps_the_draft_and_freezes_its_revision() {
     assert_eq!(prepared.envelope_recipients, vec!["bob@y.org".to_string()]);
 
     let handle = db
-        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms()), false)
+        .drafts_enqueue_send(
+            &prepared,
+            &sift::db::drafts::SendSchedule::now(sift::db::now_ms()),
+            false,
+        )
         .await
         .unwrap();
     let queued = db.drafts_get(&draft.local_id).await.unwrap().unwrap();
@@ -412,7 +471,11 @@ async fn p51_send_keeps_the_draft_and_freezes_its_revision() {
 
     // Re-queue and send for real: the draft survives the send.
     let handle = db
-        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms()), false)
+        .drafts_enqueue_send(
+            &prepared,
+            &sift::db::drafts::SendSchedule::now(sift::db::now_ms()),
+            false,
+        )
         .await
         .unwrap();
     let provider = GmailApiProvider::new(acc.id.clone(), GmailClient::new("t".into()));

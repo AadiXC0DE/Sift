@@ -35,7 +35,10 @@ fn identity() -> sift::outgoing::Identity {
 async fn p53_send_is_deferred_then_delivered_with_the_prepared_envelope() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/gmail/v1/users/me/messages/send"))
         .respond_with(|req: &wiremock::Request| {
@@ -51,7 +54,10 @@ async fn p53_send_is_deferred_then_delivered_with_the_prepared_envelope() {
             // the message headers.
             assert!(text.contains("Bcc: <dan@y.org>"), "got {text:.200}");
             // mail-builder quotes the display name (RFC 5322).
-            assert!(text.contains("From: \"Ada\" <ada@x.com>"), "got {text:.200}");
+            assert!(
+                text.contains("From: \"Ada\" <ada@x.com>"),
+                "got {text:.200}"
+            );
             wiremock::ResponseTemplate::new(200)
                 .set_body_json(serde_json::json!({"id": "mSent", "threadId": "t1"}))
         })
@@ -87,7 +93,11 @@ async fn p53_send_is_deferred_then_delivered_with_the_prepared_envelope() {
 
     let provider = GmailApiProvider::new(acc.id.clone(), GmailClient::new("t".into()));
     let handle = db
-        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000), false)
+        .drafts_enqueue_send(
+            &prepared,
+            &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000),
+            false,
+        )
         .await
         .unwrap();
     assert!(
@@ -96,7 +106,9 @@ async fn p53_send_is_deferred_then_delivered_with_the_prepared_envelope() {
             .unwrap(),
         "an op before its deadline is not drained"
     );
-    db.outbox_set(handle.op_id, "pending", 0, 0, None).await.unwrap();
+    db.outbox_set(handle.op_id, "pending", 0, 0, None)
+        .await
+        .unwrap();
     assert!(sift::outbox::drain_one(&db, &provider, &acc.id, true)
         .await
         .unwrap());
@@ -120,12 +132,16 @@ async fn p53_send_is_deferred_then_delivered_with_the_prepared_envelope() {
 async fn p53_send_without_recipients_fails_and_sends_nothing() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/gmail/v1/users/me/messages/send"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({"id": "mSent", "threadId": "t1"}),
-        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"id": "mSent", "threadId": "t1"})),
+        )
         .expect(0)
         .mount(&server)
         .await;

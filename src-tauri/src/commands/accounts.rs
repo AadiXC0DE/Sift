@@ -69,11 +69,7 @@ async fn upsert_account_row(
     auth_kind: &str,
 ) -> Result<Account, SiftError> {
     let email = normalize_email(email);
-    let id = match db
-        .accounts_find_by_email(&email)
-        .await
-        .map_err(db_error)?
-    {
+    let id = match db.accounts_find_by_email(&email).await.map_err(db_error)? {
         Some(existing) => {
             db.accounts_update_meta(&existing.id, None, name, avatar, None)
                 .await
@@ -87,7 +83,10 @@ async fn upsert_account_row(
             existing.id
         }
         None => {
-            let created = db.new_account(&email, name, avatar).await.map_err(db_error)?;
+            let created = db
+                .new_account(&email, name, avatar)
+                .await
+                .map_err(db_error)?;
             db.accounts_set_auth_kind(&created.id, auth_kind)
                 .await
                 .map_err(db_error)?;
@@ -188,7 +187,11 @@ async fn install_provider(
         .await
         .insert(account_id.to_string(), provider);
     if let Some(token) = access_token {
-        state.tokens.write().await.insert(account_id.to_string(), token);
+        state
+            .tokens
+            .write()
+            .await
+            .insert(account_id.to_string(), token);
     }
     state
         .db
@@ -352,13 +355,18 @@ struct RemovalReport {
 
 async fn removal_counts(db: &Db, account_id: &str) -> Result<RemovalCounts, SiftError> {
     let drafts = db.drafts_count(account_id).await.map_err(db_error)?;
-    let queued = db.outbox_pending_count(account_id).await.map_err(db_error)?;
+    let queued = db
+        .outbox_pending_count(account_id)
+        .await
+        .map_err(db_error)?;
     let account_id = account_id.to_string();
     let uncertain_sends = db
         .read(move |c| -> anyhow::Result<i64> {
-            Ok(c.query_row(UNCERTAIN_SENDS_COUNT, rusqlite::params![account_id], |r| {
-                r.get(0)
-            })?)
+            Ok(
+                c.query_row(UNCERTAIN_SENDS_COUNT, rusqlite::params![account_id], |r| {
+                    r.get(0)
+                })?,
+            )
         })
         .await
         .map_err(db_error)?;
@@ -404,11 +412,7 @@ async fn write_removal_report(
         })
         .await
         .map_err(db_error)?;
-    let unsent_drafts = state
-        .db
-        .drafts_count(account_id)
-        .await
-        .map_err(db_error)?;
+    let unsent_drafts = state.db.drafts_count(account_id).await.map_err(db_error)?;
     if ops.is_empty() && unsent_drafts == 0 {
         return Ok(None);
     }
@@ -642,14 +646,14 @@ pub async fn accounts_add_app_password(
     .await?;
     state.remember_app_password(&email, &pw).await;
     // Provider + background full sync (first store:threads within ~2 s).
-    let provider: Arc<dyn Provider> = Arc::new(
-        crate::provider::imap::provider::GmailImapProvider::new(
+    let provider: Arc<dyn Provider> =
+        Arc::new(crate::provider::imap::provider::GmailImapProvider::new(
             account.id.clone(),
             pool,
             state.db.clone(),
-        ),
-    );
-    let (generation, account_cancel) = install_provider(&state, &account.id, provider.clone(), None).await?;
+        ));
+    let (generation, account_cancel) =
+        install_provider(&state, &account.id, provider.clone(), None).await?;
     log::info!(target: "sift::setup", "app-password sign-in: account created, starting sync");
     let _ = progress.send(SetupProgress::Syncing);
     let (db, sink_acc, app2, app3) = (
@@ -737,13 +741,12 @@ pub async fn accounts_update_app_password(
     verifier.verify().await?;
     crate::secrets::store_app_password(&acc.email, &pw)?;
     state.remember_app_password(&acc.email, &pw).await;
-    let provider: Arc<dyn Provider> = Arc::new(
-        crate::provider::imap::provider::GmailImapProvider::new(
+    let provider: Arc<dyn Provider> =
+        Arc::new(crate::provider::imap::provider::GmailImapProvider::new(
             id.clone(),
             crate::provider::imap::conn::ImapPool::gmail(acc.email.clone(), pw),
             state.db.clone(),
-        ),
-    );
+        ));
     install_provider(&state, &id, provider, None).await?;
     state
         .db
@@ -788,10 +791,7 @@ mod tests {
     async fn state_with_account(dir: &tempfile::TempDir, email: &str) -> (AppState, Account) {
         let db = Db::open(dir.path()).unwrap();
         let account = db.new_account(email, None, None).await.unwrap();
-        (
-            AppState::new(db, dir.path().to_path_buf()),
-            account,
-        )
+        (AppState::new(db, dir.path().to_path_buf()), account)
     }
 
     /// Removal stops the account's work, records the send it already accepted
@@ -857,7 +857,13 @@ mod tests {
 
         assert!(state.db.accounts_list().await.unwrap().is_empty());
         assert_eq!(state.db.outbox_pending_count(&id).await.unwrap(), 0);
-        assert!(state.db.drafts_list(std::slice::from_ref(&id), None, 10).await.unwrap().drafts.is_empty());
+        assert!(state
+            .db
+            .drafts_list(std::slice::from_ref(&id), None, 10)
+            .await
+            .unwrap()
+            .drafts
+            .is_empty());
         let threads: i64 = state
             .db
             .read({
@@ -875,7 +881,12 @@ mod tests {
         assert_eq!(threads, 0);
 
         let report: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(dir.path().join("removed-accounts").join(format!("{id}.json"))).unwrap(),
+            &std::fs::read(
+                dir.path()
+                    .join("removed-accounts")
+                    .join(format!("{id}.json")),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(report["account_id"], id);
@@ -1080,13 +1091,15 @@ mod tests {
             .unwrap();
         let (old_generation, _) = state.begin_generation(&id).await;
 
-        let provider: Arc<dyn Provider> = Arc::new(
-            crate::provider::imap::provider::GmailImapProvider::new(
+        let provider: Arc<dyn Provider> =
+            Arc::new(crate::provider::imap::provider::GmailImapProvider::new(
                 id.clone(),
-                crate::provider::imap::conn::ImapPool::gmail("reauth@x.com".into(), "abcdefghijklmnop".into()),
+                crate::provider::imap::conn::ImapPool::gmail(
+                    "reauth@x.com".into(),
+                    "abcdefghijklmnop".into(),
+                ),
                 state.db.clone(),
-            ),
-        );
+            ));
         let (generation, _) = install_provider(&state, &id, provider.clone(), None)
             .await
             .unwrap();
@@ -1110,11 +1123,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(threads, 1);
-        assert_eq!(state.db.drafts_list(std::slice::from_ref(&id), None, 10).await.unwrap().drafts.len(), 1);
+        assert_eq!(
+            state
+                .db
+                .drafts_list(std::slice::from_ref(&id), None, 10)
+                .await
+                .unwrap()
+                .drafts
+                .len(),
+            1
+        );
         // The mid-flight op is queued again for the new provider.
         assert_eq!(state.db.outbox_pending_count(&id).await.unwrap(), 1);
         assert_eq!(
-            state.db.accounts_get(&id).await.unwrap().unwrap().sync_state,
+            state
+                .db
+                .accounts_get(&id)
+                .await
+                .unwrap()
+                .unwrap()
+                .sync_state,
             "partial"
         );
     }

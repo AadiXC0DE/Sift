@@ -64,8 +64,7 @@ pub async fn label_rename(
     name: String,
 ) -> Result<crate::dto::Label, SiftError> {
     let gesture = format!("label-rename-{}", uuid::Uuid::now_v7());
-    let label =
-        crate::labels::rename(&state.db, &account_id, &label_id, &name, &gesture).await?;
+    let label = crate::labels::rename(&state.db, &account_id, &label_id, &name, &gesture).await?;
     state.kick_outbox(&account_id).await;
     let _ = app.emit(
         "store:labels",

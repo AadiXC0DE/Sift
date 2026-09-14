@@ -100,7 +100,11 @@ fn parse_address(raw: &str) -> Result<String, SiftError> {
     let mut parts = value.split('@');
     let (local, domain) = match (parts.next(), parts.next(), parts.next()) {
         (Some(l), Some(d), None) => (l, d),
-        _ => return Err(invalid("That link contains something that is not an address.")),
+        _ => {
+            return Err(invalid(
+                "That link contains something that is not an address.",
+            ))
+        }
     };
     if local.is_empty()
         || domain.is_empty()
@@ -108,9 +112,13 @@ fn parse_address(raw: &str) -> Result<String, SiftError> {
         || domain.starts_with('.')
         || domain.ends_with('.')
         || domain.starts_with('-')
-        || value.contains(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '"' || c == '(' || c == ')')
+        || value.contains(|c: char| {
+            c.is_whitespace() || c == '<' || c == '>' || c == '"' || c == '(' || c == ')'
+        })
     {
-        return Err(invalid("That link contains something that is not an address."));
+        return Err(invalid(
+            "That link contains something that is not an address.",
+        ));
     }
     Ok(value.to_string())
 }
@@ -121,7 +129,9 @@ fn push_addresses(list: &mut Vec<String>, raw: &str, what: &str) -> Result<(), S
             continue;
         }
         if list.len() >= MAX_RECIPIENTS {
-            return Err(invalid(&format!("That link names more {what} than Sift will use.")));
+            return Err(invalid(&format!(
+                "That link names more {what} than Sift will use."
+            )));
         }
         let address = parse_address(part)?;
         if !list.iter().any(|a| a.eq_ignore_ascii_case(&address)) {
@@ -240,8 +250,7 @@ mod tests {
 
     #[test]
     fn p9_3_multiple_recipients_in_path_and_query() {
-        let parsed =
-            parse("mailto:ada@example.com,bob@example.com?to=cid@example.com").unwrap();
+        let parsed = parse("mailto:ada@example.com,bob@example.com?to=cid@example.com").unwrap();
         assert_eq!(
             parsed.to,
             vec!["ada@example.com", "bob@example.com", "cid@example.com"]
@@ -285,11 +294,27 @@ mod tests {
             assert_eq!(parse(url).unwrap_err().code(), "mailto_invalid", "{url}");
         }
         // Malformed escapes, non-UTF8 escapes and non-addresses are refused.
-        assert_eq!(parse("mailto:a@example.com?subject=%zz").unwrap_err().code(), "mailto_invalid");
+        assert_eq!(
+            parse("mailto:a@example.com?subject=%zz")
+                .unwrap_err()
+                .code(),
+            "mailto_invalid"
+        );
         assert_eq!(parse("mailto:%FF%FE").unwrap_err().code(), "mailto_invalid");
-        assert_eq!(parse("mailto:not-an-address").unwrap_err().code(), "mailto_invalid");
-        assert_eq!(parse("mailto:a@example.com?to=bad@@example.com").unwrap_err().code(), "mailto_invalid");
-        assert_eq!(parse("https://example.com").unwrap_err().code(), "mailto_invalid");
+        assert_eq!(
+            parse("mailto:not-an-address").unwrap_err().code(),
+            "mailto_invalid"
+        );
+        assert_eq!(
+            parse("mailto:a@example.com?to=bad@@example.com")
+                .unwrap_err()
+                .code(),
+            "mailto_invalid"
+        );
+        assert_eq!(
+            parse("https://example.com").unwrap_err().code(),
+            "mailto_invalid"
+        );
     }
 
     #[test]

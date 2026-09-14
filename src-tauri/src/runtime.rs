@@ -231,7 +231,11 @@ async fn spawn_account_loops(
 
 /// A provider for the account, or `None` when the generation was cancelled
 /// while it was being built.
-async fn provider(state: &AppState, account_id: &str, cancel: &CancellationToken) -> Option<Arc<dyn Provider>> {
+async fn provider(
+    state: &AppState,
+    account_id: &str,
+    cancel: &CancellationToken,
+) -> Option<Arc<dyn Provider>> {
     tokio::select! {
         _ = cancel.cancelled() => None,
         built = state.provider_for(account_id) => built.ok(),
@@ -352,11 +356,7 @@ async fn drain_loop(
             }
         }
         if let Ok(n) = state.db.outbox_pending_count(account_id).await {
-            let failed = state
-                .db
-                .outbox_failed_count(account_id)
-                .await
-                .unwrap_or(0);
+            let failed = state.db.outbox_failed_count(account_id).await.unwrap_or(0);
             let summary = state
                 .db
                 .outbox_summary(account_id)
@@ -846,7 +846,10 @@ pub async fn refresh_badge_for_app(app: &AppHandle) {
 /// work: a first sync of a large mailbox cannot be slowed down by a rule, and a
 /// rule can never fail the sync it follows.
 async fn rules_tick(state: &AppState, account_id: &str) {
-    let busy = state.foreground_inflight.load(std::sync::atomic::Ordering::Relaxed) > 0;
+    let busy = state
+        .foreground_inflight
+        .load(std::sync::atomic::Ordering::Relaxed)
+        > 0;
     match crate::rules::process_queue(&state.db, account_id, busy).await {
         Ok(report) if report.messages > 0 => {
             log::debug!(
@@ -891,8 +894,15 @@ pub(crate) async fn check_snoozes(app: &AppHandle) -> anyhow::Result<usize> {
             by_account.entry(aid.clone()).or_default().push(tid.clone());
         }
         for (aid, tids) in by_account {
-            emit_store(&host, &aid, &tids.iter().map(|t| (aid.clone(), t.clone())).collect::<Vec<_>>())
-                .await;
+            emit_store(
+                &host,
+                &aid,
+                &tids
+                    .iter()
+                    .map(|t| (aid.clone(), t.clone()))
+                    .collect::<Vec<_>>(),
+            )
+            .await;
             (host.emit)(
                 "snooze:woke",
                 serde_json::json!({"account_id": aid, "thread_ids": tids}),
@@ -933,7 +943,7 @@ mod tests {
     use crate::errors::SiftError;
     use crate::provider::{
         ApplyOutcome, BoxStream, Cursor, OutboxOp, PartialOutcome, ProfileInfo, ProviderKind,
-        SentInfo, SendAs, SyncSink, ThreadRef, WatchEvent,
+        SendAs, SentInfo, SyncSink, ThreadRef, WatchEvent,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -963,11 +973,8 @@ mod tests {
 
         /// Record a row so the test can see exactly how far the provider got.
         async fn mark(&self, kind: &str) {
-            let (db, account_id, kind) = (
-                self.db.clone(),
-                self.account_id.clone(),
-                kind.to_string(),
-            );
+            let (db, account_id, kind) =
+                (self.db.clone(), self.account_id.clone(), kind.to_string());
             db.write(move |c| -> anyhow::Result<()> {
                 c.execute(
                     "INSERT INTO sync_log (account_id, at, kind) VALUES (?,?,?)",
@@ -1049,10 +1056,7 @@ mod tests {
         }
         /// The drain hands the prepared delivery to the transport: that call is
         /// what the removal tests observe.
-        async fn send(
-            &self,
-            _req: &crate::provider::SendRequest,
-        ) -> Result<SentInfo, SiftError> {
+        async fn send(&self, _req: &crate::provider::SendRequest) -> Result<SentInfo, SiftError> {
             self.mark("send-entered").await;
             self.block_until_released().await;
             self.mark("send-late").await;

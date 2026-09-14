@@ -165,7 +165,11 @@ impl GmailClient {
         self.quota(5).await;
         let url = format!("{}/labels/{}", base_url(), urlencoding::encode(id));
         let r = self
-            .send_with_retry(self.http.patch(url).json(&serde_json::json!({ "name": name })))
+            .send_with_retry(
+                self.http
+                    .patch(url)
+                    .json(&serde_json::json!({ "name": name })),
+            )
             .await?;
         r.json().await.map_err(SiftError::from)
     }
@@ -388,17 +392,10 @@ impl GmailClient {
     ) -> Result<DraftResource, SiftError> {
         self.quota(10).await;
         let body = DraftWrite {
-            message: DraftWriteMessage {
-                raw,
-                thread_id,
-            },
+            message: DraftWriteMessage { raw, thread_id },
         };
         let r = self
-            .send_with_retry(
-                self.http
-                    .post(format!("{}/drafts", base_url()))
-                    .json(&body),
-            )
+            .send_with_retry(self.http.post(format!("{}/drafts", base_url())).json(&body))
             .await?;
         r.json().await.map_err(SiftError::from)
     }
@@ -412,15 +409,16 @@ impl GmailClient {
     ) -> Result<DraftResource, SiftError> {
         self.quota(10).await;
         let body = DraftWrite {
-            message: DraftWriteMessage {
-                raw,
-                thread_id,
-            },
+            message: DraftWriteMessage { raw, thread_id },
         };
         let r = self
             .send_with_retry(
                 self.http
-                    .put(format!("{}/drafts/{}", base_url(), urlencoding::encode(draft_id)))
+                    .put(format!(
+                        "{}/drafts/{}",
+                        base_url(),
+                        urlencoding::encode(draft_id)
+                    ))
                     .json(&body),
             )
             .await?;
@@ -431,10 +429,11 @@ impl GmailClient {
     pub async fn delete_draft(&self, draft_id: &str) -> Result<(), SiftError> {
         self.quota(5).await;
         match self
-            .send_with_retry(
-                self.http
-                    .delete(format!("{}/drafts/{}", base_url(), urlencoding::encode(draft_id))),
-            )
+            .send_with_retry(self.http.delete(format!(
+                "{}/drafts/{}",
+                base_url(),
+                urlencoding::encode(draft_id)
+            )))
             .await
         {
             Ok(_) => Ok(()),

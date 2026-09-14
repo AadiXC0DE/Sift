@@ -225,29 +225,29 @@ mod tests {
     #[test]
     fn p1_t01_imap_section_rejects_invalid_paths() {
         for bad in [
-            "",         // empty
-            "0",        // zero component
-            "0.1",      // zero first component
-            "1.0",      // zero nested component
-            "01",       // leading zero
-            "1..2",     // empty component
-            ".1",       // empty component
-            "1.",       // empty component
-            "cid@x",    // REST-shaped id
-            "a1",       // non-digit
-            "2]",       // bracket
-            "[2",       // bracket
-            "1,2",      // uid-set shape
-            "1 2",      // whitespace
-            " 1",       // leading whitespace
-            "1 ",       // trailing whitespace
-            "+1",       // sign
-            "-1",       // sign
-            "1\r\n",    // CRLF
-            "1\n",      // LF
-            "1\t",      // tab
-            "\"1\"",    // quote
-            "4294967296", // u32 overflow
+            "",                  // empty
+            "0",                 // zero component
+            "0.1",               // zero first component
+            "1.0",               // zero nested component
+            "01",                // leading zero
+            "1..2",              // empty component
+            ".1",                // empty component
+            "1.",                // empty component
+            "cid@x",             // REST-shaped id
+            "a1",                // non-digit
+            "2]",                // bracket
+            "[2",                // bracket
+            "1,2",               // uid-set shape
+            "1 2",               // whitespace
+            " 1",                // leading whitespace
+            "1 ",                // trailing whitespace
+            "+1",                // sign
+            "-1",                // sign
+            "1\r\n",             // CRLF
+            "1\n",               // LF
+            "1\t",               // tab
+            "\"1\"",             // quote
+            "4294967296",        // u32 overflow
             "1.2.3.4.5.6.7.8.9", // deeper than MAX_SECTION_DEPTH
         ] {
             assert!(ImapSection::parse(bad).is_none(), "must reject {bad:?}");

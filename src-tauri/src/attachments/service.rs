@@ -325,7 +325,13 @@ pub async fn ensure_local(
                     } else {
                         let _ = rt.db.attachment_touch(&key).await;
                     }
-                    return Ok(info(rec, &basename, CacheState::Ready, Some(path), Some(meta.len() as i64)));
+                    return Ok(info(
+                        rec,
+                        &basename,
+                        CacheState::Ready,
+                        Some(path),
+                        Some(meta.len() as i64),
+                    ));
                 }
             }
         }
@@ -340,8 +346,8 @@ pub async fn ensure_local(
         );
         let _ = rt.db.attachment_set_state(&key, CacheState::Corrupt).await;
     } else if let Some(data) = rec.data.as_deref() {
-        let dir = cache::attachment_dir(&rt.data_dir, &rec.account_id, &rec.id)
-            .map_err(write_failed)?;
+        let dir =
+            cache::attachment_dir(&rt.data_dir, &rec.account_id, &rec.id).map_err(write_failed)?;
         let path = cache::write_atomic(&dir, &basename, data)
             .await
             .map_err(write_failed)?;
@@ -350,7 +356,13 @@ pub async fn ensure_local(
             .await
             .map_err(db_error)?;
         quarantine::apply(&path, None);
-        return Ok(info(rec, &basename, CacheState::Ready, Some(&path), Some(data.len() as i64)));
+        return Ok(info(
+            rec,
+            &basename,
+            CacheState::Ready,
+            Some(&path),
+            Some(data.len() as i64),
+        ));
     }
 
     // 3. Network. The locator comes from the row's own identity, chosen for
@@ -379,8 +391,8 @@ async fn download(
     locator: &str,
     basename: &str,
 ) -> Result<AttachmentCacheInfo, SiftError> {
-    let dir = cache::attachment_dir(&rt.data_dir, &rec.account_id, &rec.id)
-        .map_err(write_failed)?;
+    let dir =
+        cache::attachment_dir(&rt.data_dir, &rec.account_id, &rec.id).map_err(write_failed)?;
     let key = rec_key(rec);
     let request_id = rec.id.clone();
     let (key_reg, token) = register(&rec.account_id, &rec.id);
@@ -390,7 +402,17 @@ async fn download(
         .await;
     rt.progress(&progress(rec, &request_id, "downloading", 0, None, None));
 
-    let result = stream(rt, transport, rec, locator, &dir, basename, &token, &request_id).await;
+    let result = stream(
+        rt,
+        transport,
+        rec,
+        locator,
+        &dir,
+        basename,
+        &token,
+        &request_id,
+    )
+    .await;
     unregister(&key_reg);
 
     match result {
@@ -401,7 +423,13 @@ async fn download(
                 .map_err(db_error)?;
             quarantine::apply(&path, None);
             rt.progress(&progress(rec, &request_id, "ready", size, Some(size), None));
-            Ok(info(rec, basename, CacheState::Ready, Some(&path), Some(size as i64)))
+            Ok(info(
+                rec,
+                basename,
+                CacheState::Ready,
+                Some(&path),
+                Some(size as i64),
+            ))
         }
         Err(e) => {
             // A failed transfer leaves `downloading` behind; clear it so the
@@ -499,8 +527,14 @@ async fn stream(
             // The producer finished: drain anything still buffered, in order.
             while let Ok(chunk) = rx.try_recv() {
                 consume(
-                    &mut temp, chunk, &mut transferred, &mut total, &mut last_emit,
-                    rt, rec, request_id,
+                    &mut temp,
+                    chunk,
+                    &mut transferred,
+                    &mut total,
+                    &mut last_emit,
+                    rt,
+                    rec,
+                    request_id,
                 )
                 .await?;
                 if total.is_some() {
@@ -516,7 +550,8 @@ async fn stream(
         }
     }
 
-    let expected = total.ok_or_else(|| decode_failed("transfer ended without a completion marker"))?;
+    let expected =
+        total.ok_or_else(|| decode_failed("transfer ended without a completion marker"))?;
     if expected != transferred {
         return Err(decode_failed(format!(
             "attachment is incomplete: expected {expected} bytes, received {transferred}"
@@ -597,9 +632,9 @@ pub async fn resolve_bytes(
             return Ok((bytes, rec.mime));
         }
     }
-    let locator = rec
-        .locator_for(provider.kind())
-        .ok_or_else(|| locator_invalid(format!("attachment {} has no transport locator", rec.id)))?;
+    let locator = rec.locator_for(provider.kind()).ok_or_else(|| {
+        locator_invalid(format!("attachment {} has no transport locator", rec.id))
+    })?;
     let bytes = provider.fetch_attachment(&rec.message_id, locator).await?;
     if bytes.len() <= INLINE_ROW_CACHE_CAP {
         let db = db.clone();
@@ -614,7 +649,12 @@ pub async fn resolve_bytes(
 
 /// Copy a verified cache file to a user-chosen destination, publishing
 /// atomically so a failure never leaves a half-file there.
-pub async fn copy_to(rt: &AttachmentRuntime, source: &dyn TransportSource, rec: &AttachmentRecord, dest: &Path) -> Result<(), SiftError> {
+pub async fn copy_to(
+    rt: &AttachmentRuntime,
+    source: &dyn TransportSource,
+    rec: &AttachmentRecord,
+    dest: &Path,
+) -> Result<(), SiftError> {
     let info = ensure_local(rt, source, rec).await?;
     let src = PathBuf::from(info.path.ok_or_else(|| write_failed("no cached file"))?);
     cache::copy_atomic(&src, dest).await.map_err(write_failed)?;
@@ -650,11 +690,7 @@ pub async fn save_all_into(
     message: &crate::dto::MessageRef,
     dir: &Path,
 ) -> Result<SaveAllResult, SiftError> {
-    let mut recs = rt
-        .db
-        .attachments_records(message)
-        .await
-        .map_err(db_error)?;
+    let mut recs = rt.db.attachments_records(message).await.map_err(db_error)?;
     let owner = message.account_id.clone();
     recs.retain(|r| !r.is_inline && r.account_id == owner);
     if recs.len() < 2 {

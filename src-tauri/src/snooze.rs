@@ -14,9 +14,9 @@
 //! operations depend on it — an invented provider id is never sent.
 
 use crate::actions::{GestureFailure, PreviousState, PriorMessage};
-use crate::dto::GestureTarget;
 use crate::db::outbox::{NewOp, Op};
 use crate::db::Db;
+use crate::dto::GestureTarget;
 use crate::errors::SiftError;
 
 /// The one label name Sift uses for snoozed mail.
@@ -198,7 +198,9 @@ pub async fn snooze_set(
         let account = account_id.clone();
         let group = gesture_id.to_string();
         let result = db
-            .write_tx(move |tx| snooze_set_account(tx, &account, &scoped, &group, wake_at, wake_unread))
+            .write_tx(move |tx| {
+                snooze_set_account(tx, &account, &scoped, &group, wake_at, wake_unread)
+            })
             .await;
         match result {
             Ok((op_id, threads)) => {
@@ -458,7 +460,11 @@ pub async fn wake_due(db: &Db, now: i64) -> Result<Vec<(String, String)>, SiftEr
                  WHERE state='sleeping' AND wake_at<=?",
             )?
             .query_map(rusqlite::params![now], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?)
         })
@@ -647,9 +653,7 @@ mod tests {
             account_id: acc.id.clone(),
             thread_id: "t1".into(),
         }];
-        let (outcome, failures) = snooze_set(&db, "g1", &targets, 42, false)
-            .await
-            .unwrap();
+        let (outcome, failures) = snooze_set(&db, "g1", &targets, 42, false).await.unwrap();
         assert!(failures.is_empty());
         assert_eq!(outcome.operations.len(), 1);
         // The label change waits for the label to exist remotely.
@@ -672,7 +676,10 @@ mod tests {
             .await
             .unwrap();
         let labels: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
-        assert!(labels.iter().any(|l| l.contains("Sift/Snoozed")), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l.contains("Sift/Snoozed")),
+            "{labels:?}"
+        );
         assert!(!labels.iter().any(|l| l == "INBOX"), "{labels:?}");
     }
 

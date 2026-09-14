@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium webkit
       - run: pnpm lint
       - name: versions agree (package.json, Cargo.toml, tauri.conf.json, CHANGELOG)
         run: pnpm exec tsx scripts/check-versions.ts

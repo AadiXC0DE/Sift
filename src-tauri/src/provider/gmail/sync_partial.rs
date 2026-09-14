@@ -122,10 +122,7 @@ pub async fn run_partial_sync(
                     let labels = m.label_ids.clone().unwrap_or_default();
                     // compute add/remove vs DB
                     let r = crate::dto::MessageRef::new(account_id, &chg.message.id);
-                    let cur: Vec<String> = sink
-                        .message_labels(&r)
-                        .await
-                        .unwrap_or_default();
+                    let cur: Vec<String> = sink.message_labels(&r).await.unwrap_or_default();
                     let add: Vec<String> = labels
                         .iter()
                         .filter(|l| !cur.contains(l))
@@ -137,10 +134,7 @@ pub async fn run_partial_sync(
                         .cloned()
                         .collect();
                     if !add.is_empty() || !remove.is_empty() {
-                        if let Ok((a, t)) = sink
-                            .apply_label_change(&r, &add, &remove)
-                            .await
-                        {
+                        if let Ok((a, t)) = sink.apply_label_change(&r, &add, &remove).await {
                             changed.push((a, t));
                         }
                     }

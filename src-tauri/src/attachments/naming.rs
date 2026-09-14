@@ -82,7 +82,10 @@ pub fn basename(filename: Option<&str>, mime: &str, attachment_id: &str) -> Stri
     } else {
         short
     };
-    format!("attachment-{short}.{}", known_extension(mime).unwrap_or("bin"))
+    format!(
+        "attachment-{short}.{}",
+        known_extension(mime).unwrap_or("bin")
+    )
 }
 
 /// Lowercased extension of a sanitized name, if any.
@@ -96,7 +99,12 @@ pub fn extension(name: &str) -> Option<String> {
 
 /// A known extension for a MIME type, used only when the sender gave no name.
 pub fn known_extension(mime: &str) -> Option<&'static str> {
-    let mime = mime.split(';').next().unwrap_or(mime).trim().to_ascii_lowercase();
+    let mime = mime
+        .split(';')
+        .next()
+        .unwrap_or(mime)
+        .trim()
+        .to_ascii_lowercase();
     Some(match mime.as_str() {
         "application/pdf" => "pdf",
         "application/zip" => "zip",
@@ -155,7 +163,10 @@ mod tests {
 
     #[test]
     fn keeps_ordinary_names() {
-        assert_eq!(basename(Some("invoice.pdf"), "application/pdf", "x"), "invoice.pdf");
+        assert_eq!(
+            basename(Some("invoice.pdf"), "application/pdf", "x"),
+            "invoice.pdf"
+        );
     }
 
     #[test]
@@ -167,17 +178,38 @@ mod tests {
 
     #[test]
     fn rejects_dot_names_and_controls() {
-        assert_eq!(basename(Some(".."), "image/png", "abcd1234"), "attachment-abcd1234.png");
-        assert_eq!(basename(Some("."), "image/png", "abcd1234"), "attachment-abcd1234.png");
-        assert_eq!(basename(Some("re\u{1}port\u{0}.pdf"), "", "x"), "report.pdf");
-        assert_eq!(basename(None, "application/pdf", "abcd1234"), "attachment-abcd1234.pdf");
-        assert_eq!(basename(Some("   "), "application/zip", "abcd1234"), "attachment-abcd1234.zip");
-        assert_eq!(basename(None, "application/x-weird", "abcd1234"), "attachment-abcd1234.bin");
+        assert_eq!(
+            basename(Some(".."), "image/png", "abcd1234"),
+            "attachment-abcd1234.png"
+        );
+        assert_eq!(
+            basename(Some("."), "image/png", "abcd1234"),
+            "attachment-abcd1234.png"
+        );
+        assert_eq!(
+            basename(Some("re\u{1}port\u{0}.pdf"), "", "x"),
+            "report.pdf"
+        );
+        assert_eq!(
+            basename(None, "application/pdf", "abcd1234"),
+            "attachment-abcd1234.pdf"
+        );
+        assert_eq!(
+            basename(Some("   "), "application/zip", "abcd1234"),
+            "attachment-abcd1234.zip"
+        );
+        assert_eq!(
+            basename(None, "application/x-weird", "abcd1234"),
+            "attachment-abcd1234.bin"
+        );
     }
 
     #[test]
     fn keeps_unicode_and_quotes() {
-        assert_eq!(basename(Some("Résumé \"final\".pdf"), "", "x"), "Résumé \"final\".pdf");
+        assert_eq!(
+            basename(Some("Résumé \"final\".pdf"), "", "x"),
+            "Résumé \"final\".pdf"
+        );
     }
 
     #[test]

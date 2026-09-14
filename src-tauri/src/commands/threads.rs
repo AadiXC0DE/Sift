@@ -240,11 +240,7 @@ fn should_refresh_body_provider(
     error.is_reauth() && provider_kind == crate::provider::ProviderKind::GmailApi
 }
 
-async fn render_message_html(
-    state: &AppState,
-    message: &MessageRef,
-    html: String,
-) -> String {
+async fn render_message_html(state: &AppState, message: &MessageRef, html: String) -> String {
     // Inline references are account-qualified so the scheme can validate
     // ownership; a body from one account can never address another. Cached
     // bodies from before the scoping migration are upgraded in place (in
@@ -270,10 +266,7 @@ async fn render_message_html(
         if let Ok((bytes, mime)) =
             crate::uri_scheme::resolve_attachment(&state.db, &*provider, message, &key).await
         {
-            let _ = state
-                .db
-                .attachment_cache_data(message, &key, &bytes)
-                .await;
+            let _ = state.db.attachment_cache_data(message, &key, &bytes).await;
             let part = vec![(key.clone(), key.clone(), Some(key), mime, bytes)];
             rendered = crate::render::sanitize::embed_local_images(&rendered, &url_path, &part);
         }
@@ -319,7 +312,11 @@ async fn remote_decision(
     message: &MessageRef,
 ) -> Result<RemoteDecision, SiftError> {
     let privacy = state.db.privacy_state().await.map_err(db_err)?;
-    let generation = state.db.privacy_generation(&message.account_id).await.map_err(db_err)?
+    let generation = state
+        .db
+        .privacy_generation(&message.account_id)
+        .await
+        .map_err(db_err)?
         + state.session_privacy_bumps(&message.account_id).await;
     let mode = privacy.effective();
     let allowed = match mode {
@@ -436,11 +433,7 @@ pub async fn message_body_for(
     let message = MessageRef::new(account_id, message_id);
     // Ownership check: the message must exist in this account. The provider id
     // alone is not a cross-account isolation boundary (P4.2).
-    let exists = state
-        .db
-        .message_thread(&message)
-        .await
-        .map_err(db_err)?;
+    let exists = state.db.message_thread(&message).await.map_err(db_err)?;
     if exists.is_none() {
         return Ok(body_payload(
             &RemoteDecision {
@@ -459,8 +452,7 @@ pub async fn message_body_for(
     if let Some((html, text, remote_images, trackers, dark_safe, _q)) =
         state.db.bodies_get(&message).await.map_err(db_err)?
     {
-        let (html_out, unresolved) =
-            rendered_body(state, &message, html, &decision).await;
+        let (html_out, unresolved) = rendered_body(state, &message, html, &decision).await;
         return Ok(body_payload(
             &decision,
             message.message_id,
@@ -569,11 +561,7 @@ pub async fn message_raw_source(
     message_id: String,
 ) -> Result<String, SiftError> {
     let message = MessageRef::new(account_id, message_id);
-    let exists = state
-        .db
-        .message_thread(&message)
-        .await
-        .map_err(db_err)?;
+    let exists = state.db.message_thread(&message).await.map_err(db_err)?;
     if exists.is_none() {
         return Err(SiftError::NotFound("message".into()));
     }

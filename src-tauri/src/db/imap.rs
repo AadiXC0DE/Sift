@@ -38,8 +38,9 @@ pub(crate) fn imap_put_uids_conn(
     role: &str,
     pairs: &[(i64, String)],
 ) -> Result<()> {
-    let mut s = c
-        .prepare("INSERT OR REPLACE INTO imap_uids (account_id,role,uid,message_id) VALUES (?,?,?,?)")?;
+    let mut s = c.prepare(
+        "INSERT OR REPLACE INTO imap_uids (account_id,role,uid,message_id) VALUES (?,?,?,?)",
+    )?;
     for (uid, mid) in pairs {
         s.execute(params![account_id, role, uid, mid])?;
     }
@@ -99,7 +100,8 @@ impl Db {
     ) -> Result<()> {
         let (a, r, ps) = (account_id.to_string(), role.to_string(), pairs.to_vec());
         // Serialized by the write lane; UID diffs self-heal on the next sync.
-        self.write(move |db| imap_put_uids_conn(db, &a, &r, &ps)).await
+        self.write(move |db| imap_put_uids_conn(db, &a, &r, &ps))
+            .await
     }
 
     pub async fn imap_delete_uids(&self, account_id: &str, role: &str, uids: &[i64]) -> Result<()> {
@@ -166,7 +168,11 @@ impl Db {
     /// must clear them explicitly — a stale row would let a later `locate`
     /// resolve a UID that now belongs to nothing (or, after a UIDVALIDITY
     /// change, to another message).
-    pub async fn imap_forget_messages(&self, account_id: &str, message_ids: &[String]) -> Result<()> {
+    pub async fn imap_forget_messages(
+        &self,
+        account_id: &str,
+        message_ids: &[String],
+    ) -> Result<()> {
         if message_ids.is_empty() {
             return Ok(());
         }

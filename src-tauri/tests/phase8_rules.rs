@@ -144,7 +144,9 @@ async fn p8_3_a_repeated_sync_never_repeats_a_rule_revision() {
     let first = sift::rules::process_queue(&db, &acc, false).await.unwrap();
     assert_eq!(first.messages, 1);
     assert_eq!(first.applied, 1);
-    assert!(labels_of(&db, &acc, "m1").await.contains(&"SPAM".to_string()));
+    assert!(labels_of(&db, &acc, "m1")
+        .await
+        .contains(&"SPAM".to_string()));
     assert_eq!(rule_apply_ops(&db, &acc).await, 1);
 
     // A second drain with an empty queue does nothing.
@@ -158,7 +160,11 @@ async fn p8_3_a_repeated_sync_never_repeats_a_rule_revision() {
     assert_eq!(db.rule_queue_len(&acc).await.unwrap(), 0);
     let after_restart = sift::rules::process_queue(&db, &acc, false).await.unwrap();
     assert_eq!(after_restart.applied, 0);
-    assert_eq!(rule_apply_ops(&db, &acc).await, 1, "one application, one operation");
+    assert_eq!(
+        rule_apply_ops(&db, &acc).await,
+        1,
+        "one application, one operation"
+    );
     assert_eq!(rule_applications(&db, "r1").await, 1);
     // The queued operation is keyed by rule, revision and message, so even a
     // replayed application would address the same operation rather than add a
@@ -180,10 +186,15 @@ async fn p8_3_a_repeated_sync_never_repeats_a_rule_revision() {
     // A re-ingest reports the server's own label snapshot; the local rule
     // change stays in the queue as one operation, which is what re-applies it.
     assert_eq!(
-        db.outbox_list(std::slice::from_ref(&acc), &["pending".to_string()], None, 10)
-            .await
-            .unwrap()
-            .total,
+        db.outbox_list(
+            std::slice::from_ref(&acc),
+            &["pending".to_string()],
+            None,
+            10
+        )
+        .await
+        .unwrap()
+        .total,
         1
     );
 }
@@ -253,7 +264,10 @@ async fn p8_3_a_failing_rule_is_disabled_without_blocking_sync() {
     ingest(&db, &acc, "m1", "Your invoice", 100).await;
     sift::rules::process_queue(&db, &acc, false).await.unwrap();
     // Both rules claim the message; the bad one's operation then fails.
-    let ops = db.outbox_list(std::slice::from_ref(&acc), &[], None, 50).await.unwrap();
+    let ops = db
+        .outbox_list(std::slice::from_ref(&acc), &[], None, 50)
+        .await
+        .unwrap();
     let bad_op = ops
         .operations
         .iter()
@@ -269,11 +283,20 @@ async fn p8_3_a_failing_rule_is_disabled_without_blocking_sync() {
     sift::rules::disable_failed_rule(&db, bad_op, "Gmail refused the label").await;
 
     let disabled = db.rule_get(&acc, "bad").await.unwrap().unwrap();
-    assert!(!disabled.enabled, "a terminally failing rule disables itself");
-    assert_eq!(disabled.last_error.as_deref(), Some("Gmail refused the label"));
+    assert!(
+        !disabled.enabled,
+        "a terminally failing rule disables itself"
+    );
+    assert_eq!(
+        disabled.last_error.as_deref(),
+        Some("Gmail refused the label")
+    );
     let enabled_now = db.rules_enabled(&acc).await.unwrap();
     assert_eq!(
-        enabled_now.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        enabled_now
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["good"],
         "only the failing rule stopped"
     );
@@ -282,7 +305,9 @@ async fn p8_3_a_failing_rule_is_disabled_without_blocking_sync() {
     ingest(&db, &acc, "m2", "Another invoice", 200).await;
     let report = sift::rules::process_queue(&db, &acc, false).await.unwrap();
     assert_eq!(report.applied, 1);
-    assert!(labels_of(&db, &acc, "m2").await.contains(&"SPAM".to_string()));
+    assert!(labels_of(&db, &acc, "m2")
+        .await
+        .contains(&"SPAM".to_string()));
 }
 
 /// P8.3: one drain pass takes a bounded batch. 500 metadata rows is the bound,
@@ -305,11 +330,16 @@ async fn p8_3_process_queue_takes_500_rows_in_one_bounded_batch() {
     let first = sift::rules::process_queue(&db, &acc, false).await.unwrap();
     let elapsed = started.elapsed();
     assert_eq!(
-        first.messages, sift::rules::BATCH_MESSAGES,
+        first.messages,
+        sift::rules::BATCH_MESSAGES,
         "one pass takes exactly the bounded batch"
     );
     assert_eq!(first.applied, 500);
-    assert_eq!(db.rule_queue_len(&acc).await.unwrap(), 100, "the rest waits");
+    assert_eq!(
+        db.rule_queue_len(&acc).await.unwrap(),
+        100,
+        "the rest waits"
+    );
     assert!(
         elapsed.as_secs() < 60,
         "a bounded batch cannot be an unbounded stall ({elapsed:?})"
@@ -371,14 +401,18 @@ async fn p8_3_historical_mail_is_untouched_until_apply_is_explicit() {
     );
 
     // Apply is explicit, bounded and idempotent.
-    let report = sift::rules::apply_existing(&db, &acc, &stored).await.unwrap();
+    let report = sift::rules::apply_existing(&db, &acc, &stored)
+        .await
+        .unwrap();
     assert_eq!(report.applied, 3);
     for i in 0..3 {
         assert!(labels_of(&db, &acc, &format!("old{i}"))
             .await
             .contains(&"SPAM".to_string()));
     }
-    let again = sift::rules::apply_existing(&db, &acc, &stored).await.unwrap();
+    let again = sift::rules::apply_existing(&db, &acc, &stored)
+        .await
+        .unwrap();
     assert_eq!(again.applied, 0, "the same revision does not apply twice");
     assert_eq!(rule_apply_ops(&db, &acc).await, 3);
 }

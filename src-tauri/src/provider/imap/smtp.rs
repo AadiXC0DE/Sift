@@ -208,7 +208,10 @@ pub fn smtp_data(raw: &[u8], expected_bcc: usize) -> Result<Vec<u8>, SiftError> 
             false,
         ));
     }
-    if String::from_utf8_lossy(&data).to_ascii_lowercase().contains("\nbcc:") {
+    if String::from_utf8_lossy(&data)
+        .to_ascii_lowercase()
+        .contains("\nbcc:")
+    {
         return Err(SiftError::app(
             "bcc_strip_failed",
             "refusing to send: a Bcc header survived",
@@ -300,11 +303,21 @@ async fn send_one(
     crate::install_crypto_provider();
 
     let builder = if starttls {
-        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-            .map_err(|e| AttemptFailure::PreSubmission(SiftError::app("imap_protocol", format!("SMTP setup: {e}"), true)))?
+        AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host).map_err(|e| {
+            AttemptFailure::PreSubmission(SiftError::app(
+                "imap_protocol",
+                format!("SMTP setup: {e}"),
+                true,
+            ))
+        })?
     } else {
-        AsyncSmtpTransport::<Tokio1Executor>::relay(host)
-            .map_err(|e| AttemptFailure::PreSubmission(SiftError::app("imap_protocol", format!("SMTP setup: {e}"), true)))?
+        AsyncSmtpTransport::<Tokio1Executor>::relay(host).map_err(|e| {
+            AttemptFailure::PreSubmission(SiftError::app(
+                "imap_protocol",
+                format!("SMTP setup: {e}"),
+                true,
+            ))
+        })?
     };
     let transport = builder
         .port(port)
@@ -381,7 +394,10 @@ mod tests {
         assert_eq!(e.from, "alice@example.com");
         assert_eq!(
             e.recipients,
-            vec!["jane@example.com".to_string(), "carol@example.com".to_string()]
+            vec![
+                "jane@example.com".to_string(),
+                "carol@example.com".to_string()
+            ]
         );
         assert_eq!(e.bcc_count, 0);
     }

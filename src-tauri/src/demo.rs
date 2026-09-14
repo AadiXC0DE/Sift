@@ -484,7 +484,8 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
                 None
             },
             list_unsubscribe_post: m.0 == "da-m4",
-            list_unsubscribe_post_value: (m.0 == "da-m4").then(|| "List-Unsubscribe=One-Click".to_string()),
+            list_unsubscribe_post_value: (m.0 == "da-m4")
+                .then(|| "List-Unsubscribe=One-Click".to_string()),
             // Demo mail is seeded locally, so it carries no provider evidence:
             // the demo unsubscribe flow therefore shows the honest fallback.
             auth_results: None,
@@ -511,7 +512,11 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
         ("db-m3", "<p>Statement of work for Q4 is ready for review.</p>"),
     ];
     for (mid, html) in bodies {
-        let owner = if mid.starts_with("da-") { &ada.id } else { &ben.id };
+        let owner = if mid.starts_with("da-") {
+            &ada.id
+        } else {
+            &ben.id
+        };
         let s = sanitize(&format!("{owner}/{mid}"), html);
         db.bodies_put(BodyPut {
             account_id: owner.clone(),

@@ -504,8 +504,7 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
             let mut st = state.lock().unwrap();
             // Sanitized structure only: LOGIN credentials and literal bodies
             // must never enter the recorded log (P1.2).
-            st.commands_seen
-                .push(sanitize_command(&verb, &rest));
+            st.commands_seen.push(sanitize_command(&verb, &rest));
             st.cmd_count += 1;
             if st.behavior.transient_first_n > 0 {
                 st.behavior.transient_first_n -= 1;
@@ -766,12 +765,8 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                         let (set, items, since) = match parse_fetch_args(&subrest) {
                             Ok(v) => v,
                             Err(e) => {
-                                write_out(
-                                    &mut w,
-                                    format!("{tag} BAD {e}\r\n").as_bytes(),
-                                    &state,
-                                )
-                                .await;
+                                write_out(&mut w, format!("{tag} BAD {e}\r\n").as_bytes(), &state)
+                                    .await;
                                 continue;
                             }
                         };
@@ -840,12 +835,7 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                             // client must not replay the mutation (P1.3).
                             return;
                         }
-                        write_out(
-                            &mut w,
-                            format!("{tag} OK done\r\n").as_bytes(),
-                            &state,
-                        )
-                        .await;
+                        write_out(&mut w, format!("{tag} OK done\r\n").as_bytes(), &state).await;
                     }
                     "MOVE" => {
                         // <set> <dest>
@@ -1286,7 +1276,11 @@ fn parse_fetch_args(s: &str) -> Result<(String, String, Option<u64>), String> {
     const MOD: &str = "CHANGEDSINCE";
     let found = s.to_ascii_uppercase().find(MOD);
     let since = found
-        .and_then(|i| s.get(i + MOD.len()..)?.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|i| {
+            s.get(i + MOD.len()..)?
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+        })
         .and_then(|n| n.parse().ok());
     // The modifier travels as `(CHANGEDSINCE n)`; drop the whole modifier
     // including its opening paren, not just the keyword.
@@ -1398,7 +1392,10 @@ async fn write_out<W: tokio::io::AsyncWrite + Unpin>(
 ) {
     let (frags, delay_ms) = {
         let st = state.lock().unwrap();
-        (st.behavior.fragmented_literals, st.behavior.completion_delay_ms)
+        (
+            st.behavior.fragmented_literals,
+            st.behavior.completion_delay_ms,
+        )
     };
     if delay_ms > 0 {
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -1627,12 +1624,7 @@ fn render_body_part(m: &FMsg, spec: &str, st: &State) -> Vec<u8> {
     if let Some((_, requested)) = partial {
         if requested != usize::MAX && !section.is_empty() {
             if st.behavior.oversized_partial_literal {
-                return literal_head(
-                    "BODY",
-                    section,
-                    origin,
-                    requested.saturating_add(1_000_000),
-                );
+                return literal_head("BODY", section, origin, requested.saturating_add(1_000_000));
             }
             if st.behavior.drop_in_section_literal {
                 // Head only; the handler closes the socket before any bytes.

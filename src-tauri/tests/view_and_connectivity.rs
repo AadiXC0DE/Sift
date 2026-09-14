@@ -79,7 +79,10 @@ async fn p36_all_mail_membership_is_message_level() {
     let archive = view_ids(&db, &aid, View::Archive).await;
     assert!(archive.contains(&"t-arch".to_string()));
     assert!(!archive.contains(&"t-inbox".to_string()));
-    assert!(!archive.contains(&"t-draft".to_string()), "drafts are not Archive");
+    assert!(
+        !archive.contains(&"t-draft".to_string()),
+        "drafts are not Archive"
+    );
 
     let all_mail = view_ids(&db, &aid, View::AllMail).await;
     assert!(

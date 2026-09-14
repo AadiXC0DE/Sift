@@ -95,7 +95,10 @@ pub(crate) fn messages_upsert_conn(c: &rusqlite::Connection, m: &MsgUpsert) -> R
         params![m.account_id, m.id],
     )?;
     for l in &m.label_ids {
-        c.execute("INSERT OR IGNORE INTO message_labels (account_id,message_id,label_id) VALUES (?,?,?)", params![m.account_id, m.id, l])?;
+        c.execute(
+            "INSERT OR IGNORE INTO message_labels (account_id,message_id,label_id) VALUES (?,?,?)",
+            params![m.account_id, m.id, l],
+        )?;
     }
     // FTS subject/from/to. The row is keyed by (account_id, message_id);
     // an existing row keeps its indexed body, a new one starts empty and is
@@ -259,7 +262,11 @@ impl Db {
         .await
     }
     pub async fn set_snippet(&self, r: &MessageRef, snippet: &str) -> Result<()> {
-        let (aid, mid, sn) = (r.account_id.clone(), r.message_id.clone(), snippet.to_string());
+        let (aid, mid, sn) = (
+            r.account_id.clone(),
+            r.message_id.clone(),
+            snippet.to_string(),
+        );
         self.write(move |c| {
             c.execute(
                 "UPDATE messages SET snippet=? WHERE account_id=? AND id=?",

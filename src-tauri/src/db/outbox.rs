@@ -88,8 +88,7 @@ impl Op {
     /// A send whose acceptance is unknown and whose bounded reconciliation is
     /// exhausted: only an explicit, acknowledged retry may move it.
     pub fn requires_duplicate_ack(&self) -> bool {
-        self.state == STATE_UNCERTAIN
-            && self.reconcile_attempts >= RECONCILE_DELAYS_MS.len() as i64
+        self.state == STATE_UNCERTAIN && self.reconcile_attempts >= RECONCILE_DELAYS_MS.len() as i64
     }
 
     pub fn payload_value(&self) -> serde_json::Value {
@@ -285,16 +284,12 @@ pub fn insert_op(tx: &Transaction<'_>, op: &NewOp) -> Result<QueuedOp> {
         });
     }
     // The key already exists: the caller gets the operation that owns it.
-    let key = op
-        .operation_key
-        .clone()
-        .unwrap_or_else(|| String::from(""));
-    let id: i64 =
-        tx.query_row(
-            "SELECT id FROM outbox_ops WHERE operation_key=?",
-            params![key],
-            |r| r.get(0),
-        )?;
+    let key = op.operation_key.clone().unwrap_or_else(|| String::from(""));
+    let id: i64 = tx.query_row(
+        "SELECT id FROM outbox_ops WHERE operation_key=?",
+        params![key],
+        |r| r.get(0),
+    )?;
     Ok(QueuedOp { id, created: false })
 }
 
@@ -352,7 +347,8 @@ pub fn coalesce_label_op(tx: &Transaction<'_>, op: &NewOp) -> Result<Option<i64>
         }
     }
     let merged_payload = serde_json::json!({"ids": ids, "add": add, "remove": remove}).to_string();
-    let merged_prev = merge_previous_state(existing_prev.as_deref(), op.previous_state_json.as_deref());
+    let merged_prev =
+        merge_previous_state(existing_prev.as_deref(), op.previous_state_json.as_deref());
     tx.execute(
         "UPDATE outbox_ops SET payload=?, previous_state_json=? WHERE id=?",
         params![merged_payload, merged_prev, id],
@@ -389,10 +385,7 @@ pub fn merge_previous_state(existing: Option<&str>, incoming: Option<&str>) -> O
             }
             let mut out = a.clone();
             if let Some(obj) = out.as_object_mut() {
-                obj.insert(
-                    "messages".into(),
-                    serde_json::Value::Array(messages),
-                );
+                obj.insert("messages".into(), serde_json::Value::Array(messages));
             }
             Some(out.to_string())
         }
@@ -499,7 +492,11 @@ impl Db {
 
     /// Drop pending remote-sync work for one draft (explicit discard, or a
     /// send that supersedes it).
-    pub async fn outbox_cancel_draft_sync(&self, account_id: &str, local_id: &str) -> Result<usize> {
+    pub async fn outbox_cancel_draft_sync(
+        &self,
+        account_id: &str,
+        local_id: &str,
+    ) -> Result<usize> {
         let (a, l) = (account_id.to_string(), local_id.to_string());
         self.write(move |c| {
             Ok(c.execute(
@@ -904,7 +901,9 @@ impl Db {
                  GROUP BY 1 ORDER BY 1",
             )?;
             let rows: Vec<(String, i64)> = s
-                .query_map(params![a], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                .query_map(params![a], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                })?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
@@ -1143,13 +1142,7 @@ fn cancel_dependents(conn: &Connection, id: i64, now: i64) -> rusqlite::Result<u
         "UPDATE outbox_ops SET state=?1, completed_at=?2, failure_code='dependency_failed', \
            last_error='the operation this waited on did not succeed' \
          WHERE depends_on_op_id=?3 AND state IN (?4,?5)",
-        params![
-            STATE_CANCELLED,
-            now,
-            id,
-            STATE_PENDING,
-            STATE_INFLIGHT
-        ],
+        params![STATE_CANCELLED, now, id, STATE_PENDING, STATE_INFLIGHT],
     )
 }
 
@@ -1271,7 +1264,10 @@ mod tests {
         let claimed = db.outbox_claim("a").await.unwrap().expect("claimable");
         assert_eq!(claimed.id, id);
         assert_eq!(claimed.state, STATE_INFLIGHT);
-        assert!(claimed.started_at.is_some(), "started_at before the network");
+        assert!(
+            claimed.started_at.is_some(),
+            "started_at before the network"
+        );
         // A second claimer finds nothing: the row is not pending any more.
         assert!(db.outbox_claim("a").await.unwrap().is_none());
         // And the cancel loses: the provider may already have the operation.
@@ -1296,7 +1292,10 @@ mod tests {
     async fn p6_6_dependency_cycle_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).unwrap();
-        let a = db.outbox_enqueue("a", "modify_labels", "{}", None, 0).await.unwrap();
+        let a = db
+            .outbox_enqueue("a", "modify_labels", "{}", None, 0)
+            .await
+            .unwrap();
         let op = NewOp::new("a", "modify_labels", "{}").depends_on(Some(a));
         let b = db.outbox_enqueue_op(&op).await.unwrap().id;
         let cycle = db

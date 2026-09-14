@@ -27,7 +27,14 @@ use crate::errors::SiftError;
 /// The labels a provider defines itself. They cannot be renamed or deleted:
 /// Sift maps them onto folders and flags.
 pub const SYSTEM_LABELS: [&str; 8] = [
-    "INBOX", "SENT", "DRAFT", "STARRED", "IMPORTANT", "TRASH", "SPAM", "UNREAD",
+    "INBOX",
+    "SENT",
+    "DRAFT",
+    "STARRED",
+    "IMPORTANT",
+    "TRASH",
+    "SPAM",
+    "UNREAD",
 ];
 
 /// The longest label name Gmail accepts.
@@ -57,7 +64,9 @@ pub fn valid_label_name(name: &str) -> bool {
     if trimmed.starts_with('/') || trimmed.ends_with('/') || trimmed.contains("//") {
         return false;
     }
-    !trimmed.chars().any(|c| c.is_control() || c == '\n' || c == '\r')
+    !trimmed
+        .chars()
+        .any(|c| c.is_control() || c == '\n' || c == '\r')
 }
 
 /// Where a label's id goes when its name changes.
@@ -82,7 +91,11 @@ pub fn is_local_placeholder(id: &str) -> bool {
 }
 
 impl Db {
-    pub async fn label_get(&self, account_id: &str, label_id: &str) -> Result<Option<Label>, SiftError> {
+    pub async fn label_get(
+        &self,
+        account_id: &str,
+        label_id: &str,
+    ) -> Result<Option<Label>, SiftError> {
         let (a, id) = (account_id.to_string(), label_id.to_string());
         self.read(move |c| {
             let row = c
@@ -426,7 +439,11 @@ pub async fn delete(db: &Db, account_id: &str, label_id: &str) -> Result<Option<
             false,
         ));
     }
-    let (account, id, name) = (account_id.to_string(), existing.id.clone(), existing.name.clone());
+    let (account, id, name) = (
+        account_id.to_string(),
+        existing.id.clone(),
+        existing.name.clone(),
+    );
     db.write_tx(move |tx| {
         // Which threads are affected, before the membership rows go.
         let threads: Vec<String> = {
@@ -612,7 +629,11 @@ mod tests {
         assert_eq!(updated.id, "Label_1");
         let payload: String = db
             .read(|c| {
-                Ok(c.query_row("SELECT payload FROM outbox_ops WHERE id=9", [], |r| r.get(0))?)
+                Ok(
+                    c.query_row("SELECT payload FROM outbox_ops WHERE id=9", [], |r| {
+                        r.get(0)
+                    })?,
+                )
             })
             .await
             .unwrap();
@@ -631,9 +652,11 @@ mod tests {
         // A rename op was queued for the provider.
         let kinds: Vec<String> = db
             .read(|c| {
-                Ok(c.prepare("SELECT kind FROM outbox_ops WHERE kind='label_rename'")?
-                    .query_map([], |r| r.get(0))?
-                    .collect::<Result<Vec<String>, _>>()?)
+                Ok(
+                    c.prepare("SELECT kind FROM outbox_ops WHERE kind='label_rename'")?
+                        .query_map([], |r| r.get(0))?
+                        .collect::<Result<Vec<String>, _>>()?,
+                )
             })
             .await
             .unwrap();
@@ -669,9 +692,11 @@ mod tests {
         // Membership followed the id.
         let members: Vec<String> = db
             .read(|c| {
-                Ok(c.prepare("SELECT label_id FROM message_labels WHERE message_id='m1'")?
-                    .query_map([], |r| r.get(0))?
-                    .collect::<Result<Vec<String>, _>>()?)
+                Ok(
+                    c.prepare("SELECT label_id FROM message_labels WHERE message_id='m1'")?
+                        .query_map([], |r| r.get(0))?
+                        .collect::<Result<Vec<String>, _>>()?,
+                )
             })
             .await
             .unwrap();
@@ -679,7 +704,13 @@ mod tests {
         assert!(!members.contains(&"imap:Büro".to_string()));
         // A pending operation now addresses the new id, in one transaction.
         let payload: String = db
-            .read(|c| Ok(c.query_row("SELECT payload FROM outbox_ops WHERE id=11", [], |r| r.get(0))?))
+            .read(|c| {
+                Ok(
+                    c.query_row("SELECT payload FROM outbox_ops WHERE id=11", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
             .await
             .unwrap();
         let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -704,7 +735,9 @@ mod tests {
     #[tokio::test]
     async fn p8_5_collisions_and_duplicate_names_are_refused_per_account() {
         let db = seeded().await;
-        let err = rename(&db, "a", "Label_2", "Client Work", "g").await.unwrap_err();
+        let err = rename(&db, "a", "Label_2", "Client Work", "g")
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), "label_exists");
         // The other account can still use the same name.
         db.write(|c| {
@@ -722,7 +755,10 @@ mod tests {
         // Invalid names never reach the row.
         for bad in ["", " leading", "trailing ", "a//b", "/a", "a/"] {
             assert_eq!(
-                rename(&db, "a", "Label_1", bad, "g").await.unwrap_err().code(),
+                rename(&db, "a", "Label_1", bad, "g")
+                    .await
+                    .unwrap_err()
+                    .code(),
                 "bad_label_name",
                 "{bad:?}"
             );
@@ -756,7 +792,13 @@ mod tests {
         // deleted label while keeping the one that remains.
         assert!(db.label_get("a", "Label_1").await.unwrap().is_none());
         let payload: String = db
-            .read(|c| Ok(c.query_row("SELECT payload FROM outbox_ops WHERE id=21", [], |r| r.get(0))?))
+            .read(|c| {
+                Ok(
+                    c.query_row("SELECT payload FROM outbox_ops WHERE id=21", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
             .await
             .unwrap();
         let value: serde_json::Value = serde_json::from_str(&payload).unwrap();

@@ -27,11 +27,7 @@ fn summarize(ops: &[crate::db::outbox::Op]) -> Vec<OutboxOpSummary> {
 }
 
 /// Account-scoped store events for the threads a gesture touched.
-fn emit_gesture(
-    app: &AppHandle,
-    thread_ids: &[String],
-    account_ids: &[String],
-) {
+fn emit_gesture(app: &AppHandle, thread_ids: &[String], account_ids: &[String]) {
     for account_id in account_ids {
         let scoped: Vec<String> = thread_ids.to_vec();
         let _ = app.emit(
@@ -51,7 +47,11 @@ async fn emit_outbox_state(state: &AppState, app: &AppHandle, account_id: &str) 
         .outbox_state_counts(account_id)
         .await
         .unwrap_or_default();
-    let summary = state.db.outbox_summary(account_id).await.unwrap_or_default();
+    let summary = state
+        .db
+        .outbox_summary(account_id)
+        .await
+        .unwrap_or_default();
     let _ = app.emit(
         "outbox:state",
         serde_json::json!({
@@ -78,7 +78,8 @@ pub async fn threads_action(
     action: crate::dto::ActionKind,
 ) -> Result<GestureResponse, SiftError> {
     let gesture = resolve_gesture_id(gesture_id);
-    let (outcome, failures) = actions::apply_gesture(&state.db, &gesture, &targets, &action).await?;
+    let (outcome, failures) =
+        actions::apply_gesture(&state.db, &gesture, &targets, &action).await?;
     let account_ids: Vec<String> = targets.iter().map(|t| t.account_id.clone()).collect();
     emit_gesture(&app, &outcome.thread_ids, &account_ids);
     for account_id in account_ids.iter() {
@@ -160,8 +161,7 @@ pub async fn snooze_clear(
     targets: Vec<crate::dto::GestureTarget>,
 ) -> Result<GestureResponse, SiftError> {
     let gesture = resolve_gesture_id(gesture_id);
-    let (outcome, failures) =
-        crate::snooze::snooze_clear(&state.db, &gesture, &targets).await?;
+    let (outcome, failures) = crate::snooze::snooze_clear(&state.db, &gesture, &targets).await?;
     let account_ids: Vec<String> = targets.iter().map(|t| t.account_id.clone()).collect();
     emit_gesture(&app, &outcome.thread_ids, &account_ids);
     for account_id in account_ids.iter() {

@@ -182,7 +182,10 @@ struct DraftContext {
     references: Vec<String>,
 }
 
-fn account_email(c: &Connection, account_id: &str) -> Result<Option<(String, String)>, rusqlite::Error> {
+fn account_email(
+    c: &Connection,
+    account_id: &str,
+) -> Result<Option<(String, String)>, rusqlite::Error> {
     c.query_row(
         "SELECT id,email FROM accounts WHERE id=?",
         params![account_id],
@@ -203,10 +206,7 @@ fn account_email(c: &Connection, account_id: &str) -> Result<Option<(String, Str
 ///   stored parent Message-ID and References chain are the real ones. When the
 ///   parent cannot be resolved there (a cross-account reply, or a parent that
 ///   is not synced yet), no foreign threading context is carried over.
-fn resolve_context(
-    c: &Connection,
-    incoming: &Draft,
-) -> Result<DraftContext, anyhow::Error> {
+fn resolve_context(c: &Connection, incoming: &Draft) -> Result<DraftContext, anyhow::Error> {
     let mut account_id = incoming.account_id.clone();
     if account_id.trim().is_empty() {
         anyhow::bail!("draft has no account");
@@ -300,11 +300,7 @@ impl Db {
     ///
     /// A stale `expected_revision` is a typed `draft_conflict` error: the newer
     /// content stays untouched and the caller re-reads the draft.
-    pub async fn drafts_upsert(
-        &self,
-        d: &Draft,
-        expected_revision: Option<i64>,
-    ) -> Result<Draft> {
+    pub async fn drafts_upsert(&self, d: &Draft, expected_revision: Option<i64>) -> Result<Draft> {
         let mut incoming = d.clone();
         if incoming.local_id.trim().is_empty() {
             incoming.local_id = uuid::Uuid::now_v7().to_string();
@@ -564,9 +560,7 @@ impl Db {
             if let Some(cur) = cursor.as_deref() {
                 if let Some((ts, id)) = cur.split_once(':') {
                     if let Ok(ts) = ts.parse::<i64>() {
-                        sql.push_str(
-                            " AND (updated_at < ? OR (updated_at = ? AND local_id < ?))",
-                        );
+                        sql.push_str(" AND (updated_at < ? OR (updated_at = ? AND local_id < ?))");
                         args.push(Box::new(ts));
                         args.push(Box::new(ts));
                         args.push(Box::new(id.to_string()));
@@ -582,9 +576,8 @@ impl Db {
                 .collect::<Result<_, _>>()?;
             let next_cursor = if rows.len() as i64 > limit {
                 rows.truncate(limit as usize);
-                rows.last().map(|d| {
-                    format!("{}:{}", d.updated_at.unwrap_or(0), d.local_id)
-                })
+                rows.last()
+                    .map(|d| format!("{}:{}", d.updated_at.unwrap_or(0), d.local_id))
             } else {
                 None
             };
@@ -763,7 +756,11 @@ impl Db {
                 })?;
             let local_id: String = serde_json::from_str::<serde_json::Value>(&payload)
                 .ok()
-                .and_then(|v| v.get("localId").and_then(|x| x.as_str()).map(str::to_string))
+                .and_then(|v| {
+                    v.get("localId")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string)
+                })
                 .unwrap_or_default();
             tx.execute(
                 "UPDATE outbox_ops SET not_before=?, attempts=0, last_error=NULL WHERE id=?",
@@ -1228,9 +1225,9 @@ impl Db {
             let now = super::now_ms();
 
             for r in &remote {
-                let linked = locals.iter().position(|l| {
-                    l.remote_draft_id.as_deref() == Some(r.remote_draft_id.as_str())
-                });
+                let linked = locals
+                    .iter()
+                    .position(|l| l.remote_draft_id.as_deref() == Some(r.remote_draft_id.as_str()));
                 let lineage = locals.iter().position(|l| {
                     l.remote_draft_id.as_deref() != Some(r.remote_draft_id.as_str())
                         && (r
@@ -1344,11 +1341,7 @@ struct MessageContent {
     thread_id: Option<String>,
 }
 
-fn message_content(
-    c: &Connection,
-    account_id: &str,
-    message_id: &str,
-) -> Option<MessageContent> {
+fn message_content(c: &Connection, account_id: &str, message_id: &str) -> Option<MessageContent> {
     let row = c
         .query_row(
             "SELECT m.subject, m.to_json, m.cc_json, m.bcc_json, m.rfc_message_id, m.thread_id, \
@@ -1377,9 +1370,11 @@ fn message_content(
         .map(super::bodies::uz)
         .filter(|h| !h.is_empty())
         .or_else(|| {
-            row.7.as_deref().map(super::bodies::uz).filter(|t| !t.is_empty()).map(|t| {
-                crate::render::text::to_html(&t).0
-            })
+            row.7
+                .as_deref()
+                .map(super::bodies::uz)
+                .filter(|t| !t.is_empty())
+                .map(|t| crate::render::text::to_html(&t).0)
         })
         .unwrap_or_default();
     Some(MessageContent {
@@ -1650,13 +1645,19 @@ mod tests {
         }
         let page = db.drafts_list(&[acc], None, 10).await.unwrap();
         assert_eq!(page.drafts.len(), 1, "exactly one durable draft");
-        assert_eq!(page.drafts[0].revision, 2, "two real changes, two revisions");
+        assert_eq!(
+            page.drafts[0].revision, 2,
+            "two real changes, two revisions"
+        );
     }
 
     #[tokio::test]
     async fn p51_from_switch_moves_the_account_and_rebuilds_threading() {
         let (_d, db, acc) = db().await;
-        let other = db.new_account("grace@example.com", None, None).await.unwrap();
+        let other = db
+            .new_account("grace@example.com", None, None)
+            .await
+            .unwrap();
         db.messages_upsert(crate::db::messages::MsgUpsert {
             id: "m1".into(),
             account_id: other.id.clone(),
@@ -1732,7 +1733,10 @@ mod tests {
             .await
             .unwrap();
         }
-        let page = db.drafts_list(std::slice::from_ref(&acc), None, 2).await.unwrap();
+        let page = db
+            .drafts_list(std::slice::from_ref(&acc), None, 2)
+            .await
+            .unwrap();
         assert_eq!(page.drafts.len(), 2);
         let cursor = page.next_cursor.clone().expect("more pages");
         let page2 = db
@@ -1751,7 +1755,10 @@ mod tests {
         assert_eq!(unique.len(), ids.len());
 
         // The limit is clamped to the contract's ceiling.
-        let huge = db.drafts_list(std::slice::from_ref(&acc), None, 10_000).await.unwrap();
+        let huge = db
+            .drafts_list(std::slice::from_ref(&acc), None, 10_000)
+            .await
+            .unwrap();
         assert!(huge.drafts.len() <= DRAFTS_PAGE_MAX as usize);
         // Empty account ids = every account.
         let all = db.drafts_list(&[], None, 10).await.unwrap();
@@ -1801,7 +1808,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.imported.len(), 1);
-        let page = db.drafts_list(std::slice::from_ref(&acc), None, 10).await.unwrap();
+        let page = db
+            .drafts_list(std::slice::from_ref(&acc), None, 10)
+            .await
+            .unwrap();
         let d = &page.drafts[0];
         assert_eq!(d.subject, "Server draft");
         assert_eq!(d.body_html, "<p>from gmail</p>");
@@ -1827,7 +1837,10 @@ mod tests {
             .unwrap();
         assert!(again.imported.is_empty());
         assert!(again.adopted.is_empty());
-        assert_eq!(db.drafts_list(&[acc], None, 10).await.unwrap().drafts.len(), 1);
+        assert_eq!(
+            db.drafts_list(&[acc], None, 10).await.unwrap().drafts.len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -1875,7 +1888,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.recovered.len(), 1, "the local work is preserved");
-        let page = db.drafts_list(std::slice::from_ref(&acc), None, 10).await.unwrap();
+        let page = db
+            .drafts_list(std::slice::from_ref(&acc), None, 10)
+            .await
+            .unwrap();
         assert_eq!(page.drafts.len(), 2);
         let recovered = page
             .drafts
@@ -1890,7 +1906,10 @@ mod tests {
             .iter()
             .find(|d| d.local_id == local.local_id)
             .unwrap();
-        assert_eq!(current.body_html, "<p>v2</p>", "the row takes the remote content");
+        assert_eq!(
+            current.body_html, "<p>v2</p>",
+            "the row takes the remote content"
+        );
         assert_eq!(current.remote_message_id.as_deref(), Some("m2"));
         assert!(!current.has_unsaved_revision());
     }

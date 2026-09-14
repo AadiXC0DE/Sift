@@ -131,12 +131,18 @@ impl AppState {
     }
 
     pub fn pending_mailto(&self) -> Option<crate::dto::PendingMailto> {
-        self.pending_mailto.lock().ok().and_then(|slot| slot.clone())
+        self.pending_mailto
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
     }
 
     /// Consume the pending request; the second taker gets nothing.
     pub fn take_mailto(&self) -> Option<crate::dto::PendingMailto> {
-        self.pending_mailto.lock().ok().and_then(|mut slot| slot.take())
+        self.pending_mailto
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
     }
 
     // -- remote-content session permission (P9.1) ---------------------------
@@ -154,9 +160,7 @@ impl AppState {
     pub async fn session_remote_allowed(&self, account_id: &str, message_id: &str) -> bool {
         self.session_remote_loads
             .lock()
-            .map(|grants| {
-                grants.contains(&(account_id.to_string(), message_id.to_string()))
-            })
+            .map(|grants| grants.contains(&(account_id.to_string(), message_id.to_string())))
             .unwrap_or(false)
     }
 
@@ -822,10 +826,7 @@ mod tests {
     async fn account_state(dir: &tempfile::TempDir, email: &str) -> (AppState, String) {
         let db = Db::open(dir.path()).unwrap();
         let account = db.new_account(email, None, None).await.unwrap();
-        (
-            AppState::new(db, dir.path().to_path_buf()),
-            account.id,
-        )
+        (AppState::new(db, dir.path().to_path_buf()), account.id)
     }
 
     /// A new generation cancels the previous one and does not return until its

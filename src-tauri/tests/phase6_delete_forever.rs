@@ -256,7 +256,10 @@ async fn p6_4_a_stale_uid_is_rediscovered() {
     assert_eq!(outcome, ApplyOutcome::Done);
     let st = ctx._fake.state.lock().unwrap();
     assert!(
-        st.msgs.get(&dec).map(|m| m.folders.is_empty()).unwrap_or(true),
+        st.msgs
+            .get(&dec)
+            .map(|m| m.folders.is_empty())
+            .unwrap_or(true),
         "the identity was rediscovered and deleted"
     );
 }
@@ -309,7 +312,10 @@ async fn p6_4_a_legacy_thread_payload_still_deletes() {
     ));
     let st = ctx._fake.state.lock().unwrap();
     assert!(
-        st.msgs.get(&dec).map(|m| m.folders.is_empty()).unwrap_or(true),
+        st.msgs
+            .get(&dec)
+            .map(|m| m.folders.is_empty())
+            .unwrap_or(true),
         "the message named by the legacy payload is gone"
     );
 }

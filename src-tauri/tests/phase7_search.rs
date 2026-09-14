@@ -274,42 +274,170 @@ async fn p7_t20_operator_table() {
         expect: &'a [&'a str],
     }
     let rows = [
-        Row { q: "from:ada", accounts: &one, expect: &["t1", "t3", "t6"] },
-        Row { q: "from:Lovelace", accounts: &one, expect: &["t1", "t3", "t6"] },
-        Row { q: "from:carol@example.com", accounts: &one, expect: &["t2"] },
-        Row { q: "to:bob@example.com", accounts: &one, expect: &["t1"] },
-        Row { q: "cc:carol", accounts: &one, expect: &["t2"] },
-        Row { q: "subject:Q3 numbers", accounts: &one, expect: &["t1", "t2"] },
-        Row { q: "subject:\"Q3 numbers\"", accounts: &one, expect: &["t1", "t2"] },
+        Row {
+            q: "from:ada",
+            accounts: &one,
+            expect: &["t1", "t3", "t6"],
+        },
+        Row {
+            q: "from:Lovelace",
+            accounts: &one,
+            expect: &["t1", "t3", "t6"],
+        },
+        Row {
+            q: "from:carol@example.com",
+            accounts: &one,
+            expect: &["t2"],
+        },
+        Row {
+            q: "to:bob@example.com",
+            accounts: &one,
+            expect: &["t1"],
+        },
+        Row {
+            q: "cc:carol",
+            accounts: &one,
+            expect: &["t2"],
+        },
+        Row {
+            q: "subject:Q3 numbers",
+            accounts: &one,
+            expect: &["t1", "t2"],
+        },
+        Row {
+            q: "subject:\"Q3 numbers\"",
+            accounts: &one,
+            expect: &["t1", "t2"],
+        },
         // Label by user-visible name, hierarchical name, and provider id.
-        Row { q: "label:\"Client Work\"", accounts: &one, expect: &["t2", "t3", "t6"] },
-        Row { q: "label:Label_12345", accounts: &one, expect: &["t2", "t3", "t6"] },
-        Row { q: "label:label_12345", accounts: &one, expect: &["t2", "t3", "t6"] },
+        Row {
+            q: "label:\"Client Work\"",
+            accounts: &one,
+            expect: &["t2", "t3", "t6"],
+        },
+        Row {
+            q: "label:Label_12345",
+            accounts: &one,
+            expect: &["t2", "t3", "t6"],
+        },
+        Row {
+            q: "label:label_12345",
+            accounts: &one,
+            expect: &["t2", "t3", "t6"],
+        },
         // A single-word label matches by name and by provider id, ignoring case.
-        Row { q: "label:vip", accounts: &one, expect: &["t1"] },
-        Row { q: "label:VIP", accounts: &one, expect: &["t1"] },
-        Row { q: "label:Label_VIP", accounts: &one, expect: &["t1"] },
-        Row { q: "label:label_vip", accounts: &one, expect: &["t1"] },
-        Row { q: "label:\"Projects/2026\"", accounts: &one, expect: &[] },
+        Row {
+            q: "label:vip",
+            accounts: &one,
+            expect: &["t1"],
+        },
+        Row {
+            q: "label:VIP",
+            accounts: &one,
+            expect: &["t1"],
+        },
+        Row {
+            q: "label:Label_VIP",
+            accounts: &one,
+            expect: &["t1"],
+        },
+        Row {
+            q: "label:label_vip",
+            accounts: &one,
+            expect: &["t1"],
+        },
+        Row {
+            q: "label:\"Projects/2026\"",
+            accounts: &one,
+            expect: &[],
+        },
         // Mailbox scopes; Trash and Junk are excluded unless named.
-        Row { q: "in:inbox", accounts: &one, expect: &["t1", "t2", "t6"] },
-        Row { q: "in:sent", accounts: &one, expect: &["t3"] },
-        Row { q: "in:trash", accounts: &one, expect: &["t5", "t6"] },
-        Row { q: "in:spam", accounts: &one, expect: &["t4"] },
-        Row { q: "in:archive", accounts: &one, expect: &["t3"] },
-        Row { q: "quarterly", accounts: &one, expect: &["t1", "t2", "t3", "t6"] },
-        Row { q: "quarterly in:spam", accounts: &one, expect: &["t4"] },
-        Row { q: "quarterly in:trash", accounts: &one, expect: &["t5", "t6"] },
-        Row { q: "has:attachment", accounts: &both, expect: &["t1"] },
-        Row { q: "is:read", accounts: &one, expect: &["t2", "t3", "t6"] },
-        Row { q: "is:unread", accounts: &one, expect: &["t1"] },
-        Row { q: "is:starred", accounts: &both, expect: &["t1"] },
-        Row { q: "-from:ada", accounts: &one, expect: &["t2"] },
-        Row { q: "quarterly -from:ada", accounts: &one, expect: &["t2"] },
-        Row { q: "from:ada OR from:carol", accounts: &one, expect: &["t1", "t2", "t3", "t6"] },
-        Row { q: "quarterly -in:inbox", accounts: &one, expect: &["t3"] },
+        Row {
+            q: "in:inbox",
+            accounts: &one,
+            expect: &["t1", "t2", "t6"],
+        },
+        Row {
+            q: "in:sent",
+            accounts: &one,
+            expect: &["t3"],
+        },
+        Row {
+            q: "in:trash",
+            accounts: &one,
+            expect: &["t5", "t6"],
+        },
+        Row {
+            q: "in:spam",
+            accounts: &one,
+            expect: &["t4"],
+        },
+        Row {
+            q: "in:archive",
+            accounts: &one,
+            expect: &["t3"],
+        },
+        Row {
+            q: "quarterly",
+            accounts: &one,
+            expect: &["t1", "t2", "t3", "t6"],
+        },
+        Row {
+            q: "quarterly in:spam",
+            accounts: &one,
+            expect: &["t4"],
+        },
+        Row {
+            q: "quarterly in:trash",
+            accounts: &one,
+            expect: &["t5", "t6"],
+        },
+        Row {
+            q: "has:attachment",
+            accounts: &both,
+            expect: &["t1"],
+        },
+        Row {
+            q: "is:read",
+            accounts: &one,
+            expect: &["t2", "t3", "t6"],
+        },
+        Row {
+            q: "is:unread",
+            accounts: &one,
+            expect: &["t1"],
+        },
+        Row {
+            q: "is:starred",
+            accounts: &both,
+            expect: &["t1"],
+        },
+        Row {
+            q: "-from:ada",
+            accounts: &one,
+            expect: &["t2"],
+        },
+        Row {
+            q: "quarterly -from:ada",
+            accounts: &one,
+            expect: &["t2"],
+        },
+        Row {
+            q: "from:ada OR from:carol",
+            accounts: &one,
+            expect: &["t1", "t2", "t3", "t6"],
+        },
+        Row {
+            q: "quarterly -in:inbox",
+            accounts: &one,
+            expect: &["t3"],
+        },
         // Account scope is part of the query.
-        Row { q: "from:ada", accounts: &both, expect: &["t1", "t1", "t3", "t6"] },
+        Row {
+            q: "from:ada",
+            accounts: &both,
+            expect: &["t1", "t1", "t3", "t6"],
+        },
     ];
     for row in rows {
         let got = ids(&matches(&db, row.accounts, row.q).await);
@@ -355,7 +483,10 @@ async fn p7_t21_phrases_versus_separated_words_punctuation_and_scripts() {
         .await;
     }
     // A quoted phrase requires the words in order and adjacent.
-    assert_eq!(ids(&matches(&db, std::slice::from_ref(&a), "\"alpha beta\"").await), vec!["u1"]);
+    assert_eq!(
+        ids(&matches(&db, std::slice::from_ref(&a), "\"alpha beta\"").await),
+        vec!["u1"]
+    );
     // Separated words match anywhere in the message.
     assert_eq!(
         ids(&matches(&db, std::slice::from_ref(&a), "alpha beta").await),
@@ -363,15 +494,34 @@ async fn p7_t21_phrases_versus_separated_words_punctuation_and_scripts() {
     );
     // The quoted value of a subject keeps its spaces.
     assert_eq!(
-        ids(&matches(&db, std::slice::from_ref(&a), "subject:\"alpha beta gamma\"").await),
+        ids(&matches(
+            &db,
+            std::slice::from_ref(&a),
+            "subject:\"alpha beta gamma\""
+        )
+        .await),
         vec!["u1"]
     );
     // Accents, CJK and punctuation are searchable and do not break the query.
-    assert_eq!(ids(&matches(&db, std::slice::from_ref(&a), "café").await), vec!["u3"]);
-    assert_eq!(ids(&matches(&db, std::slice::from_ref(&a), "日本語").await), vec!["u4"]);
-    assert_eq!(ids(&matches(&db, std::slice::from_ref(&a), "C++").await), vec!["u5"]);
-    assert_eq!(ids(&matches(&db, std::slice::from_ref(&a), "100%").await), vec!["u6"]);
-    for hostile in ["\"", "*", "NEAR", "AND", "OR", "()", "a:b", "-", "^^", "\"\"\""] {
+    assert_eq!(
+        ids(&matches(&db, std::slice::from_ref(&a), "café").await),
+        vec!["u3"]
+    );
+    assert_eq!(
+        ids(&matches(&db, std::slice::from_ref(&a), "日本語").await),
+        vec!["u4"]
+    );
+    assert_eq!(
+        ids(&matches(&db, std::slice::from_ref(&a), "C++").await),
+        vec!["u5"]
+    );
+    assert_eq!(
+        ids(&matches(&db, std::slice::from_ref(&a), "100%").await),
+        vec!["u6"]
+    );
+    for hostile in [
+        "\"", "*", "NEAR", "AND", "OR", "()", "a:b", "-", "^^", "\"\"\"",
+    ] {
         // Never an error, and never a silently widened result set.
         let got = matches(&db, std::slice::from_ref(&a), hostile).await;
         assert!(got.len() <= cases.len(), "{hostile}");
@@ -419,7 +569,12 @@ async fn p7_t22_dates_are_local_calendar_days() {
         vec!["before"]
     );
     assert_eq!(
-        ids(&matches(&db, std::slice::from_ref(&a), "after:2026-03-01 before:2026-03-02").await),
+        ids(&matches(
+            &db,
+            std::slice::from_ref(&a),
+            "after:2026-03-01 before:2026-03-02"
+        )
+        .await),
         vec!["inside", "on"]
     );
 }
@@ -487,10 +642,21 @@ async fn p7_t24_a_long_conversation_cannot_hide_the_next_one() {
         },
     )
     .await;
-    let page = local::search_page(&db, std::slice::from_ref(&a), &query::parse("needle"), None, "s", 100)
-        .await
-        .unwrap();
-    let threads = ids(&page.rows.iter().map(|r| (r.account_id.clone(), r.id.clone())).collect::<Vec<_>>());
+    let page = local::search_page(
+        &db,
+        std::slice::from_ref(&a),
+        &query::parse("needle"),
+        None,
+        "s",
+        100,
+    )
+    .await
+    .unwrap();
+    let threads = ids(&page
+        .rows
+        .iter()
+        .map(|r| (r.account_id.clone(), r.id.clone()))
+        .collect::<Vec<_>>());
     assert_eq!(threads, vec!["long", "solo"]);
     assert!(page.next_cursor.is_none());
 }
@@ -523,16 +689,28 @@ async fn p7_t25_search_beyond_one_hundred_pages_once() {
     let mut cursor = None;
     let mut pages = 0;
     loop {
-        let page = local::search_page(&db, std::slice::from_ref(&a), &parsed, cursor.as_ref(), "scope", 100)
-            .await
-            .unwrap();
+        let page = local::search_page(
+            &db,
+            std::slice::from_ref(&a),
+            &parsed,
+            cursor.as_ref(),
+            "scope",
+            100,
+        )
+        .await
+        .unwrap();
         pages += 1;
         seen.extend(page.rows.iter().map(|r| r.id.clone()));
         match page.next_cursor {
             Some(next) => {
                 cursor = Some(
-                    sift::search::cursor::expect(&next, sift::search::cursor::SortKind::Search, "scope", &parsed.fingerprint())
-                        .unwrap(),
+                    sift::search::cursor::expect(
+                        &next,
+                        sift::search::cursor::SortKind::Search,
+                        "scope",
+                        &parsed.fingerprint(),
+                    )
+                    .unwrap(),
                 );
             }
             None => break,
@@ -588,13 +766,14 @@ async fn p7_t26_same_timestamp_threads_across_accounts_page_once() {
             .await
             .unwrap();
         pages += 1;
-        seen.extend(page.rows.iter().map(|r| (r.account_id.clone(), r.id.clone())));
+        seen.extend(
+            page.rows
+                .iter()
+                .map(|r| (r.account_id.clone(), r.id.clone())),
+        );
         match page.next_cursor {
             Some(raw) => {
-                let (sort, scope, q) = sift::db::threads::page_identity(
-                    &View::Inbox,
-                    &accounts,
-                );
+                let (sort, scope, q) = sift::db::threads::page_identity(&View::Inbox, &accounts);
                 cursor = Some(sift::search::cursor::expect(&raw, sort, &scope, &q).unwrap());
             }
             None => break,
@@ -662,9 +841,17 @@ async fn p7_t27_snoozed_pages_by_wake_time_not_by_date() {
             .unwrap();
         pages += 1;
         // Every page is ordered by wake time.
-        let wakes: Vec<i64> = page.rows.iter().map(|r| r.snoozed_until.unwrap_or(0)).collect();
+        let wakes: Vec<i64> = page
+            .rows
+            .iter()
+            .map(|r| r.snoozed_until.unwrap_or(0))
+            .collect();
         assert!(wakes.windows(2).all(|w| w[0] <= w[1]), "{wakes:?}");
-        seen.extend(page.rows.iter().map(|r| (r.account_id.clone(), r.id.clone())));
+        seen.extend(
+            page.rows
+                .iter()
+                .map(|r| (r.account_id.clone(), r.id.clone())),
+        );
         match page.next_cursor {
             Some(raw) => {
                 let (sort, scope, q) = sift::db::threads::page_identity(&View::Snoozed, &accounts);
@@ -703,7 +890,8 @@ async fn p7_t28_cursors_reject_a_different_scope_query_or_sort() {
         )
         .await;
     }
-    let (sort, scope, query) = sift::db::threads::page_identity(&View::Inbox, std::slice::from_ref(&a));
+    let (sort, scope, query) =
+        sift::db::threads::page_identity(&View::Inbox, std::slice::from_ref(&a));
     let good = sift::search::cursor::encode(&sift::search::cursor::Cursor {
         sort,
         scope: scope.clone(),
@@ -727,19 +915,27 @@ async fn p7_t28_cursors_reject_a_different_scope_query_or_sort() {
         ("malformed", "not-a-cursor!!".into()),
         (
             "version",
-            base64_encode(&serde_json::json!({"v": 99, "s": "default", "c": scope, "q": query, "t": [1, "a", "b"]})),
+            base64_encode(
+                &serde_json::json!({"v": 99, "s": "default", "c": scope, "q": query, "t": [1, "a", "b"]}),
+            ),
         ),
         (
             "scope",
-            base64_encode(&serde_json::json!({"v": 1, "s": "default", "c": "inbox|someone-else", "q": query, "t": [1, "a", "b"]})),
+            base64_encode(
+                &serde_json::json!({"v": 1, "s": "default", "c": "inbox|someone-else", "q": query, "t": [1, "a", "b"]}),
+            ),
         ),
         (
             "sort",
-            base64_encode(&serde_json::json!({"v": 1, "s": "snoozed", "c": scope, "q": query, "t": [1, "a", "b"]})),
+            base64_encode(
+                &serde_json::json!({"v": 1, "s": "snoozed", "c": scope, "q": query, "t": [1, "a", "b"]}),
+            ),
         ),
         (
             "shape",
-            base64_encode(&serde_json::json!({"v": 1, "s": "default", "c": scope, "q": query, "t": [1]})),
+            base64_encode(
+                &serde_json::json!({"v": 1, "s": "default", "c": scope, "q": query, "t": [1]}),
+            ),
         ),
     ];
     for (reason, raw) in cases {
@@ -873,7 +1069,8 @@ async fn p7_t29_query_plans_use_indexes_and_never_offset() {
     );
     assert!(plan.contains("SEARCH t USING INDEX"), "{plan}");
 
-    let snooze_sql = "SELECT t.* FROM threads t WHERE t.account_id IN (?,?) AND t.snoozed_until IS NOT NULL \
+    let snooze_sql =
+        "SELECT t.* FROM threads t WHERE t.account_id IN (?,?) AND t.snoozed_until IS NOT NULL \
          AND (t.snoozed_until, t.account_id, t.id) > (?,?,?) \
          ORDER BY t.snoozed_until ASC, t.account_id ASC, t.id ASC LIMIT ?";
     let plan = explain_raw(
@@ -910,11 +1107,7 @@ async fn explain(db: &Db, compiled: &sift::search::compile::Compiled) -> String 
     explain_raw(db, &compiled.sql, params).await
 }
 
-async fn explain_raw(
-    db: &Db,
-    sql: &str,
-    params: Vec<rusqlite::types::Value>,
-) -> String {
+async fn explain_raw(db: &Db, sql: &str, params: Vec<rusqlite::types::Value>) -> String {
     let sql = format!("EXPLAIN QUERY PLAN {sql}");
     db.read(move |c| {
         let mut statement = c.prepare(&sql)?;
@@ -933,7 +1126,12 @@ async fn explain_raw(
 async fn p7_t30_saved_search_matches_ad_hoc_and_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (db, a, _) = fixture(dir.path()).await;
-    let ad_hoc = ids(&matches(&db, std::slice::from_ref(&a), "label:\"Client Work\" is:read").await);
+    let ad_hoc = ids(&matches(
+        &db,
+        std::slice::from_ref(&a),
+        "label:\"Client Work\" is:read",
+    )
+    .await);
 
     let saved = db
         .saved_search_upsert(SavedSearchInput {
@@ -958,7 +1156,14 @@ async fn p7_t30_saved_search_matches_ad_hoc_and_survives_restart() {
     let page = local::search_page(&db, &saved.account_scope, &parsed, None, "saved", 100)
         .await
         .unwrap();
-    assert_eq!(ids(&page.rows.iter().map(|r| (r.account_id.clone(), r.id.clone())).collect::<Vec<_>>()), ad_hoc);
+    assert_eq!(
+        ids(&page
+            .rows
+            .iter()
+            .map(|r| (r.account_id.clone(), r.id.clone()))
+            .collect::<Vec<_>>()),
+        ad_hoc
+    );
 
     let count = db.saved_search_count(&saved.id).await.unwrap();
     assert_eq!(count.count, ad_hoc.len() as i64);
@@ -980,9 +1185,11 @@ async fn p7_t31_saved_search_edit_and_delete_never_move_mail() {
         let db = db.clone();
         async move {
             db.read(|c| {
-                let messages: i64 = c.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?;
+                let messages: i64 =
+                    c.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))?;
                 let threads: i64 = c.query_row("SELECT count(*) FROM threads", [], |r| r.get(0))?;
-                let labels: i64 = c.query_row("SELECT count(*) FROM message_labels", [], |r| r.get(0))?;
+                let labels: i64 =
+                    c.query_row("SELECT count(*) FROM message_labels", [], |r| r.get(0))?;
                 let ops: i64 = c.query_row("SELECT count(*) FROM outbox_ops", [], |r| r.get(0))?;
                 Ok((messages, threads, labels, ops))
             })
@@ -1019,15 +1226,25 @@ async fn p7_t31_saved_search_edit_and_delete_never_move_mail() {
 
     db.saved_search_delete(&saved.id).await.unwrap();
     assert!(db.saved_search_list().await.unwrap().is_empty());
-    assert_eq!(fingerprint(&db).await, before, "deleting never touches mail");
+    assert_eq!(
+        fingerprint(&db).await,
+        before,
+        "deleting never touches mail"
+    );
 }
 
 #[tokio::test]
 async fn p7_t32_a_missing_account_is_reported_never_widened() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).unwrap();
-    let gone = db.new_account("gone@example.com", None, None).await.unwrap();
-    let alive = db.new_account("alive@example.com", None, None).await.unwrap();
+    let gone = db
+        .new_account("gone@example.com", None, None)
+        .await
+        .unwrap();
+    let alive = db
+        .new_account("alive@example.com", None, None)
+        .await
+        .unwrap();
     for (owner, id, thread) in [
         (&gone.id, "g1", "gt"),
         (&alive.id, "s1", "st"),
@@ -1061,7 +1278,10 @@ async fn p7_t32_a_missing_account_is_reported_never_widened() {
         .unwrap();
     let removed = gone.id.clone();
     db.write(move |c| {
-        c.execute("DELETE FROM accounts WHERE id=?", rusqlite::params![removed])?;
+        c.execute(
+            "DELETE FROM accounts WHERE id=?",
+            rusqlite::params![removed],
+        )?;
         Ok(())
     })
     .await
@@ -1082,10 +1302,21 @@ async fn p7_t32_a_missing_account_is_reported_never_widened() {
         "a removed account must not widen the scope to everyone else"
     );
     assert_eq!(db.saved_search_count(&saved.id).await.unwrap().count, 0);
-    let everything = local::search_page(&db, std::slice::from_ref(&alive.id), &parsed, None, "saved", 100)
-        .await
-        .unwrap();
-    assert_eq!(everything.rows.len(), 2, "the surviving account still matches");
+    let everything = local::search_page(
+        &db,
+        std::slice::from_ref(&alive.id),
+        &parsed,
+        None,
+        "saved",
+        100,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        everything.rows.len(),
+        2,
+        "the surviving account still matches"
+    );
 
     // An empty scope matches nothing rather than everything.
     let empty = db
@@ -1120,7 +1351,11 @@ async fn p7_t33_saved_search_refuses_a_query_that_can_never_match() {
             .await
             .expect_err(query);
         assert!(
-            !db.saved_search_list().await.unwrap().iter().any(|s| s.name == "Broken"),
+            !db.saved_search_list()
+                .await
+                .unwrap()
+                .iter()
+                .any(|s| s.name == "Broken"),
             "{query} must not be stored"
         );
         let _ = error;
@@ -1182,7 +1417,8 @@ async fn p7_t34_a_saved_mailbox_never_builds_a_mailbox_sized_result() {
     assert!(compiled.sql.starts_with("WITH matched AS (SELECT"));
     assert!(!compiled.sql.contains("OFFSET"));
     let counted =
-        sift::search::compile::count_query(parsed.ast.as_ref(), &saved.account_scope, true).unwrap();
+        sift::search::compile::count_query(parsed.ast.as_ref(), &saved.account_scope, true)
+            .unwrap();
     assert!(counted.sql.starts_with("WITH matched AS (SELECT"));
     assert!(counted.sql.ends_with("SELECT COUNT(*) FROM matched"));
 }

@@ -111,12 +111,12 @@ impl Db {
             }
             // Rule applications carry no account foreign key: the table is
             // keyed by rule *and* account, and the rules are gone above.
-            c.execute("DELETE FROM rule_applications WHERE account_id=?", params![id])?;
-            // FTS is a virtual table: delete its rows by the account key too.
             c.execute(
-                "DELETE FROM messages_fts WHERE account_id=?",
+                "DELETE FROM rule_applications WHERE account_id=?",
                 params![id],
             )?;
+            // FTS is a virtual table: delete its rows by the account key too.
+            c.execute("DELETE FROM messages_fts WHERE account_id=?", params![id])?;
             c.execute("DELETE FROM accounts WHERE id=?", params![id])?;
             Ok(draft_ids)
         })

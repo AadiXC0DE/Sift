@@ -35,16 +35,32 @@ pub fn raw_dir(data_dir: &Path, account_id: &str) -> PathBuf {
 pub fn raw_file_name(message_id: &str) -> String {
     let safe: String = message_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    let capped = if safe.len() > 120 { &safe[..120] } else { &safe[..] };
+    let capped = if safe.len() > 120 {
+        &safe[..120]
+    } else {
+        &safe[..]
+    };
     format!("{capped}.eml")
 }
 
 fn safe_component(value: &str) -> String {
     let safe: String = value
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if safe.is_empty() {
         "_".into()

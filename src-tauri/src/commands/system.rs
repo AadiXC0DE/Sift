@@ -46,7 +46,15 @@ pub async fn sync_now(
         let app2 = app.clone();
         tokio::spawn(async move {
             coordinator
-                .tick_now(|| manual_refresh(db.clone(), app2.clone(), aid2.clone(), provider.clone(), cancel.clone()))
+                .tick_now(|| {
+                    manual_refresh(
+                        db.clone(),
+                        app2.clone(),
+                        aid2.clone(),
+                        provider.clone(),
+                        cancel.clone(),
+                    )
+                })
                 .await;
         });
     }
@@ -185,9 +193,7 @@ pub async fn connectivity_state(
         .into_iter()
         .map(|a| a.id)
         .collect();
-    Ok(state
-        .connectivity
-        .snapshot(&ids, crate::db::now_ms()))
+    Ok(state.connectivity.snapshot(&ids, crate::db::now_ms()))
 }
 
 #[tauri::command]

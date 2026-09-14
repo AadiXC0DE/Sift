@@ -116,9 +116,7 @@ pub async fn notifications_update(
     if let Some(muted) = muted_accounts {
         patch.insert(
             "notificationsMutedAccounts".into(),
-            serde_json::Value::Array(
-                muted.into_iter().map(serde_json::Value::String).collect(),
-            ),
+            serde_json::Value::Array(muted.into_iter().map(serde_json::Value::String).collect()),
         );
     }
     if !patch.is_empty() {

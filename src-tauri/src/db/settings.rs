@@ -38,10 +38,7 @@ impl Db {
             .is_some_and(|p| p.contains_key(super::privacy::MODE_KEY));
         if chose_policy {
             if let Some(map) = cur.as_object_mut() {
-                map.insert(
-                    super::privacy::PENDING_KEY.into(),
-                    serde_json::json!(false),
-                );
+                map.insert(super::privacy::PENDING_KEY.into(), serde_json::json!(false));
             }
         }
         let merged: Settings = serde_json::from_value(cur.clone())?;

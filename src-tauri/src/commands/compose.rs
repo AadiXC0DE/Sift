@@ -109,7 +109,10 @@ pub async fn drafts_upsert(
         {
             // The draft is safely on disk; a queue failure must not fail the
             // save, but it must be visible.
-            log::warn!("draft {} could not be queued for remote sync: {e}", saved.local_id);
+            log::warn!(
+                "draft {} could not be queued for remote sync: {e}",
+                saved.local_id
+            );
         }
     }
     Ok(saved)
@@ -243,18 +246,16 @@ pub async fn send_reschedule(
 
 /// Send a scheduled message now (P8.1).
 #[tauri::command]
-pub async fn send_now(
-    state: State<'_, AppState>,
-    op_id: i64,
-) -> Result<SendHandle, SiftError> {
-    let handle = state
-        .db
-        .drafts_send_now(op_id)
-        .await
-        .map_err(|e| match e.downcast::<SiftError>() {
-            Ok(sift) => sift,
-            Err(other) => db_error(other),
-        })?;
+pub async fn send_now(state: State<'_, AppState>, op_id: i64) -> Result<SendHandle, SiftError> {
+    let handle =
+        state
+            .db
+            .drafts_send_now(op_id)
+            .await
+            .map_err(|e| match e.downcast::<SiftError>() {
+                Ok(sift) => sift,
+                Err(other) => db_error(other),
+            })?;
     state.kick_outbox(&account_of_op(&state, op_id).await).await;
     Ok(handle)
 }
@@ -278,10 +279,7 @@ async fn account_of_op(state: &AppState, op_id: i64) -> String {
 /// actually reached: Sift must never imply it pulled back a message the
 /// provider may already have accepted.
 #[tauri::command]
-pub async fn send_cancel(
-    state: State<'_, AppState>,
-    op_id: i64,
-) -> Result<Draft, SiftError> {
+pub async fn send_cancel(state: State<'_, AppState>, op_id: i64) -> Result<Draft, SiftError> {
     let outcome = state
         .db
         .drafts_cancel_send_detailed(op_id)
@@ -352,11 +350,7 @@ pub async fn attachments_add_from_paths(
     }
     // Drafts belong to an account; a caller that names the wrong one is a bug
     // we refuse rather than file the file under a foreign draft.
-    let owner = state
-        .db
-        .drafts_get(&draft_id)
-        .await
-        .map_err(db_error)?;
+    let owner = state.db.drafts_get(&draft_id).await.map_err(db_error)?;
     if let Some(d) = &owner {
         if !account_id.is_empty() && d.account_id != account_id {
             return Err(SiftError::app(
@@ -377,7 +371,11 @@ fn stage_paths(
     paths: &[String],
 ) -> Result<Vec<crate::dto::AttachmentRef>, SiftError> {
     std::fs::create_dir_all(dir).map_err(|e| {
-        SiftError::app("storage", format!("could not create the draft folder: {e}"), false)
+        SiftError::app(
+            "storage",
+            format!("could not create the draft folder: {e}"),
+            false,
+        )
     })?;
     let mut staged: Vec<std::path::PathBuf> = Vec::new();
     let mut out = Vec::with_capacity(paths.len());
@@ -385,7 +383,11 @@ fn stage_paths(
         for p in paths {
             let src = std::path::Path::new(p);
             let meta = std::fs::metadata(src).map_err(|e| {
-                SiftError::app("attachment_missing", format!("{p} could not be read: {e}"), false)
+                SiftError::app(
+                    "attachment_missing",
+                    format!("{p} could not be read: {e}"),
+                    false,
+                )
             })?;
             if !meta.is_file() {
                 return Err(SiftError::app(
@@ -401,11 +403,7 @@ fn stage_paths(
                 .to_string();
             let dest = crate::attachments::service::unique_destination(dir, &name);
             std::fs::copy(src, &dest).map_err(|e| {
-                SiftError::app(
-                    "storage",
-                    format!("{name} could not be staged: {e}"),
-                    false,
-                )
+                SiftError::app("storage", format!("{name} could not be staged: {e}"), false)
             })?;
             staged.push(dest.clone());
             out.push(crate::dto::AttachmentRef {
@@ -468,20 +466,11 @@ pub async fn attachments_stage_from_message(
             false,
         )
     })?;
-    let name = info
-        .display_name
-        .clone()
-        .unwrap_or_else(|| rec.id.clone());
+    let name = info.display_name.clone().unwrap_or_else(|| rec.id.clone());
     let dest = service::unique_destination(&dir, &name);
     crate::attachments::cache::copy_atomic(std::path::Path::new(&path), &dest)
         .await
-        .map_err(|e| {
-            SiftError::app(
-                "storage",
-                format!("{name} could not be staged: {e}"),
-                true,
-            )
-        })?;
+        .map_err(|e| SiftError::app("storage", format!("{name} could not be staged: {e}"), true))?;
     let size = tokio::fs::metadata(&dest)
         .await
         .map_err(|e| SiftError::app("storage", format!("{name} vanished: {e}"), true))?
@@ -526,7 +515,10 @@ mod tests {
             &dest,
             &[
                 good.to_string_lossy().into_owned(),
-                src.path().join("missing.pdf").to_string_lossy().into_owned(),
+                src.path()
+                    .join("missing.pdf")
+                    .to_string_lossy()
+                    .into_owned(),
             ],
         )
         .unwrap_err();

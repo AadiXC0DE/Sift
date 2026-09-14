@@ -154,7 +154,9 @@ fn duplicate_error(e: &SiftError) -> SiftError {
     if let Ok(v) = serde_json::to_value(e) {
         return SiftError::app(
             v["code"].as_str().unwrap_or("attachment_offline"),
-            v["message"].as_str().unwrap_or("attachment download failed"),
+            v["message"]
+                .as_str()
+                .unwrap_or("attachment download failed"),
             v["retryable"].as_bool().unwrap_or(false),
         );
     }
@@ -333,14 +335,20 @@ impl FetchCtx {
             ))
         })?;
         let mut map = self.folder_map(conn).await?;
-        if PREFERRED_ROLES.iter().any(|r| map.name_for_role(r).is_none()) {
+        if PREFERRED_ROLES
+            .iter()
+            .any(|r| map.name_for_role(r).is_none())
+        {
             if let Ok(fresh) = self.refresh_folder_map(conn).await {
                 map = fresh;
             }
         }
         let roles: Vec<(String, String)> = PREFERRED_ROLES
             .iter()
-            .filter_map(|r| map.name_for_role(r).map(|n| ((*r).to_string(), n.to_string())))
+            .filter_map(|r| {
+                map.name_for_role(r)
+                    .map(|n| ((*r).to_string(), n.to_string()))
+            })
             .collect();
 
         // 1. Cached mapping, verified against epoch + identity.
@@ -417,7 +425,11 @@ impl FetchCtx {
             if let Some(attrs) = self.verified_locator_attrs(conn, uid, dec, &corr).await? {
                 // Persist only the verified result.
                 self.db
-                    .imap_put_uids(&self.account_id, role, &[(uid as i64, message_id.to_string())])
+                    .imap_put_uids(
+                        &self.account_id,
+                        role,
+                        &[(uid as i64, message_id.to_string())],
+                    )
                     .await
                     .map_err(db_err)?;
                 let epoch = conn.selected().map(|s| s.uidvalidity).unwrap_or(0);
@@ -567,7 +579,9 @@ impl FetchCtx {
         let corr = self.corr(&message_id, &section.wire());
         let work = async move {
             let mut lease = self.lease().await?;
-            let r = self.read_attachment(lease.conn(), &message_id, section).await;
+            let r = self
+                .read_attachment(lease.conn(), &message_id, section)
+                .await;
             if r.is_ok() {
                 lease.keep();
             }
@@ -830,7 +844,10 @@ impl Provider for GmailImapProvider {
         }
         let from = id.strip_prefix("imap:").unwrap_or(id);
         if from.eq_ignore_ascii_case("INBOX")
-            || matches!(from, "SENT" | "DRAFT" | "STARRED" | "IMPORTANT" | "TRASH" | "SPAM" | "UNREAD")
+            || matches!(
+                from,
+                "SENT" | "DRAFT" | "STARRED" | "IMPORTANT" | "TRASH" | "SPAM" | "UNREAD"
+            )
         {
             return Err(SiftError::app(
                 "unsupported_operation",

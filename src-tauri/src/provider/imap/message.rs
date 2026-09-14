@@ -41,9 +41,7 @@ pub fn meta_items() -> FetchItems {
         .gmail_thrid()
         .gmail_labels()
         .bodystructure()
-        .raw(format!(
-            "BODY.PEEK[HEADER.FIELDS ({META_HEADER_FIELDS})]"
-        ))
+        .raw(format!("BODY.PEEK[HEADER.FIELDS ({META_HEADER_FIELDS})]"))
 }
 
 /// UID set string, newest-first, compressed ranges, max `max` entries.
@@ -524,9 +522,7 @@ impl TransferDecoder {
                         if after == b'\n' {
                             i += 3; // soft line break
                         } else {
-                            return Err(decode_failed(
-                                "quoted-printable soft break is not CRLF",
-                            ));
+                            return Err(decode_failed("quoted-printable soft break is not CRLF"));
                         }
                     }
                     b'\n' => i += 2,
@@ -992,12 +988,17 @@ mod tests {
         out.extend(d.finish().unwrap());
         assert_eq!(out, payload);
         // 0 and 1 bytes.
-        assert!(TransferDecoder::decode_all("base64", b"").unwrap().is_empty());
+        assert!(TransferDecoder::decode_all("base64", b"")
+            .unwrap()
+            .is_empty());
         assert!(TransferDecoder::decode_all("base64", b"\r\n")
             .unwrap()
             .is_empty());
         // Omitted final padding still decodes ("aGk" -> "hi").
-        assert_eq!(TransferDecoder::decode_all("base64", b"aGk").unwrap(), b"hi");
+        assert_eq!(
+            TransferDecoder::decode_all("base64", b"aGk").unwrap(),
+            b"hi"
+        );
         assert_eq!(
             TransferDecoder::decode_all("base64", b"aGVsbG8=").unwrap(),
             b"hello"
@@ -1037,7 +1038,7 @@ mod tests {
     #[test]
     fn p24_streaming_decoder_encodings_and_unsupported() {
         // Explicitly supported no-op encodings.
-        for enc in ["", "7bit", "8bit", "binary", "BASE64 " ] {
+        for enc in ["", "7bit", "8bit", "binary", "BASE64 "] {
             assert!(TransferDecoder::new(enc).is_ok(), "{enc}");
         }
         assert_eq!(

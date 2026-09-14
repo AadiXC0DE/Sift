@@ -61,7 +61,10 @@ async fn make_reconcile_due(db: &Db, op_id: i64) {
 async fn p6_1_two_drainers_claim_one_operation_once() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path_regex(".*/messages/batchModify"))
         .respond_with(
@@ -77,7 +80,13 @@ async fn p6_1_two_drainers_claim_one_operation_once() {
     let db = Db::open(dir.path()).unwrap();
     let acc = account(&db).await;
     let op = db
-        .outbox_enqueue(&acc.id, "modify_labels", "{\"ids\":[\"m1\"],\"add\":[],\"remove\":[\"INBOX\"]}", None, 0)
+        .outbox_enqueue(
+            &acc.id,
+            "modify_labels",
+            "{\"ids\":[\"m1\"],\"add\":[],\"remove\":[\"INBOX\"]}",
+            None,
+            0,
+        )
         .await
         .unwrap();
     let provider = provider(&acc.id);
@@ -117,7 +126,10 @@ async fn p6_1_cancel_versus_claim_has_one_winner() {
         .outbox_enqueue(&acc.id, "modify_labels", "{\"ids\":[\"m2\"]}", None, 0)
         .await
         .unwrap();
-    assert!(db.outbox_cancel(cancelled, "undo", "not yet sent").await.unwrap());
+    assert!(db
+        .outbox_cancel(cancelled, "undo", "not yet sent")
+        .await
+        .unwrap());
     assert!(
         db.outbox_claim(&acc.id).await.unwrap().is_none(),
         "a cancelled operation is never claimed"
@@ -132,13 +144,17 @@ async fn p6_1_cancel_versus_claim_has_one_winner() {
 async fn p6_1_crash_after_data_leaves_the_send_uncertain_and_unsent() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     // Nothing may be delivered: the acceptance is unknown, not retryable.
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/gmail/v1/users/me/messages/send"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({"id": "mSent", "threadId": "t1"}),
-        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"id": "mSent", "threadId": "t1"})),
+        )
         .expect(0)
         .mount(&server)
         .await;
@@ -173,7 +189,11 @@ async fn p6_1_crash_after_data_leaves_the_send_uncertain_and_unsent() {
         let prepared =
             sift::outgoing::prepare(dir.path(), &draft, &identity, 1_700_000_000).unwrap();
         let handle = db
-            .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms()), false)
+            .drafts_enqueue_send(
+                &prepared,
+                &sift::db::drafts::SendSchedule::now(sift::db::now_ms()),
+                false,
+            )
             .await
             .unwrap();
         // The app dies between claiming the operation and writing the outcome.
@@ -183,7 +203,10 @@ async fn p6_1_crash_after_data_leaves_the_send_uncertain_and_unsent() {
 
     let db = Db::open(dir.path()).unwrap(); // startup recovery
     let op = db.outbox_get(op_id).await.unwrap().unwrap();
-    assert_eq!(op.state, "uncertain", "an interrupted send is never pending again");
+    assert_eq!(
+        op.state, "uncertain",
+        "an interrupted send is never pending again"
+    );
     assert_eq!(op.reconcile_attempts, 0);
     assert!(op.reconcile_at.is_some(), "reconciliation is scheduled");
 
@@ -211,7 +234,10 @@ async fn p6_1_crash_after_data_leaves_the_send_uncertain_and_unsent() {
 async fn p6_1_uncertain_send_reconciles_to_done_by_rfc_message_id() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path("/gmail/v1/users/me/messages"))
         .and(wiremock::matchers::query_param(
@@ -230,7 +256,13 @@ async fn p6_1_uncertain_send_reconciles_to_done_by_rfc_message_id() {
     let db = Db::open(dir.path()).unwrap();
     let acc = account(&db).await;
     let op = db
-        .outbox_enqueue(&acc.id, "send", "{\"rfcMessageId\":\"<sift-deadbeef@x.com>\"}", None, 0)
+        .outbox_enqueue(
+            &acc.id,
+            "send",
+            "{\"rfcMessageId\":\"<sift-deadbeef@x.com>\"}",
+            None,
+            0,
+        )
         .await
         .unwrap();
     db.outbox_set(op, "inflight", 1, 0, None).await.unwrap();
@@ -246,7 +278,10 @@ async fn p6_1_uncertain_send_reconciles_to_done_by_rfc_message_id() {
     let op = db.outbox_get(op).await.unwrap().unwrap();
     assert_eq!(op.state, "done");
     let result = op.result_json.unwrap_or_default();
-    assert!(result.contains("m9"), "the receipt names the sent copy: {result}");
+    assert!(
+        result.contains("m9"),
+        "the receipt names the sent copy: {result}"
+    );
     std::env::remove_var("SIFT_GMAIL_BASE");
 }
 
@@ -265,7 +300,9 @@ async fn p6_1_retry_of_an_uncertain_send_requires_acknowledgement() {
         .await
         .unwrap();
     let err = db.outbox_retry(op, false).await.unwrap_err();
-    let typed = err.downcast_ref::<sift::errors::SiftError>().expect("typed");
+    let typed = err
+        .downcast_ref::<sift::errors::SiftError>()
+        .expect("typed");
     assert_eq!(typed.code(), "acknowledge_duplicate_risk");
     assert_eq!(state_of(&db, op).await, "uncertain");
 
@@ -333,11 +370,19 @@ async fn p6_2_double_send_is_one_operation_and_undo_returns_the_draft() {
     };
     let prepared = sift::outgoing::prepare(dir.path(), &draft, &identity, 1_700_000_000).unwrap();
     let first = db
-        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000), false)
+        .drafts_enqueue_send(
+            &prepared,
+            &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000),
+            false,
+        )
         .await
         .unwrap();
     let second = db
-        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000), false)
+        .drafts_enqueue_send(
+            &prepared,
+            &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000),
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(first.op_id, second.op_id, "one operation for one revision");
@@ -359,10 +404,7 @@ async fn p6_2_double_send_is_one_operation_and_undo_returns_the_draft() {
     let queued = db.drafts_get(&draft.local_id).await.unwrap().unwrap();
     assert_eq!(queued.state, "queued");
 
-    let reopened = db
-        .drafts_cancel_send_detailed(first.op_id)
-        .await
-        .unwrap();
+    let reopened = db.drafts_cancel_send_detailed(first.op_id).await.unwrap();
     match reopened {
         sift::db::drafts::SendCancel::Cancelled(draft) => {
             assert_eq!(draft.state, "editing");
@@ -381,7 +423,11 @@ async fn p6_2_double_send_is_one_operation_and_undo_returns_the_draft() {
     }
     // And the same revision can be sent again as a fresh operation.
     let again = db
-        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000), false)
+        .drafts_enqueue_send(
+            &prepared,
+            &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000),
+            false,
+        )
         .await
         .unwrap();
     assert_ne!(again.op_id, first.op_id);
@@ -415,7 +461,11 @@ async fn p6_2_undo_works_after_restart_while_pending_and_offline() {
         let prepared =
             sift::outgoing::prepare(dir.path(), &draft, &identity, 1_700_000_000).unwrap();
         let handle = db
-            .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 30_000), false)
+            .drafts_enqueue_send(
+                &prepared,
+                &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 30_000),
+                false,
+            )
             .await
             .unwrap();
         (handle.op_id, draft.local_id)
@@ -450,7 +500,10 @@ async fn p6_2_undo_works_after_restart_while_pending_and_offline() {
 async fn p6_2_claimed_send_cannot_be_undone_and_its_archive_never_runs() {
     let _g = lock_env();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("SIFT_GMAIL_BASE", format!("{}/gmail/v1/users/me", server.uri()));
+    std::env::set_var(
+        "SIFT_GMAIL_BASE",
+        format!("{}/gmail/v1/users/me", server.uri()),
+    );
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/gmail/v1/users/me/messages/send"))
         // A definite rejection: a 5xx would be a transient failure that stays
@@ -538,7 +591,10 @@ async fn p6_2_claimed_send_cannot_be_undone_and_its_archive_never_runs() {
         .await
         .unwrap()
         .pipe_parse();
-    assert!(labels.contains(&"INBOX".to_string()), "the source thread was not archived");
+    assert!(
+        labels.contains(&"INBOX".to_string()),
+        "the source thread was not archived"
+    );
     std::env::remove_var("SIFT_GMAIL_BASE");
 }
 
@@ -566,7 +622,10 @@ async fn p6_2_undo_reports_the_state_it_lost_to() {
         display_name: None,
     };
     let prepared = sift::outgoing::prepare(dir.path(), &draft, &identity, 1_700_000_000).unwrap();
-    let handle = db.drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(0), false).await.unwrap();
+    let handle = db
+        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(0), false)
+        .await
+        .unwrap();
     assert!(db.outbox_claim(&acc.id).await.unwrap().is_some());
     match db.drafts_cancel_send_detailed(handle.op_id).await.unwrap() {
         sift::db::drafts::SendCancel::TooLate { state } => assert_eq!(state, "inflight"),
@@ -611,7 +670,11 @@ async fn p6_6_the_list_page_never_carries_the_payload() {
     )
     .unwrap();
     assert!(!json.contains("AAAA"), "the payload never reaches the UI");
-    assert!(json.len() < 2_000, "the summary stays small: {} bytes", json.len());
+    assert!(
+        json.len() < 2_000,
+        "the summary stays small: {} bytes",
+        json.len()
+    );
     assert!(json.contains("bob@y.org"));
 }
 
@@ -711,9 +774,7 @@ async fn p6_6_prune_releases_only_finished_payloads() {
         .await
         .unwrap();
     db.outbox_mark_done(done, None).await.unwrap();
-    db.outbox_cancel(cancelled, "undone", "no")
-        .await
-        .unwrap();
+    db.outbox_cancel(cancelled, "undone", "no").await.unwrap();
     let failed = db
         .outbox_enqueue(&acc.id, "modify_labels", "{\"ids\":[\"m3\"]}", None, 0)
         .await

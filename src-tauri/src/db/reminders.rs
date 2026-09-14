@@ -37,7 +37,12 @@ pub struct ReminderRow {
     pub unread: bool,
 }
 
-pub fn state_of(remind_at: i64, delivered_at: Option<i64>, completed_at: Option<i64>, now: i64) -> &'static str {
+pub fn state_of(
+    remind_at: i64,
+    delivered_at: Option<i64>,
+    completed_at: Option<i64>,
+    now: i64,
+) -> &'static str {
     if completed_at.is_some() {
         "completed"
     } else if delivered_at.is_some() {
@@ -84,10 +89,7 @@ pub(crate) fn next_deadline_conn(c: &Connection) -> rusqlite::Result<Option<i64>
 }
 
 /// Overdue, undelivered reminders.
-pub(crate) fn due_conn(
-    c: &Connection,
-    now: i64,
-) -> rusqlite::Result<Vec<(String, String, i64)>> {
+pub(crate) fn due_conn(c: &Connection, now: i64) -> rusqlite::Result<Vec<(String, String, i64)>> {
     let mut s = c.prepare(
         "SELECT account_id, thread_id, remind_at FROM reminders \
          WHERE completed_at IS NULL AND delivered_at IS NULL AND remind_at<=? \
@@ -133,7 +135,11 @@ impl Db {
 
     /// Bulk upsert, one transaction per account, so one gesture cannot
     /// half-apply.
-    pub async fn reminders_upsert(&self, targets: &[(String, String)], remind_at: i64) -> Result<()> {
+    pub async fn reminders_upsert(
+        &self,
+        targets: &[(String, String)],
+        remind_at: i64,
+    ) -> Result<()> {
         let targets = targets.to_vec();
         let now = super::now_ms();
         self.write_tx(move |tx| {
@@ -200,11 +206,7 @@ impl Db {
     }
 
     /// Claim delivery for one reminder; `true` means this caller owns it.
-    pub async fn reminder_mark_delivered(
-        &self,
-        account_id: &str,
-        thread_id: &str,
-    ) -> Result<bool> {
+    pub async fn reminder_mark_delivered(&self, account_id: &str, thread_id: &str) -> Result<bool> {
         let (a, t) = (account_id.to_string(), thread_id.to_string());
         let now = super::now_ms();
         self.write(move |c| Ok(mark_delivered_conn(c, &a, &t, now)?))
@@ -290,8 +292,7 @@ impl Db {
                             remind_at,
                             delivered_at,
                             completed_at,
-                            state: state_of(remind_at, delivered_at, completed_at, now)
-                                .to_string(),
+                            state: state_of(remind_at, delivered_at, completed_at, now).to_string(),
                             due: completed_at.is_none()
                                 && delivered_at.is_none()
                                 && remind_at <= now,
@@ -392,9 +393,12 @@ mod tests {
         seed(&db, "a", "t2", 0).await;
         let now = crate::db::now_ms();
         let first = now + 60_000;
-        db.reminders_upsert(&[("a".into(), "t1".into()), ("a".into(), "t2".into())], first)
-            .await
-            .unwrap();
+        db.reminders_upsert(
+            &[("a".into(), "t1".into()), ("a".into(), "t2".into())],
+            first,
+        )
+        .await
+        .unwrap();
         assert_eq!(db.reminder_next_deadline().await.unwrap(), Some(first));
         // Rescheduling replaces rather than stacks.
         let later = now + 120_000;
@@ -416,7 +420,11 @@ mod tests {
         assert!(db.reminder_mark_delivered("a", "t1").await.unwrap());
         // A second tick (or a second scheduler) must not claim it again.
         assert!(!db.reminder_mark_delivered("a", "t1").await.unwrap());
-        assert!(db.reminders_due(crate::db::now_ms()).await.unwrap().is_empty());
+        assert!(db
+            .reminders_due(crate::db::now_ms())
+            .await
+            .unwrap()
+            .is_empty());
         // Denial means nothing was delivered: the row stays visible and due.
         db.reminder_upsert("a", "t1", 1).await.unwrap();
         let rows = db.reminders_list(&[], false).await.unwrap();
@@ -430,10 +438,7 @@ mod tests {
         seed(&db, "a", "t1", 0).await;
         db.reminder_upsert("a", "t1", 9_000).await.unwrap();
         db.write(|c| {
-            c.execute(
-                "DELETE FROM threads WHERE account_id='a' AND id='t1'",
-                [],
-            )?;
+            c.execute("DELETE FROM threads WHERE account_id='a' AND id='t1'", [])?;
             Ok(())
         })
         .await

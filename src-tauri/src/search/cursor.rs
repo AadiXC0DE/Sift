@@ -99,12 +99,7 @@ fn bad(message: &str, reason: &str) -> SiftError {
 
 /// Decode a cursor and refuse one that does not belong to this exact list,
 /// query and sort order.
-pub fn expect(
-    raw: &str,
-    sort: SortKind,
-    scope: &str,
-    query: &str,
-) -> Result<Cursor, SiftError> {
+pub fn expect(raw: &str, sort: SortKind, scope: &str, query: &str) -> Result<Cursor, SiftError> {
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(raw.trim())
         .map_err(|_| {

@@ -141,12 +141,11 @@ pub fn parse_mailbox(field: &str, a: &Address) -> Result<Mailbox, SiftError> {
             false,
         ));
     }
-    let name = a
-        .n
-        .as_deref()
-        .map(str::trim)
-        .filter(|n| !n.is_empty())
-        .map(|n| n.to_string());
+    let name =
+        a.n.as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(|n| n.to_string());
     if let Some(n) = name.as_deref() {
         reject_header_injection(field, n)?;
     }
@@ -298,14 +297,12 @@ pub fn build_bytes(msg: &OutgoingMessage) -> Result<Vec<u8>, SiftError> {
         builder = builder.in_reply_to(MessageId::new(bare_message_id(ir)));
     }
     if !msg.references.is_empty() {
-        let ids: Vec<&str> = msg
-            .references
-            .iter()
-            .map(|r| bare_message_id(r))
-            .collect();
+        let ids: Vec<&str> = msg.references.iter().map(|r| bare_message_id(r)).collect();
         builder = builder.references(MessageId::from(ids));
     }
-    builder = builder.text_body(msg.text.as_str()).html_body(msg.html.as_str());
+    builder = builder
+        .text_body(msg.text.as_str())
+        .html_body(msg.html.as_str());
     for a in &msg.attachments {
         builder = builder.attachment(a.mime.as_str(), a.filename.as_str(), a.bytes.as_slice());
     }
@@ -455,7 +452,10 @@ pub fn envelope_recipients(msg: &OutgoingMessage) -> Vec<String> {
         .chain(msg.bcc.iter())
         .cloned()
         .collect();
-    dedupe_mailboxes(&all).into_iter().map(|m| m.email).collect()
+    dedupe_mailboxes(&all)
+        .into_iter()
+        .map(|m| m.email)
+        .collect()
 }
 
 /// The one place the application limit is applied: the *encoded* raw MIME
@@ -629,10 +629,7 @@ mod tests {
         // Everything else survives, including the body.
         assert_eq!(m.to().unwrap().iter().count(), 1);
         assert_eq!(m.cc().unwrap().iter().count(), 1);
-        assert!(m
-            .body_html(0)
-            .map(|h| h.contains("wörld"))
-            .unwrap_or(false));
+        assert!(m.body_html(0).map(|h| h.contains("wörld")).unwrap_or(false));
     }
 
     #[test]
@@ -666,7 +663,11 @@ mod tests {
         let e = prepare_bytes(&d, &identity(), 1_700_000_000).unwrap_err();
         assert_eq!(serde_json::to_value(&e).unwrap()["code"], "bad_recipient");
 
-        let d = draft_with(vec![addr(Some("Eve\r\nBcc: x@y.z"), "bob@example.com")], vec![], vec![]);
+        let d = draft_with(
+            vec![addr(Some("Eve\r\nBcc: x@y.z"), "bob@example.com")],
+            vec![],
+            vec![],
+        );
         let e = prepare_bytes(&d, &identity(), 1_700_000_000).unwrap_err();
         assert_eq!(serde_json::to_value(&e).unwrap()["code"], "bad_recipient");
     }
@@ -697,14 +698,19 @@ mod tests {
         let m = parse(&raw);
         // mail-parser reports the id without its angle brackets.
         assert_eq!(
-            m.in_reply_to().as_text().map(crate::outgoing::bare_message_id),
+            m.in_reply_to()
+                .as_text()
+                .map(crate::outgoing::bare_message_id),
             Some("parent@example.com"),
             "In-Reply-To carries the parent's Message-ID"
         );
         // `as_text()` reports only the last element of a list header, so the
         // whole chain is read as a list.
         let refs: Vec<&str> = m.references().as_text_list().unwrap();
-        let refs: Vec<&str> = refs.iter().map(|r| crate::outgoing::bare_message_id(r)).collect();
+        let refs: Vec<&str> = refs
+            .iter()
+            .map(|r| crate::outgoing::bare_message_id(r))
+            .collect();
         assert_eq!(
             refs,
             vec!["root@example.com", "parent@example.com"],
@@ -752,7 +758,10 @@ mod tests {
         assert_eq!(part.contents(), bytes.as_slice());
         // The Unicode filename survives as an encoded-word or RFC 2231
         // parameter, never as a raw 8-bit header.
-        assert!(raw.is_ascii() || !text.contains("grüße"), "header stays 7-bit");
+        assert!(
+            raw.is_ascii() || !text.contains("grüße"),
+            "header stays 7-bit"
+        );
     }
 
     #[test]
@@ -765,12 +774,18 @@ mod tests {
             path: "/definitely/not/here/gone.pdf".into(),
         }];
         let e = prepare_bytes(&d, &identity(), 1_700_000_000).unwrap_err();
-        assert_eq!(serde_json::to_value(&e).unwrap()["code"], "attachment_missing");
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["code"],
+            "attachment_missing"
+        );
         // A directory is not an attachment source either.
         let dir = tempfile::tempdir().unwrap();
         d.attachments_json[0].path = dir.path().to_string_lossy().into_owned();
         let e = prepare_bytes(&d, &identity(), 1_700_000_000).unwrap_err();
-        assert_eq!(serde_json::to_value(&e).unwrap()["code"], "attachment_missing");
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["code"],
+            "attachment_missing"
+        );
     }
 
     /// Assemble a message whose encoded size is at least `target` bytes, by
@@ -814,7 +829,10 @@ mod tests {
     }
 
     fn code(e: SiftError) -> String {
-        serde_json::to_value(&e).unwrap()["code"].as_str().unwrap().into()
+        serde_json::to_value(&e).unwrap()["code"]
+            .as_str()
+            .unwrap()
+            .into()
     }
 
     #[test]
@@ -828,7 +846,10 @@ mod tests {
 
         // The gate itself, at exactly the 25 MiB limit and one byte past it.
         check_raw_size(RAW_MIME_LIMIT_BYTES).unwrap();
-        assert_eq!(code(check_raw_size(RAW_MIME_LIMIT_BYTES + 1).unwrap_err()), "too_large");
+        assert_eq!(
+            code(check_raw_size(RAW_MIME_LIMIT_BYTES + 1).unwrap_err()),
+            "too_large"
+        );
 
         // 26 MiB of encoded message: rejected.
         let (_, raw26) = message_weighing_at_least(26 * mib);
