@@ -74,9 +74,7 @@ export function AccountSwitcher() {
     const next = scopeIds[(at + (e.key === 'ArrowRight' ? 1 : scopeIds.length - 1)) % scopeIds.length];
     e.preventDefault();
     setScope(next === 'all' ? 'all' : next);
-    const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>(
-      `[data-account-tab="${next}"]`,
-    );
+    const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>(`[data-account-tab="${next}"]`);
     el?.focus();
   };
 

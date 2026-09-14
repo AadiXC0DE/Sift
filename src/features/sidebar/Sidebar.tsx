@@ -1,11 +1,26 @@
 import React, { useEffect, useState } from 'react';
 import { useView } from '../../stores/viewStore';
 import { useAccounts } from '../../stores/accountsStore';
-import { useSync } from '../../stores/syncStore';
+import { useSync, outboxTotals } from '../../stores/syncStore';
+import { useOutbox } from '../../stores/outboxStore';
+import { OutboxPanel } from '../outbox/OutboxPanel';
+import { Popover } from '../../ui/Popover';
 import { api } from '../../app/ipc/commands';
 import type { Label } from '../../app/ipc/types';
 import { AccountSwitcher } from '../accounts/AccountSwitcher';
-import { Inbox, Star, Clock, Send, FileText, Archive, Layers, AlertOctagon, Trash2, Settings } from 'lucide-react';
+import {
+  Inbox,
+  Star,
+  Clock,
+  Send,
+  FileText,
+  Archive,
+  Layers,
+  AlertOctagon,
+  AlertTriangle,
+  Trash2,
+  Settings,
+} from 'lucide-react';
 import { useLabels } from '../../stores/labelsStore';
 
 const views = [
@@ -397,41 +412,69 @@ function SyncProgress() {
 }
 
 function PendingFooter() {
-  const pending = useSync((s) => s.pending);
-  const summaries = useSync((s) => s.pendingSummary);
-  const total = Object.values(pending).reduce((a, b) => a + b, 0);
-  if (total <= 0) return null;
-  const details = Object.values(summaries).flat();
+  const outbox = useSync((s) => s.outbox);
+  const storeOpen = useOutbox((s) => s.open);
+  const setOpen = useOutbox((s) => s.setOpen);
+  const totals = outboxTotals(outbox);
+  const running = totals.pending + totals.inflight;
+  const stuck = totals.failed + totals.uncertain;
+  if (running + stuck <= 0) return null;
+  const details = totals.summary;
   const inline = details
     .slice(0, 2)
     .map((d) => `${d.label}${d.count > 1 ? ` (${d.count})` : ''}`)
     .join(', ');
-  const tooltip = details.length
-    ? `Sending your changes to Gmail:\n${details.map((d) => `• ${d.label} (${d.count})`).join('\n')}`
-    : 'Sending your changes to Gmail';
+  const tooltip = stuck
+    ? `${stuck} operation${stuck === 1 ? '' : 's'} need attention — open the Outbox`
+    : details.length
+      ? `Sending your changes to Gmail:\n${details.map((d) => `• ${d.label} (${d.count})`).join('\n')}`
+      : 'Sending your changes to Gmail';
+  const text = stuck
+    ? `${stuck} need${stuck === 1 ? 's' : ''} attention`
+    : `Sending ${running.toLocaleString()} change${running === 1 ? '' : 's'} to Gmail`;
   return (
-    <div
-      title={tooltip}
-      role="status"
-      aria-live="polite"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 7,
-        padding: '6px 12px',
-        borderTop: '1px solid var(--border)',
-        fontSize: 12,
-        color: 'var(--fg-2)',
-        minWidth: 0,
-      }}
+    <Popover
+      open={storeOpen}
+      onOpenChange={setOpen}
+      trigger={
+        <button
+          title={tooltip}
+          role="status"
+          aria-live="polite"
+          aria-haspopup="dialog"
+          data-testid="outbox-indicator"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 7,
+            width: '100%',
+            padding: '6px 12px',
+            borderTop: '1px solid var(--border)',
+            border: 'none',
+            background: 'none',
+            cursor: 'pointer',
+            font: 'inherit',
+            textAlign: 'left',
+            fontSize: 12,
+            color: 'var(--fg-2)',
+            minWidth: 0,
+          }}
+        >
+          {stuck > 0 ? (
+            <AlertTriangle size={12} color="var(--warning)" aria-hidden />
+          ) : (
+            <span className="spin" aria-hidden style={{ color: 'var(--accent)' }}>
+              ◌
+            </span>
+          )}
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {text}
+            {inline && !stuck ? `: ${inline}` : ''}
+          </span>
+        </button>
+      }
     >
-      <span className="spin" aria-hidden style={{ color: 'var(--accent)' }}>
-        ◌
-      </span>
-      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        Sending {total} change{total === 1 ? '' : 's'} to Gmail
-        {inline ? `: ${inline}` : ''}
-      </span>
-    </div>
+      <OutboxPanel onClose={() => setOpen(false)} />
+    </Popover>
   );
 }

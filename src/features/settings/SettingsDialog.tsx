@@ -242,6 +242,18 @@ export function SettingsDialog({
               <Row label="Split inbox by category">
                 <Switch checked={settings.splitInbox} onChange={(v) => void set({ splitInbox: v })} />
               </Row>
+              {/*
+                The snooze timer lives on this device (P6.5), so the policy that
+                decides whether a woken conversation returns unread belongs next
+                to the other delivery choices rather than nowhere at all.
+              */}
+              <Row label="Wake snoozed conversations unread">
+                <Switch
+                  checked={settings.wakeSnoozedUnread}
+                  ariaLabel="Wake snoozed conversations unread"
+                  onChange={(v) => void set({ wakeSnoozedUnread: v })}
+                />
+              </Row>
               <Button
                 onClick={() => {
                   toast.promise(api.sync_now(), {

@@ -9,9 +9,9 @@ import { accentHex } from '../../lib/colors';
 import { useSettings } from '../../stores/settingsStore';
 import { decodeRfc2047 } from '../../lib/rfc2047';
 import { rowHeightForDensity } from './rowHeight';
-import { Archive, Clock, Mail, MailOpen, Star, Paperclip, Trash2 } from 'lucide-react';
+import { Archive, BellOff, Clock, Mail, MailOpen, Star, Paperclip, Trash2 } from 'lucide-react';
 
-export type RowAction = 'archive' | 'trash' | 'read' | 'star' | 'snooze';
+export type RowAction = 'archive' | 'trash' | 'read' | 'star' | 'snooze' | 'unsnooze';
 
 /**
  * DOM id for a row (P9.5). Provider thread ids are only unique per account, so
@@ -115,9 +115,15 @@ function HoverActions({
       >
         {row.unreadCount > 0 ? <MailOpen size={14} /> : <Mail size={14} />}
       </button>
-      <button title="Snooze (h)" style={btn} onClick={stop(() => onAction('snooze'))}>
-        <Clock size={14} />
-      </button>
+      {row.snoozedUntil ? (
+        <button title="Unsnooze — move back to Inbox" style={btn} onClick={stop(() => onAction('unsnooze'))}>
+          <BellOff size={14} />
+        </button>
+      ) : (
+        <button title="Snooze (h)" style={btn} onClick={stop(() => onAction('snooze'))}>
+          <Clock size={14} />
+        </button>
+      )}
     </span>
   );
 }

@@ -50,7 +50,13 @@ export function AttachmentStrip({
 
   const errorText = (e: unknown): string => {
     if (typeof e === 'string') return e;
-    if (e && typeof e === 'object' && 'message' in e && typeof e.message === 'string' && e.message.length < 200) {
+    if (
+      e &&
+      typeof e === 'object' &&
+      'message' in e &&
+      typeof e.message === 'string' &&
+      e.message.length < 200
+    ) {
       return e.message;
     }
     return 'Could not fetch this attachment. Check your connection and try again.';

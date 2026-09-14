@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useEditor, EditorContent, type ChainedCommands } from '@tiptap/react';
+import { useEditor, EditorContent, type ChainedCommands, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -10,7 +10,18 @@ import { Sheet } from '../../ui/Sheet';
 import { Button } from '../../ui/Button';
 import { Spinner } from '../../ui/Spinner';
 import { api } from '../../app/ipc/commands';
-import type { Address, AttachmentRef, Contact, Draft, ThreadRef } from '../../app/ipc/types';
+import type {
+  Address,
+  AttachmentMeta,
+  AttachmentRef,
+  Contact,
+  Draft,
+  MessageBody,
+  MessageMeta,
+  OperationState,
+} from '../../app/ipc/types';
+import { on } from '../../app/ipc/events';
+import { readSiftError } from '../../lib/siftError';
 import { useAccounts } from '../../stores/accountsStore';
 import { useSettings } from '../../stores/settingsStore';
 import { useView } from '../../stores/viewStore';
@@ -19,19 +30,37 @@ import { SignatureBlock, applySignature, composedBodyHtml, signatureSource } fro
 import { basename, errorReason, stagingFailureMessage, useNativeDropListener } from './attachDrop';
 import { escapeHtml, htmlToPlainText } from './plainText';
 import { readLastSender, rememberLastSender, resolveComposeAccount } from './composeAccount';
+import { DraftSaveQueue, newDraftId, type SaveStatus } from './draftQueue';
+import {
+  forwardSubject,
+  pickParent,
+  replyAllRecipients,
+  replyRecipients,
+  replySubject,
+  type ComposeRequest,
+} from './replyContext';
+import { forwardHtml, quoteHtml } from './quote';
+import { QuoteBlock } from './quoteNode';
 
 type Field = 'to' | 'cc' | 'bcc';
 const FIELDS: Field[] = ['to', 'cc', 'bcc'];
 
-export function ComposerSheet({
-  mode,
-  thread,
-  onClose,
-}: {
-  mode: string;
-  thread?: ThreadRef;
-  onClose: () => void;
-}) {
+/** Nothing the editor owns is written before this debounce quiet period. */
+const AUTOSAVE_MS = 300;
+
+/**
+ * The queued send as the composer reports it (P6.2). The state comes from the
+ * outbox, never from the fact that the enqueue call returned: queueing is not
+ * sending, and the composer may only claim what the provider actually did.
+ */
+interface QueuedSend {
+  opId: number;
+  notBefore: number;
+  state: OperationState;
+  message: string | null;
+}
+
+export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest & { onClose: () => void }) {
   useEffect(() => {
     (window as unknown as { __composeOpen?: boolean }).__composeOpen = true;
     return () => {
@@ -57,30 +86,114 @@ export function ComposerSheet({
   const [showBcc, setShowBcc] = useState(false);
   const [subject, setSubject] = useState('');
   const [from, setFrom] = useState('');
+  const [activeMode, setActiveMode] = useState(mode);
   const [atts, setAtts] = useState<AttachmentRef[]>([]);
   const [pending, setPending] = useState<{ path: string; name: string }[]>([]);
-  const [localId, setLocalId] = useState<string | undefined>(undefined);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
+  /**
+   * The composer never says "Sent" because it queued something (P6.2): this
+   * holds the operation the composer is waiting on, and it survives while the
+   * app is offline or restarted because it is rebuilt from the outbox.
+   */
+  const [queued, setQueued] = useState<QueuedSend | null>(null);
+  const queuedRef = useRef<QueuedSend | null>(null);
+  queuedRef.current = queued;
   const [plainText, setPlainText] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const [escapeOwned, setEscapeOwned] = useState(false);
   const [, bumpToolbar] = useState(0);
+  // Reopening a stored draft is a read; the fields stay inert until it lands.
+  const [restoring, setRestoring] = useState(!!draftId);
+  /** A loaded draft whose body is waiting for the editor to exist. */
+  const [pendingDraft, setPendingDraft] = useState<Draft | null>(null);
+  const [quoted, setQuoted] = useState<'none' | 'loading' | 'ready' | 'error'>(
+    !draftId && thread && mode !== 'new' ? 'loading' : 'ready',
+  );
+  const [parent, setParent] = useState<MessageMeta | null>(null);
+  const [forwardBusy, setForwardBusy] = useState<Record<string, 'loading' | 'error'>>({});
 
   const rootRef = useRef<HTMLDivElement>(null);
-  const saveT = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const stageSeq = useRef(0);
   const sigAppliedRef = useRef<string | null>(null);
   const plainRef = useRef(false);
   const closedRef = useRef(false);
   const layers = useRef(new Map<string, () => void>());
 
-  // Latest-render accessors for listeners that must not re-register (native drop).
+  // A new composer allocates its identity here and never regenerates it, so an
+  // asynchronous save can never race a second id into existence (P5.1).
+  const localIdRef = useRef<string>('');
+  if (!localIdRef.current) localIdRef.current = draftId ?? newDraftId();
+
+  const idFields = useRef<
+    Pick<
+      Draft,
+      'accountId' | 'threadId' | 'inReplyToMessageId' | 'rfcMessageId' | 'remoteDraftId' | 'remoteMessageId'
+    >
+  >({
+    accountId: '',
+    threadId: thread?.threadId,
+  });
+  const subjectRef = useRef('');
   const attsRef = useRef(atts);
   attsRef.current = atts;
-  const editingRef = useRef({ to, cc, bcc, subject, from, texts, localId, pending });
-  editingRef.current = { to, cc, bcc, subject, from, texts, localId, pending };
+  /**
+   * Recipients are mirrored into a ref by every mutator (not at render time) so
+   * a close/send flush started in the same tick as an edit still sees it.
+   */
+  const recipientRef = useRef({ to, cc, bcc });
+  const editorRef = useRef<Editor | null>(null);
+  const modeRef = useRef(activeMode);
+  modeRef.current = activeMode;
+  /** True once the body may be typed into: a late fetch cannot land after this. */
+  const readyRef = useRef(false);
+
+  const accountEmail = useCallback((id: string) => accounts.find((a) => a.id === id)?.email, [accounts]);
+  /**
+   * Every address this installation owns. The sending account is the verified
+   * identity that matters, and the other configured accounts are the user's
+   * addresses too — a reply-all must never address them.
+   */
+  const identitiesOf = useCallback(
+    (id: string): string[] => {
+      const emails = accounts.map((a) => a.email);
+      const own = accounts.find((x) => x.id === id)?.email;
+      return own && !emails.includes(own) ? [own, ...emails] : emails;
+    },
+    [accounts],
+  );
+
+  const queueRef = useRef<DraftSaveQueue | null>(null);
+  const startQueue = useCallback(
+    (initial?: Draft) => {
+      if (queueRef.current) return queueRef.current;
+      queueRef.current = new DraftSaveQueue({
+        localId: localIdRef.current,
+        initial,
+        debounceMs: AUTOSAVE_MS,
+        onStatus: setSaveStatus,
+        build: () => ({
+          ...idFields.current,
+          fromEmail: accountEmail(idFields.current.accountId),
+          mode: modeRef.current,
+          toJson: recipientRef.current.to,
+          ccJson: recipientRef.current.cc,
+          bccJson: recipientRef.current.bcc,
+          subject: subjectRef.current,
+          bodyHtml: editorRef.current?.getHTML() ?? '',
+          attachmentsJson: attsRef.current,
+        }),
+        save: (draft) =>
+          api.drafts_upsert({
+            draft,
+            expectedRevision: queueRef.current?.acknowledgedRevision ?? 0,
+          }),
+      });
+      return queueRef.current;
+    },
+    [accountEmail],
+  );
 
   const editor = useEditor({
     extensions: [
@@ -88,13 +201,21 @@ export function ComposerSheet({
       Link.configure({ openOnClick: false }),
       Placeholder.configure({ placeholder: 'Write…' }),
       SignatureBlock,
+      QuoteBlock,
     ],
     content: '',
+    editable: false,
     editorProps: {
       // Plain-text mode never lets pasted markup carry formatting in.
       transformPastedHTML: (html) => (plainRef.current ? escapeHtml(htmlToPlainText(html)) : html),
     },
   });
+  editorRef.current = editor;
+
+  /** One revision per edit; the queue debounces and serializes the writes. */
+  const markChanged = useCallback(() => {
+    startQueue().change();
+  }, [startQueue]);
 
   useEffect(() => {
     plainRef.current = plainText;
@@ -111,9 +232,20 @@ export function ComposerSheet({
     };
   }, [editor]);
 
+  // The body accepts typing only once the account, the stored draft or the
+  // quoted message is actually there: a late response can never overwrite it.
+  // A queued payload is frozen (P6.2): cancel it first, then edit a new revision.
+  const locked = restoring || queued !== null;
+  const bodyReady = !locked && quoted !== 'loading';
+  readyRef.current = bodyReady;
+  useEffect(() => {
+    // Making the body editable is not an edit: it must not mark a change.
+    editor?.setEditable(bodyReady, false);
+  }, [editor, bodyReady]);
+
   // ---- account selection -------------------------------------------------
   useEffect(() => {
-    if (mode !== 'new' || from || !accounts.length) return;
+    if (activeMode !== 'new' || from || !accounts.length) return;
     const id = resolveComposeAccount({
       scope: accountScope,
       accounts,
@@ -121,19 +253,24 @@ export function ComposerSheet({
       lastSender: readLastSender(),
     });
     if (id) setFrom(id);
-  }, [mode, from, accounts, accountScope, enabledIds]);
+  }, [activeMode, from, accounts, accountScope, enabledIds]);
+
+  useEffect(() => {
+    idFields.current = { ...idFields.current, accountId: from };
+  }, [from]);
 
   const changeFrom = (id: string) => {
     setFrom(id);
     rememberLastSender(id);
     sigAppliedRef.current = id;
-    if (editor) applySignature(editor, signatureSource(accounts, id));
+    if (editor && quoted !== 'loading') applySignature(editor, signatureSource(accounts, id));
+    markChanged();
   };
 
   // New messages get their account's signature once; replies get theirs from
-  // the prefill (or here, if the account list arrived after the thread). Both
-  // paths mark the account so a re-render cannot duplicate the block.
-  const contentReadyRef = useRef(mode === 'new');
+  // the prefill. Both paths mark the account so a re-render cannot duplicate
+  // the block, and a restored draft keeps exactly the body it was saved with.
+  const contentReadyRef = useRef(activeMode === 'new' && !draftId);
   useEffect(() => {
     if (!editor || !from || !accounts.length || sigAppliedRef.current === from) return;
     if (!contentReadyRef.current) return;
@@ -141,133 +278,250 @@ export function ComposerSheet({
     applySignature(editor, signatureSource(accounts, from));
   }, [editor, from, accounts]);
 
-  // ---- reply / forward prefill ------------------------------------------
+  // ---- reopening a stored draft (P5.2) -----------------------------------
   useEffect(() => {
-    if (!editor) return;
-    if (mode !== 'reply' && mode !== 'reply_all' && mode !== 'forward') return;
-    if (!thread) return;
+    if (!draftId) return;
     let cancelled = false;
     api
-      .thread_get(thread.accountId, thread.threadId)
+      .drafts_get({ localId: draftId })
       .then((d) => {
         if (cancelled) return;
-        const last = d.messages[d.messages.length - 1];
-        if (!last) return;
-        if (mode === 'forward') {
-          setSubject(`Fwd: ${last.subject}`);
-        } else {
-          setSubject(last.subject.startsWith('Re:') ? last.subject : `Re: ${last.subject}`);
-          setTo([{ e: last.from.e, n: last.from.n }]);
-          if (mode === 'reply_all' && last.cc.length) {
-            setCc(last.cc);
-            setShowCc(true);
-          }
+        if (!d) {
+          throw new Error('draft_missing');
         }
+        setTo(d.toJson ?? []);
+        setCc(d.ccJson ?? []);
+        setBcc(d.bccJson ?? []);
+        recipientRef.current = { to: d.toJson ?? [], cc: d.ccJson ?? [], bcc: d.bccJson ?? [] };
+        setShowCc((d.ccJson ?? []).length > 0);
+        setShowBcc((d.bccJson ?? []).length > 0);
+        setSubject(d.subject ?? '');
+        subjectRef.current = d.subject ?? '';
         setFrom(d.accountId);
-        const raw = signatureSource(accounts, d.accountId);
-        // If the account list has not arrived yet, leave the flag unset so the
-        // signature effect applies once the sending account is known.
-        if (raw || accounts.length) sigAppliedRef.current = d.accountId;
-        const quote = `<details class="sift-quote"><summary>•••</summary><div>${last.snippet}</div></details>`;
-        editor.commands.setContent(composedBodyHtml(raw, quote));
-        editor.commands.setTextSelection(1);
+        setActiveMode(d.mode || mode);
+        attsRef.current = d.attachmentsJson ?? [];
+        setAtts(d.attachmentsJson ?? []);
+        idFields.current = {
+          accountId: d.accountId,
+          threadId: d.threadId,
+          inReplyToMessageId: d.inReplyToMessageId,
+          rfcMessageId: d.rfcMessageId,
+          remoteDraftId: d.remoteDraftId,
+          remoteMessageId: d.remoteMessageId,
+        };
+        sigAppliedRef.current = d.accountId;
         contentReadyRef.current = true;
+        // The stored body is applied once the editor exists (below): the editor
+        // may not have been created yet when this response arrived.
+        setPendingDraft(d);
       })
       .catch(() => {
-        /* offline: open an empty composer rather than blocking reply */
+        if (cancelled) return;
+        setRestoring(false);
+        setQuoted('error');
+        toast.error('Could not open this draft');
       });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, mode, thread?.accountId, thread?.threadId]);
+  }, [draftId]);
+
+  /**
+   * The stored body is authoritative, so it is written once both the draft and
+   * the editor exist — never with a stale (empty) editor, and never as an edit.
+   */
+  useEffect(() => {
+    if (!editor || !pendingDraft) return;
+    editor.commands.setContent(pendingDraft.bodyHtml ?? '', false);
+    editor.commands.setTextSelection(1);
+    startQueue(pendingDraft);
+    setPendingDraft(null);
+    setRestoring(false);
+  }, [editor, pendingDraft, startQueue]);
+
+  // ---- reply / forward prefill ------------------------------------------
+  useEffect(() => {
+    if (!editor || draftId || !thread) return;
+    if (mode !== 'reply' && mode !== 'reply_all' && mode !== 'forward') return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const detail = await api.thread_get(thread.accountId, thread.threadId);
+        if (cancelled) return;
+        const p = pickParent(detail.messages, thread.messageId);
+        if (!p) {
+          setQuoted('ready');
+          return;
+        }
+        setParent(p);
+        setFrom(detail.accountId);
+        const identities = identitiesOf(detail.accountId);
+        if (mode === 'forward') {
+          setSubject(forwardSubject(p.subject));
+          subjectRef.current = forwardSubject(p.subject);
+        } else {
+          const subj = replySubject(p.subject);
+          setSubject(subj);
+          subjectRef.current = subj;
+          if (mode === 'reply_all') {
+            const built = replyAllRecipients(p, identities);
+            setTo(built.to);
+            setCc(built.cc);
+            setShowCc(built.cc.length > 0);
+            // The ref is what send/close read; a prefill that only set state
+            // left the reply with no recipients at send time.
+            recipientRef.current = { ...recipientRef.current, to: built.to, cc: built.cc };
+          } else {
+            const built = replyRecipients(p, identities);
+            setTo(built);
+            recipientRef.current = { ...recipientRef.current, to: built };
+          }
+        }
+        idFields.current = {
+          ...idFields.current,
+          accountId: detail.accountId,
+          // Threading: the parent id is what the backend needs — it derives the
+          // RFC Message-ID/References chain from the stored parent itself. The
+          // reply's own Message-ID is assigned on first send and preserved by
+          // every later edit of the same draft.
+          inReplyToMessageId: mode === 'forward' ? undefined : p.id,
+        };
+        // The quote is the real body, not the list snippet: poll briefly while
+        // the local copy is still being fetched, then say so honestly.
+        let body: MessageBody | null = null;
+        let delay = 150;
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          try {
+            body = await api.message_body(thread.accountId, p.id);
+          } catch {
+            body = null;
+            break;
+          }
+          if (cancelled) return;
+          if (body.state !== 'loading') break;
+          await new Promise((r) => setTimeout(r, delay));
+          delay = Math.min(delay * 2, 800);
+        }
+        if (cancelled) return;
+        const raw = signatureSource(accounts, detail.accountId);
+        const available = !!body && body.state === 'ready' && !!(body.html || body.text);
+        const block = available
+          ? mode === 'forward'
+            ? forwardHtml(
+                { from: p.from, to: p.to, subject: p.subject, date: p.internalDate },
+                { html: body?.html, text: body?.text },
+              )
+            : quoteHtml({ html: body?.html, text: body?.text, from: p.from, date: p.internalDate })
+          : '';
+        editor.commands.setContent(composedBodyHtml(raw, block), false);
+        editor.commands.setTextSelection(1);
+        contentReadyRef.current = true;
+        sigAppliedRef.current = detail.accountId;
+        setQuoted(available ? 'ready' : 'error');
+        // Filling in the reply target, recipients, subject and quote is an edit.
+        markChanged();
+      } catch {
+        if (cancelled) return;
+        setQuoted('error');
+        toast.error('Could not load the message being answered');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, mode, thread?.accountId, thread?.threadId, thread?.messageId, draftId]);
 
   useEffect(() => {
-    if (!editor) return;
-    const t = setTimeout(() => editor.commands.focus('start'), 0);
+    if (!bodyReady) return;
+    const t = setTimeout(() => editor?.commands.focus('start'), 0);
     return () => clearTimeout(t);
-  }, [editor]);
+  }, [editor, bodyReady]);
 
   // ---- draft persistence -------------------------------------------------
-  const persist = useCallback(
-    async (
-      html?: string,
-      overrides?: {
-        to?: Address[];
-        cc?: Address[];
-        bcc?: Address[];
-        atts?: AttachmentRef[];
-        fromId?: string;
-      },
-    ): Promise<Draft | null> => {
-      clearTimeout(saveT.current);
-      saveT.current = undefined;
-      const cur = editingRef.current;
-      const accountId = overrides?.fromId ?? cur.from;
-      if (!accountId) return null;
-      const d: Draft = {
-        localId: cur.localId,
-        accountId,
-        threadId: thread?.threadId,
-        mode,
-        toJson: overrides?.to ?? cur.to,
-        ccJson: overrides?.cc ?? cur.cc,
-        bccJson: overrides?.bcc ?? cur.bcc,
-        subject: cur.subject,
-        bodyHtml: html ?? editor?.getHTML() ?? '',
-        attachmentsJson: overrides?.atts ?? attsRef.current,
-      };
-      try {
-        const saved = await api.drafts_upsert(d);
-        if (saved?.localId && !closedRef.current) setLocalId(saved.localId);
-        return saved;
-      } catch {
-        return null; // offline: keep the local draft in memory
-      }
-    },
-    [editor, mode, thread?.threadId],
-  );
-
-  const lastHtmlRef = useRef('');
-  const persistRef = useRef(persist);
-  persistRef.current = persist;
-
   useEffect(() => {
     if (!editor) return;
     const h = () => {
-      lastHtmlRef.current = editor.getHTML();
-      clearTimeout(saveT.current);
-      saveT.current = setTimeout(() => {
-        saveT.current = undefined;
-        void persistRef.current(lastHtmlRef.current);
-      }, 300);
+      if (!readyRef.current) return;
+      markChanged();
     };
     editor.on('update', h);
     return () => {
       editor.off('update', h);
     };
-  }, [editor]);
+  }, [editor, markChanged]);
 
-  // A queued autosave must never fire after the sheet is gone: flush it now
-  // (the reader may have closed the sheet without going through `close`).
+  /**
+   * Close, Escape and the window close button all funnel here: the newest
+   * snapshot is written first, and a storage failure keeps the composer open
+   * so nothing typed can disappear (P5.1).
+   */
+  const close = useCallback(async () => {
+    if (closedRef.current) return;
+    snapshotRecipientsRef.current(); // a half-typed address is still an edit
+    const q = startQueue();
+    const saved = await q.flush();
+    if (!saved && q.currentStatus === 'error') {
+      toast.error("Couldn't save this draft — check storage and retry");
+      return;
+    }
+    closedRef.current = true;
+    q.dispose();
+    onClose();
+  }, [onClose, startQueue]);
+
+  const closeRef = useRef(close);
+  closeRef.current = close;
+
+  // Unmount without close (a route change, an error boundary) must still land
+  // the pending snapshot, and it must never fire after the sheet is gone.
   useEffect(
     () => () => {
-      const pending = saveT.current;
-      clearTimeout(pending);
-      saveT.current = undefined;
-      if (pending && !closedRef.current) void persistRef.current(lastHtmlRef.current);
+      const q = queueRef.current;
+      if (!q) return;
+      if (closedRef.current) q.dispose();
+      else void q.flush();
     },
     [],
   );
 
-  const close = () => {
-    if (closedRef.current) return;
-    closedRef.current = true;
-    clearTimeout(saveT.current);
-    saveT.current = undefined;
-    void persist(lastHtmlRef.current || editor?.getHTML());
-    onClose();
-  };
+  // A window close must not drop the pending snapshot either.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      try {
+        // Platform-specific module (rule exception): `@tauri-apps/api/window`
+        // only exists meaningfully inside a Tauri window. Loading it lazily
+        // keeps the composer working in a plain browser or the e2e harness,
+        // where `getCurrentWindow()` has no window to return.
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        const un = await win.onCloseRequested(async (event) => {
+          const q = queueRef.current;
+          if (!q || q.currentRevision <= q.acknowledgedRevision) return;
+          event.preventDefault();
+          const saved = await q.flush();
+          if (saved) {
+            closedRef.current = true;
+            q.dispose();
+            await win.close();
+          } else {
+            toast.error("Couldn't save this draft — check storage and retry");
+          }
+        });
+        if (disposed) un();
+        else unlisten = un;
+      } catch {
+        /* Not a Tauri window (tests, browser preview): nothing to hook. */
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   // ---- attachments -------------------------------------------------------
   const stage = async (paths: string[]) => {
@@ -276,14 +530,19 @@ export function ComposerSheet({
     const seq = ++stageSeq.current;
     setPending((x) => [...x, ...batch]);
     try {
-      const refs = await api.attachments_add_from_paths(paths);
+      const refs = await api.attachments_add_from_paths({
+        accountId: idFields.current.accountId,
+        draftId: localIdRef.current,
+        paths,
+      });
       if (stageSeq.current !== seq) return;
       const next = [...attsRef.current, ...refs]; // refresh chips from the command result
+      attsRef.current = next;
       setAtts(next);
       if (refs.length < batch.length) {
         toast.error(`Couldn't attach ${batch.length - refs.length} of ${batch.length} files`);
       }
-      void persist(editor?.getHTML(), { atts: next });
+      markChanged();
     } catch (e) {
       // Existing attachments stay; the failure names the file and the reason.
       if (stageSeq.current === seq) toast.error(stagingFailureMessage(paths, e));
@@ -307,9 +566,43 @@ export function ComposerSheet({
   };
 
   const removeAttachment = (index: number) => {
-    const next = atts.filter((_, i) => i !== index);
+    const next = attsRef.current.filter((_, i) => i !== index);
+    attsRef.current = next;
     setAtts(next);
-    void persist(editor?.getHTML(), { atts: next });
+    markChanged();
+  };
+
+  /** Copy one attachment of the forwarded message into this draft (P5.4). */
+  const includeForwarded = async (meta: AttachmentMeta, include: boolean) => {
+    if (!parent) return;
+    if (!include) {
+      const next = attsRef.current.filter((a) => a.name !== (meta.filename ?? a.name));
+      attsRef.current = next;
+      setAtts(next);
+      markChanged();
+      return;
+    }
+    setForwardBusy((b) => ({ ...b, [meta.id]: 'loading' }));
+    try {
+      const ref = await api.attachments_stage_from_message({
+        accountId: idFields.current.accountId,
+        messageId: parent.id,
+        attachmentId: meta.id,
+        draftId: localIdRef.current,
+      });
+      const next = [...attsRef.current, ref];
+      attsRef.current = next;
+      setAtts(next);
+      markChanged();
+      setForwardBusy((b) => {
+        const next2 = { ...b };
+        delete next2[meta.id];
+        return next2;
+      });
+    } catch (e) {
+      setForwardBusy((b) => ({ ...b, [meta.id]: 'error' }));
+      toast.error(`Couldn't copy ${meta.filename ?? 'the attachment'}: ${errorReason(e)}`);
+    }
   };
 
   // ---- recipients --------------------------------------------------------
@@ -317,24 +610,36 @@ export function ComposerSheet({
   valuesRef.current = { to, cc, bcc };
   const setters: Record<Field, (v: Address[]) => void> = { to: setTo, cc: setCc, bcc: setBcc };
 
+  /** Every recipient mutation goes through here: state, ref and revision together. */
+  const setRecipients = (field: Field, next: Address[]) => {
+    recipientRef.current = { ...recipientRef.current, [field]: next };
+    setters[field](next);
+    markChanged();
+  };
+
   const commitField = (field: Field) => {
-    const raw = editingRef.current.texts[field];
-    if (!raw.trim()) return valuesRef.current[field];
+    const raw = texts[field];
+    if (!raw.trim()) return recipientRef.current[field];
     const parsed = parseAddressList(raw);
-    const merged = parsed.length
-      ? mergeRecipients(valuesRef.current[field], parsed)
-      : valuesRef.current[field];
-    setters[field](merged);
+    if (!parsed.length) return recipientRef.current[field];
+    const merged = mergeRecipients(valuesRef.current[field], parsed);
     setTexts((t) => ({ ...t, [field]: '' }));
+    setRecipients(field, merged);
     return merged;
   };
 
-  /** Commit any half-typed address text and return the recipients as they will be sent. */
-  const snapshotRecipients = (): Record<Field, Address[]> => ({
-    to: commitField('to'),
-    cc: commitField('cc'),
-    bcc: commitField('bcc'),
-  });
+  /**
+   * Commit any half-typed address text and report the recipients as they will
+   * be sent. Kept in a ref so close and send share exactly one implementation.
+   */
+  const snapshotRecipients = (): Record<Field, Address[]> => {
+    commitField('to');
+    commitField('cc');
+    commitField('bcc');
+    return { ...recipientRef.current };
+  };
+  const snapshotRecipientsRef = useRef(snapshotRecipients);
+  snapshotRecipientsRef.current = snapshotRecipients;
 
   const setLayer = useCallback((key: string, open: boolean, dismiss: () => void) => {
     if (open) layers.current.set(key, dismiss);
@@ -347,8 +652,85 @@ export function ComposerSheet({
   }, [linkOpen, setLayer]);
 
   // ---- sending -----------------------------------------------------------
+
+  /**
+   * Refill the composer from the draft `send_cancel` returned (P6.2). The
+   * returned row is authoritative — recipients, subject, body and the staged
+   * attachment refs are the ones the frozen request was built from, so what is
+   * reopened is byte-for-byte the mail that was about to be sent.
+   */
+  const applyReturnedDraft = useCallback(
+    (d: Draft) => {
+      setTo(d.toJson ?? []);
+      setCc(d.ccJson ?? []);
+      setBcc(d.bccJson ?? []);
+      recipientRef.current = { to: d.toJson ?? [], cc: d.ccJson ?? [], bcc: d.bccJson ?? [] };
+      setShowCc((d.ccJson ?? []).length > 0);
+      setShowBcc((d.bccJson ?? []).length > 0);
+      setSubject(d.subject ?? '');
+      subjectRef.current = d.subject ?? '';
+      setFrom(d.accountId);
+      attsRef.current = d.attachmentsJson ?? [];
+      setAtts(d.attachmentsJson ?? []);
+      idFields.current = {
+        accountId: d.accountId,
+        threadId: d.threadId,
+        inReplyToMessageId: d.inReplyToMessageId,
+        rfcMessageId: d.rfcMessageId,
+        remoteDraftId: d.remoteDraftId,
+        remoteMessageId: d.remoteMessageId,
+      };
+      sigAppliedRef.current = d.accountId;
+      // Restoring is not an edit: the revision stays the one storage already
+      // acknowledged, so the next change is a new revision rather than a
+      // mutation of the queued payload.
+      editorRef.current?.commands.setContent(d.bodyHtml ?? '', false);
+      const q = startQueue(d);
+      q.adopt(d);
+      setSaveStatus('saved');
+    },
+    [startQueue],
+  );
+
+  /**
+   * Read the operation's real state. The outbox is the only authority for
+   * whether the provider accepted the message; a queue call returning is not.
+   */
+  const resolveQueued = useCallback(async (opId: number) => {
+    try {
+      const op = await api.outbox_get({ opId });
+      setQueued((q) =>
+        q && q.opId === opId ? { ...q, state: op.state, message: op.errorMessage ?? null } : q,
+      );
+    } catch {
+      // A pruned operation is a resolved one; the last observed state stands
+      // rather than being upgraded to a claim the composer cannot support.
+    }
+  }, []);
+
+  const undoQueued = useCallback(async () => {
+    const current = queuedRef.current;
+    if (!current) return;
+    try {
+      const draft = await api.send_cancel({ opId: current.opId });
+      applyReturnedDraft(draft);
+      setQueued(null);
+      setSending(false);
+      toast('Send cancelled — nothing was sent');
+    } catch (e) {
+      const err = readSiftError(e);
+      // Too late: the state the backend reported is the honest one, so the
+      // composer shows it instead of pretending the undo worked.
+      const state = err.detail?.state;
+      if (err.code === 'send_undo_expired' && state) {
+        setQueued((q) => (q ? { ...q, state, message: err.message } : q));
+      }
+      toast.error(err.message);
+    }
+  }, [applyReturnedDraft]);
+
   const send = async (archive = false) => {
-    if (sending) return;
+    if (sending || queuedRef.current) return;
     if (pending.length) {
       toast.error('Attachments are still being added');
       return;
@@ -365,68 +747,86 @@ export function ComposerSheet({
       return;
     }
     setSending(true);
-    const html = editor?.getHTML() ?? '';
-    const saved =
-      (await api
-        .drafts_upsert({
-          localId,
-          accountId: from,
-          threadId: thread?.threadId,
-          mode,
-          toJson: r.to,
-          ccJson: r.cc,
-          bccJson: r.bcc,
-          subject,
-          bodyHtml: html,
-          attachmentsJson: atts,
-        })
-        .catch(() => null)) ?? null;
-    const lid = saved?.localId ?? localId;
-    if (!lid) {
-      toast.error('Send failed. Draft kept');
+    const q = startQueue();
+    // One successful save first: the queued operation uses the id and revision
+    // storage actually acknowledged, never a guess (P5.1).
+    const saved = await q.flush();
+    if (!saved) {
       setSending(false);
+      toast.error("Couldn't save the draft — the message was not queued");
       return;
     }
     rememberLastSender(from);
+    const notBefore = Date.now() + settings.undoSendDelay * 1000;
     try {
-      const { op_id } = await api.drafts_send(lid, settings.undoSendDelay * 1000);
-      setSent(true);
-      setTimeout(() => {
-        if (!closedRef.current) {
-          closedRef.current = true;
-          onClose();
-        }
-        toast('Sent · Undo', {
-          action: { label: 'Undo', onClick: () => void api.send_cancel(op_id).catch(() => {}) },
-          duration: settings.undoSendDelay * 1000,
-        });
-        if (archive && thread) {
-          import('../actions/dispatch').then(({ dispatchAction }) => {
-            void dispatchAction(
-              {
-                accountId: thread.accountId,
-                threadIds: [thread.threadId],
-                action: { kind: 'archive' },
-              },
-              { silent: true },
-            );
-          });
-        }
-        // The draft row survives the enqueue: "Undo" cancels the send and puts
-        // the draft back to editing, which is impossible once the row is gone
-        // (P5.1). Cleanup for an accepted send belongs to the outbox, not here.
-      }, 200);
-    } catch {
-      toast.error('Send failed. Draft kept');
+      // Send-and-archive is a dependent operation: the backend queues the
+      // archive label change behind this send and only runs it once the
+      // provider accepted the message. Archiving from here would archive the
+      // source thread even when the send fails.
+      const { opId } = await api.drafts_send({
+        localId: saved.localId,
+        revision: saved.revision,
+        notBefore,
+        archiveAfterSend: archive,
+      });
+      setQueued({ opId, notBefore, state: 'pending', message: null });
+      setSending(false);
+      // The composer stays open on "Queued · Undo": the draft row is still
+      // there, and Undo can still reopen it (P6.2).
+    } catch (e) {
+      const err = readSiftError(e);
+      toast.error(err.code === 'draft_queued' ? err.message : 'Send failed. Draft kept');
       setSending(false);
     }
   };
+  /** The outbox is the authority: follow the operation until it is resolved. */
+  useEffect(() => {
+    const opId = queued?.opId;
+    if (opId === undefined) return;
+    void resolveQueued(opId);
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void on('outbox:state', () => void resolveQueued(opId))
+      .then((u) => {
+        if (disposed) u();
+        else unlisten = u;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [queued?.opId, resolveQueued]);
+
+  /**
+   * Acceptance is the only event that earns the word "Sent" and the only one
+   * that closes the composer (P6.2). Failure keeps it open with the failure on
+   * screen, where Retry is one click away.
+   */
+  useEffect(() => {
+    if (queued?.state !== 'done') return;
+    toast('Sent');
+    if (closedRef.current) return;
+    closedRef.current = true;
+    queueRef.current?.dispose();
+    onClose();
+  }, [queued?.state, onClose]);
+
+  const retryQueued = useCallback(async () => {
+    const current = queuedRef.current;
+    if (!current || current.state !== 'failed') return;
+    try {
+      await api.outbox_retry({ opId: current.opId, acknowledgeDuplicateRisk: false });
+      await resolveQueued(current.opId);
+    } catch (e) {
+      toast.error(readSiftError(e).message);
+    }
+  }, [resolveQueued]);
+
   const sendRef = useRef(send);
   sendRef.current = send;
   const pickAttachmentsRef = useRef(pickAttachments);
   pickAttachmentsRef.current = pickAttachments;
-  const closeRef = useRef(close);
-  closeRef.current = close;
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -460,7 +860,7 @@ export function ComposerSheet({
         }
         e.preventDefault();
         e.stopPropagation();
-        closeRef.current();
+        void closeRef.current();
       }
     };
     window.addEventListener('keydown', h, true);
@@ -489,12 +889,16 @@ export function ComposerSheet({
   };
 
   const attsSize = atts.reduce((n, a) => n + a.size, 0);
+  const forwardedMeta = (parent?.attachments ?? []).filter((a) => !a.isInline);
+  const title = activeMode === 'new' ? 'New message' : activeMode === 'forward' ? 'Forward' : 'Reply';
 
   return (
-    <Sheet onDismiss={close}>
+    <Sheet onDismiss={() => void close()}>
       <div
         ref={rootRef}
+        data-compose-root="1"
         data-compose-escape={escapeOwned ? '1' : undefined}
+        data-save-status={saveStatus}
         style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
       >
         <div
@@ -507,13 +911,21 @@ export function ComposerSheet({
           }}
         >
           <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>
-            {mode === 'new' ? 'New message' : mode === 'forward' ? 'Forward' : 'Reply'}
+            {restoring ? 'Opening draft…' : title}
           </span>
+          <SaveStatusLabel
+            status={saveStatus}
+            onRetry={() => {
+              snapshotRecipientsRef.current();
+              void startQueue().retry();
+            }}
+          />
           {accounts.length > 1 && (
             <select
               value={from}
               onChange={(e) => changeFrom(e.target.value)}
               aria-label="From account"
+              disabled={locked}
               style={{ fontSize: 12 }}
             >
               {accounts.map((a) => (
@@ -523,7 +935,12 @@ export function ComposerSheet({
               ))}
             </select>
           )}
-          <button onClick={close} aria-label="Close composer" style={iconButtonStyle}>
+          <button
+            type="button"
+            onClick={() => void close()}
+            aria-label="Close composer"
+            style={iconButtonStyle}
+          >
             <X size={16} />
           </button>
         </div>
@@ -535,9 +952,13 @@ export function ComposerSheet({
               label={field === 'to' ? 'To' : field === 'cc' ? 'Cc' : 'Bcc'}
               values={field === 'to' ? to : field === 'cc' ? cc : bcc}
               text={texts[field]}
+              disabled={locked}
               onText={(v) => setTexts((t) => ({ ...t, [field]: v }))}
-              onChange={setters[field]}
-              onCommit={() => commitField(field)}
+              onChange={(v) => setRecipients(field, v)}
+              onCommit={() => {
+                commitField(field);
+                markChanged();
+              }}
               accountId={from}
               onLayer={setLayer}
             />
@@ -558,9 +979,14 @@ export function ComposerSheet({
 
         <input
           value={subject}
-          onChange={(e) => setSubject(e.target.value)}
+          onChange={(e) => {
+            setSubject(e.target.value);
+            subjectRef.current = e.target.value;
+            markChanged();
+          }}
           placeholder="Subject"
           aria-label="Subject"
+          disabled={locked}
           style={{
             border: 'none',
             borderBottom: '1px solid var(--border)',
@@ -697,9 +1123,63 @@ export function ComposerSheet({
             .tiptap ul, .tiptap ol { padding-left: 20px; margin: 0 0 8px; }
             .tiptap code { font-family: var(--font-mono); font-size: 13px; background: var(--n2); border-radius: 4px; padding: 0 4px; }
             .tiptap [data-sift-signature] { color: var(--fg-2); }
+            .tiptap details.sift-quote { margin: 8px 0; color: var(--fg-2); }
+            .tiptap details.sift-quote summary { cursor: pointer; font-size: 12px; color: var(--fg-3); }
+            .tiptap details.sift-quote blockquote { margin: 6px 0 0; }
           `}</style>
+          {quoted === 'loading' && (
+            <div
+              role="status"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: 'var(--fg-3)' }}
+            >
+              <Spinner size={12} /> Loading the message being answered…
+            </div>
+          )}
+          {quoted === 'error' && (
+            <div role="status" style={{ fontSize: 12, color: 'var(--fg-3)' }}>
+              The original message could not be loaded — writing without a quote.
+            </div>
+          )}
           <EditorContent editor={editor} />
         </div>
+
+        {activeMode === 'forward' && forwardedMeta.length > 0 && (
+          <div
+            aria-label="Original attachments"
+            style={{
+              borderTop: '1px solid var(--border)',
+              padding: '8px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            <span style={{ fontSize: 12, color: 'var(--fg-3)' }}>Include from the original message</span>
+            {forwardedMeta.map((a) => {
+              const busy = forwardBusy[a.id];
+              const included = atts.some((x) => x.name === (a.filename ?? x.name));
+              return (
+                <label
+                  key={a.id}
+                  style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: 'var(--fg)' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={included}
+                    disabled={busy === 'loading'}
+                    onChange={(e) => void includeForwarded(a, e.target.checked)}
+                    aria-label={`Include ${a.filename ?? a.id}`}
+                  />
+                  <Paperclip size={12} />
+                  {a.filename ?? a.id}
+                  <span style={{ color: 'var(--fg-3)' }}>{(a.size / 1024).toFixed(0)}KB</span>
+                  {busy === 'loading' && <Spinner size={12} />}
+                  {busy === 'error' && <span style={{ color: 'var(--danger)' }}>Couldn’t copy</span>}
+                </label>
+              );
+            })}
+          </div>
+        )}
 
         {(atts.length > 0 || pending.length > 0) && (
           <div
@@ -742,6 +1222,10 @@ export function ComposerSheet({
           </div>
         )}
 
+        {queued && (
+          <QueuedBanner queued={queued} onUndo={() => void undoQueued()} onRetry={() => void retryQueued()} />
+        )}
+
         <div
           style={{
             display: 'flex',
@@ -754,26 +1238,21 @@ export function ComposerSheet({
           <Button
             variant="primary"
             onClick={() => void send()}
-            disabled={sending || pending.length > 0}
-            style={{
-              padding: '8px 20px',
-              height: 36,
-              fontWeight: 600,
-              background: sent ? 'var(--success)' : 'var(--accent)',
-            }}
+            disabled={sending || locked || pending.length > 0 || quoted === 'loading'}
+            style={{ padding: '8px 20px', height: 36, fontWeight: 600 }}
           >
-            {sent ? '✓' : sending ? 'Sending…' : 'Send ⌘↵'}
+            {sending ? 'Sending…' : 'Send ⌘↵'}
           </Button>
           <Button
             onClick={() => void send(true)}
-            disabled={sending || pending.length > 0}
+            disabled={sending || locked || pending.length > 0 || quoted === 'loading'}
             title="Send and archive (⌘⇧↵)"
           >
             Send & archive
           </Button>
           <Button
             onClick={() => void pickAttachments()}
-            disabled={sending || pending.length > 0}
+            disabled={sending || locked || pending.length > 0}
             title="Attach (⌘⇧A)"
           >
             Attach
@@ -784,6 +1263,111 @@ export function ComposerSheet({
       </div>
     </Sheet>
   );
+}
+
+/**
+ * What the composer says after queueing (P6.2). The word "Sent" is reserved for
+ * provider acceptance; every other state is described as what is actually
+ * known, including the one case where nobody knows yet.
+ */
+function QueuedBanner({
+  queued,
+  onUndo,
+  onRetry,
+}: {
+  queued: QueuedSend;
+  onUndo: () => void;
+  onRetry: () => void;
+}) {
+  const tone =
+    queued.state === 'failed'
+      ? 'var(--danger)'
+      : queued.state === 'uncertain'
+        ? 'var(--warning)'
+        : 'var(--fg-2)';
+  const text: Record<OperationState, string> = {
+    pending: 'Queued · Undo',
+    inflight: 'Sending now — too late to undo',
+    uncertain: 'Unconfirmed: Sift cannot prove this was not sent',
+    failed: 'Not sent',
+    done: 'Sent',
+    cancelled: 'Send cancelled',
+  };
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="compose-queued"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '10px 16px',
+        borderTop: '1px solid var(--border)',
+        background: 'var(--bg-elevated)',
+        fontSize: 12.5,
+        color: tone,
+      }}
+    >
+      <span style={{ fontWeight: 550 }}>{text[queued.state]}</span>
+      {queued.state === 'uncertain' && (
+        <span style={{ color: 'var(--fg-3)' }}>the Outbox shows the reconciliation state</span>
+      )}
+      {queued.state === 'failed' && queued.message && (
+        <span style={{ color: 'var(--fg-3)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {queued.message}
+        </span>
+      )}
+      <span style={{ flex: 1 }} />
+      {queued.state === 'pending' && (
+        <Button onClick={onUndo} style={{ height: 28, padding: '0 12px' }}>
+          Undo
+        </Button>
+      )}
+      {queued.state === 'failed' && (
+        <Button onClick={onRetry} style={{ height: 28, padding: '0 12px' }}>
+          Retry
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The only draft status the user needs: writing now, written, or a storage
+ * failure with a retry — never a claim about connectivity (P5.1).
+ */
+function SaveStatusLabel({ status, onRetry }: { status: SaveStatus; onRetry: () => void }) {
+  if (status === 'saving') {
+    return (
+      <span role="status" aria-live="polite" style={{ fontSize: 11, color: 'var(--fg-3)' }}>
+        Saving…
+      </span>
+    );
+  }
+  if (status === 'saved') {
+    return (
+      <span role="status" aria-live="polite" style={{ fontSize: 11, color: 'var(--fg-3)' }}>
+        Saved
+      </span>
+    );
+  }
+  if (status === 'error') {
+    return (
+      <span
+        role="status"
+        aria-live="assertive"
+        title="Saving to local storage failed"
+        style={{ fontSize: 11, color: 'var(--danger)', display: 'inline-flex', gap: 6 }}
+      >
+        Couldn’t save
+        <button type="button" onClick={onRetry} style={{ ...linkButtonStyle, color: 'var(--danger)' }}>
+          Retry
+        </button>
+      </span>
+    );
+  }
+  return null;
 }
 
 const iconButtonStyle: React.CSSProperties = {
@@ -878,6 +1462,7 @@ function RecipientRow({
   label,
   values,
   text,
+  disabled,
   onText,
   onChange,
   onCommit,
@@ -887,9 +1472,10 @@ function RecipientRow({
   label: string;
   values: Address[];
   text: string;
+  disabled?: boolean;
   onText: (v: string) => void;
   onChange: (v: Address[]) => void;
-  onCommit: () => Address[];
+  onCommit: () => void;
   accountId: string;
   onLayer: (key: string, open: boolean, dismiss: () => void) => void;
 }) {
@@ -1069,6 +1655,7 @@ function RecipientRow({
               <button
                 type="button"
                 onClick={() => removeAt(i)}
+                disabled={disabled}
                 aria-label={`Remove ${a.n ?? a.e}`}
                 style={chipRemoveStyle}
               >
@@ -1079,6 +1666,7 @@ function RecipientRow({
         })}
         <input
           value={text}
+          disabled={disabled}
           onChange={(e) => {
             onText(e.target.value);
             setSelected(null);

@@ -1,6 +1,7 @@
 import React, { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../app/ipc/commands';
-import type { MessageBody, ThreadDetail, Address, ThreadRef } from '../../app/ipc/types';
+import type { MessageBody, ThreadDetail, Address, ActionKind } from '../../app/ipc/types';
+import type { ComposeContext } from '../compose/replyContext';
 import { useView } from '../../stores/viewStore';
 import { useSelection } from '../../stores/selectionStore';
 import { useSettings } from '../../stores/settingsStore';
@@ -9,7 +10,7 @@ import { Avatar } from '../../ui/Avatar';
 import { Chip } from '../../ui/Chip';
 import { Spinner } from '../../ui/Spinner';
 import { EmptyState } from '../../ui/EmptyState';
-import { dispatchAction } from '../actions/dispatch';
+import { dispatchAction, dispatchGesture } from '../actions/dispatch';
 import { useKeymap } from '../../keymap/engine';
 import {
   openListPicker,
@@ -30,57 +31,19 @@ import { AttachmentStrip } from './AttachmentStrip';
 import { decodeRfc2047 } from '../../lib/rfc2047';
 import { labelKey, useLabels } from '../../stores/labelsStore';
 
-const bodyCache = new Map<string, MessageBody>();
-// Cache keys are the account-qualified pair (P4.2); a provider message id
-// alone can repeat across accounts.
-function cacheGet(accountId: string, id: string) {
-  return bodyCache.get(`${accountId}:${id}`);
-}
-function cacheSet(accountId: string, id: string, b: MessageBody) {
-  bodyCache.set(`${accountId}:${id}`, b);
-  if (bodyCache.size > 50) {
-    const first = bodyCache.keys().next().value;
-    if (first) bodyCache.delete(first);
-  }
-}
+/**
+ * Thread metadata is paginated at 50 messages (P9.2): a 200-message
+ * conversation opens on its newest page and reveals older messages through
+ * "Show earlier", so neither the DOM nor the body cache starts at 200 rows.
+ */
+const MESSAGE_PAGE = 50;
 
-async function pollBody(accountId: string, id: string, onUpdate: (b: MessageBody) => void) {
-  let delay = 250;
-  let last: MessageBody | undefined;
-  for (let i = 0; i < 16; i++) {
-    try {
-      const b = await api.message_body(accountId, id);
-      last = b;
-      cacheSet(accountId, id, b);
-      onUpdate(b);
-      if (b.state === 'ready' || b.state === 'error') {
-        return;
-      }
-    } catch {
-      onUpdate({
-        messageId: id,
-        state: 'error',
-        remoteImageCount: 0,
-        trackerCount: 0,
-        darkSafe: true,
-        remoteImagesAllowed: false,
-        text: last?.text,
-      });
-      return;
-    }
-    await new Promise((r) => setTimeout(r, delay));
-    delay = Math.min(Math.round(delay * 1.35), 2000);
-  }
-  if (last && last.state === 'loading') {
-    onUpdate({ ...last, state: last.text || last.html ? 'ready' : 'error' });
-  }
-}
 
 export function ThreadView({
   onReply,
   obscured = false,
 }: {
-  onReply: (mode: string, thread: ThreadRef) => void;
+  onReply: (mode: string, context: ComposeContext) => void;
   /** A modal overlay (compose, palette, settings) covers the reader. */
   obscured?: boolean;
 }) {
@@ -98,6 +61,7 @@ export function ThreadView({
   // Generation guards every async result for the open key (P3.2): a response
   // for an older click can never overwrite the current one.
   const generationRef = useRef(0);
+
   // Only the detail belonging to the current key is ever displayed, so the
   // previous thread's account/subject cannot leak into a new click.
   const detail =
@@ -163,7 +127,11 @@ export function ThreadView({
       if (onOpenMarkedRef.current === threadKey) return;
       onOpenMarkedRef.current = threadKey;
       void dispatchAction(
-        { accountId: openThread.accountId, threadIds: [openThread.threadId], action: { kind: 'read', on: true } },
+        {
+          accountId: openThread.accountId,
+          threadIds: [openThread.threadId],
+          action: { kind: 'read', on: true },
+        },
         { silent: true },
       );
       return clearReadTimer;
@@ -176,7 +144,11 @@ export function ThreadView({
       const keyNow = cur ? `${cur.accountId}:${cur.threadId}` : null;
       if (keyNow !== threadKey) return; // navigated away
       void dispatchAction(
-        { accountId: openThread.accountId, threadIds: [openThread.threadId], action: { kind: 'read', on: true } },
+        {
+          accountId: openThread.accountId,
+          threadIds: [openThread.threadId],
+          action: { kind: 'read', on: true },
+        },
         { silent: true },
       );
     }, 2000);
@@ -245,7 +217,18 @@ export function ThreadView({
   // palette runs behave identically; Escape stays local because the engine
   // deliberately leaves it to the overlay/back-out handlers.
   const stale = detail == null;
-  const replyRef: ThreadRef | null = detail ? { accountId: detail.accountId, threadId: detail.id } : null;
+  /**
+   * The composer is told which message a reply belongs to (P5.4): the message
+   * the reader has selected, or nothing so the composer picks the newest
+   * non-draft message itself.
+   */
+  const replyContext: ComposeContext | null = detail
+    ? {
+        accountId: detail.accountId,
+        threadId: detail.id,
+        messageId: detail.messages[focusMsg]?.id,
+      }
+    : null;
   const stepMessage = (d: number) => {
     if (!detail) return;
     setFocusMsg((v) => {
@@ -288,16 +271,16 @@ export function ThreadView({
           label: () => pick('label'),
           move: () => pick('move'),
           reply: () => {
-            if (!replyRef) return;
-            onReply('reply', replyRef);
+            if (!replyContext) return;
+            onReply('reply', replyContext);
           },
           replyAll: () => {
-            if (!replyRef) return;
-            onReply('reply_all', replyRef);
+            if (!replyContext) return;
+            onReply('reply_all', replyContext);
           },
           forward: () => {
-            if (!replyRef) return;
-            onReply('forward', replyRef);
+            if (!replyContext) return;
+            onReply('forward', replyContext);
           },
           nextMsg: () => {
             if (stale) return;
@@ -405,10 +388,7 @@ export function ThreadView({
             {decodeRfc2047(detail.subject) || '(No subject)'}
           </h1>
           <div style={{ flexShrink: 0 }}>
-            <HeaderActions
-              detail={detail}
-              onReply={(mode) => onReply(mode, { accountId: detail.accountId, threadId: detail.id })}
-            />
+            <HeaderActions detail={detail} onReply={(mode) => onReply(mode, replyContext!)} />
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
@@ -542,7 +522,13 @@ export function ThreadView({
                   )}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     <button
-                      onClick={() => onReply('reply', { accountId: detail.accountId, threadId: detail.id })}
+                      onClick={() =>
+                        onReply('reply', {
+                          accountId: detail.accountId,
+                          threadId: detail.id,
+                          messageId: m.id,
+                        })
+                      }
                       style={{
                         background: 'none',
                         border: 'none',
@@ -584,7 +570,7 @@ export function ThreadView({
           }}
         >
           <button
-            onClick={() => onReply('reply', { accountId: detail.accountId, threadId: detail.id })}
+            onClick={() => replyContext && onReply('reply', replyContext)}
             style={{
               fontSize: 13,
               background: 'var(--n2)',
@@ -597,7 +583,7 @@ export function ThreadView({
             Reply ▾
           </button>
           <button
-            onClick={() => onReply('forward', { accountId: detail.accountId, threadId: detail.id })}
+            onClick={() => replyContext && onReply('forward', replyContext)}
             style={{
               fontSize: 13,
               background: 'none',
@@ -688,7 +674,7 @@ function HeaderActions({ detail, onReply }: { detail: ThreadDetail; onReply: (mo
         open={snoozeOpen}
         onOpenChange={setSnoozeOpen}
         trigger={
-          <button style={iconBtn} title="Snooze (h)">
+          <button style={iconBtn} title="Snooze (h)" data-testid="thread-snooze">
             <Clock size={16} />
           </button>
         }
@@ -754,25 +740,24 @@ const iconBtn: React.CSSProperties = {
 function BulkBar() {
   const selected = useSelection((s) => s.selectedIds);
   const clear = useSelection((s) => s.clearSelection);
-  const act = async (kind: 'archive' | 'trash') => {
-    // split per account
-    const byAcc: Record<string, string[]> = {};
-    for (const k of selected) {
-      const [acc, ...rest] = k.split(':');
-      const tid = rest.join(':');
-      (byAcc[acc] ??= []).push(tid);
-    }
-    for (const [acc, tids] of Object.entries(byAcc)) {
-      await dispatchAction({ accountId: acc, threadIds: tids, action: { kind } as never });
-    }
+  const act = async (action: ActionKind) => {
+    // One gesture, account-qualified targets: a mixed-account selection undoes
+    // as the single action the user performed (P6.3).
+    const targets = [...selected].flatMap((k) => {
+      const i = k.indexOf(':');
+      const accountId = k.slice(0, i);
+      const threadId = k.slice(i + 1);
+      return accountId && threadId ? [{ accountId, threadId }] : [];
+    });
+    await dispatchGesture(targets, action);
     clear();
   };
   return (
     <div style={{ display: 'flex', gap: 8 }}>
-      <button onClick={() => void act('archive')} className="sift-chip-btn">
+      <button onClick={() => void act({ kind: 'archive' })} className="sift-chip-btn">
         Archive
       </button>
-      <button onClick={() => void act('trash')} className="sift-chip-btn">
+      <button onClick={() => void act({ kind: 'trash' })} className="sift-chip-btn">
         Trash
       </button>
       <button
@@ -792,13 +777,7 @@ function BulkBar() {
   );
 }
 
-function MessageMetaBar({
-  accountId,
-  m,
-}: {
-  accountId: string;
-  m: ThreadDetail['messages'][number];
-}) {
+function MessageMetaBar({ accountId, m }: { accountId: string; m: ThreadDetail['messages'][number] }) {
   const [open, setOpen] = useState(false);
   // Show the exact address in the summary (not "me"), so it is obvious which
   // identity a message was sent to when several accounts are in play.

@@ -51,6 +51,7 @@ export interface FixtureAttachment extends AttachmentMeta {
 export interface FixtureDraft {
   localId: string;
   accountId: string;
+  fromEmail?: string;
   mode: string;
   toJson: Address[];
   ccJson: Address[];
@@ -58,19 +59,37 @@ export interface FixtureDraft {
   subject: string;
   bodyHtml: string;
   attachmentsJson: { name: string; mime: string; size: number; path: string }[];
+  threadId?: string;
+  inReplyToMessageId?: string;
+  rfcMessageId?: string;
   updatedAt: number;
   revision: number;
-  state: 'editing' | 'queued' | 'sent';
+  state: 'editing' | 'queued' | 'sent' | 'failed';
 }
 
 export interface FixtureOutboxOp {
   op_id: number;
   localId: string;
-  state: 'pending' | 'cancelled' | 'done';
+  kind: string;
+  state: 'pending' | 'inflight' | 'uncertain' | 'done' | 'failed' | 'cancelled';
   notBefore: number;
   createdAt: number;
   accountId: string;
   subject: string;
+  /** Lightweight summary composed at enqueue; the payload never lands here. */
+  recipientSummary: string;
+  action: string;
+  scheduledAt: number | null;
+  retryAt: number | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  revision: number;
+  draftId: string;
+  requiresDuplicateAck: boolean;
+  /** Internal to the fixture: the raw body never crosses the IPC boundary. */
+  payload?: string;
 }
 
 export interface FixtureDb {
@@ -88,6 +107,10 @@ export interface FixtureDb {
 }
 
 const addr = (e: string, n?: string): Address => (n ? { e, n } : { e });
+
+/** Seed participants, shared by the specs and the reader's long thread (P9.2). */
+const ADA = addr('ada@example.test', 'Ada Lovelace');
+const BEN = addr('ben@example.test', 'Ben Ortiz');
 
 function account(
   id: string,
@@ -158,8 +181,6 @@ interface ThreadSpec {
 
 function threadSpecs(): ThreadSpec[] {
   const specs: ThreadSpec[] = [];
-  const aFrom = addr('ada@example.test', 'Ada Lovelace');
-  const bFrom = addr('ben@example.test', 'Ben Ortiz');
   const push = (s: ThreadSpec) => specs.push(s);
 
   // Group 1 — 30 adjacent rows from the blue account. These are the newest
@@ -174,8 +195,8 @@ function threadSpecs(): ThreadSpec[] {
       labelIds: ['INBOX'],
       unread: i % 3 === 0,
       starred: i === 2 || i === 3,
-      from: aFrom.e,
-      fromName: aFrom.n!,
+      from: ADA.e,
+      fromName: ADA.n!,
       blocksHtml: i === 0 ? 'Blue run 00 body with the attachment set.' : undefined,
     });
   }
@@ -183,7 +204,7 @@ function threadSpecs(): ThreadSpec[] {
   // Group 2 — interleaved accounts, so unified rows alternate stripes.
   for (let i = 0; i < 40; i++) {
     const a = i % 2 === 0 ? ACCOUNT_B : ACCOUNT_A;
-    const from = a === ACCOUNT_A ? aFrom : bFrom;
+    const from = a === ACCOUNT_A ? ADA : bFrom;
     push({
       accountId: a,
       id: `mixed-${String(i).padStart(2, '0')}`,
@@ -200,7 +221,7 @@ function threadSpecs(): ThreadSpec[] {
   // Group 3 — filler that brings the inbox to exactly 400 rows.
   for (let i = 0; i < 79; i++) {
     const a = i % 2 === 0 ? ACCOUNT_B : ACCOUNT_A;
-    const from = a === ACCOUNT_A ? aFrom : bFrom;
+    const from = a === ACCOUNT_A ? ADA : bFrom;
     push({
       accountId: a,
       id: `fill-${String(i).padStart(2, '0')}`,
@@ -218,7 +239,7 @@ function threadSpecs(): ThreadSpec[] {
   // only when the cursor carries the full (timestamp, account, id) tuple.
   for (let i = 0; i < 251; i++) {
     const a = i < 126 ? ACCOUNT_A : ACCOUNT_B;
-    const from = a === ACCOUNT_A ? aFrom : bFrom;
+    const from = a === ACCOUNT_A ? ADA : bFrom;
     const n = String(a === ACCOUNT_A ? i : i - 126).padStart(3, '0');
     push({
       accountId: a,
@@ -243,8 +264,8 @@ function threadSpecs(): ThreadSpec[] {
       lastMessageAt: FIXED_NOW - (200 + i) * 60_000,
       labelIds: ['ARCHIVE', ...(i === 0 ? ['Label_A_Client'] : [])],
       unread: false,
-      from: i % 2 ? bFrom.e : aFrom.e,
-      fromName: i % 2 ? bFrom.n! : aFrom.n!,
+      from: i % 2 ? bFrom.e : ADA.e,
+      fromName: i % 2 ? bFrom.n! : ADA.n!,
     });
   }
 
@@ -271,8 +292,8 @@ function threadSpecs(): ThreadSpec[] {
       lastMessageAt: FIXED_NOW - (400 + i) * 60_000,
       labelIds: ['TRASH'],
       unread: false,
-      from: i % 2 ? bFrom.e : aFrom.e,
-      fromName: i % 2 ? bFrom.n! : aFrom.n!,
+      from: i % 2 ? bFrom.e : ADA.e,
+      fromName: i % 2 ? bFrom.n! : ADA.n!,
     });
   }
   for (let i = 0; i < 3; i++) {
@@ -284,8 +305,8 @@ function threadSpecs(): ThreadSpec[] {
       lastMessageAt: FIXED_NOW - (500 + i) * 60_000,
       labelIds: ['SENT'],
       unread: false,
-      from: aFrom.e,
-      fromName: aFrom.n!,
+      from: ADA.e,
+      fromName: ADA.n!,
     });
   }
   push({
@@ -296,8 +317,8 @@ function threadSpecs(): ThreadSpec[] {
     lastMessageAt: FIXED_NOW - 600 * 60_000,
     labelIds: ['DRAFT'],
     unread: false,
-    from: aFrom.e,
-    fromName: aFrom.n!,
+    from: ADA.e,
+    fromName: ADA.n!,
   });
 
   // Snoozed: still inbox members, hidden until their wake time.
@@ -309,8 +330,8 @@ function threadSpecs(): ThreadSpec[] {
     lastMessageAt: FIXED_NOW - 700 * 60_000,
     labelIds: ['INBOX'],
     unread: true,
-    from: aFrom.e,
-    fromName: aFrom.n!,
+    from: ADA.e,
+    fromName: ADA.n!,
   });
 
   // A Sent conversation with a reply the reader archived. The conversation
@@ -324,8 +345,8 @@ function threadSpecs(): ThreadSpec[] {
     lastMessageAt: FIXED_NOW - 750 * 60_000,
     labelIds: ['SENT'],
     unread: false,
-    from: aFrom.e,
-    fromName: aFrom.n!,
+    from: ADA.e,
+    fromName: ADA.n!,
     extra: [
       {
         labelIds: ['ARCHIVE'],
@@ -346,9 +367,9 @@ function threadSpecs(): ThreadSpec[] {
     lastMessageAt: FIXED_NOW - 800 * 60_000,
     labelIds: ['INBOX'],
     unread: false,
-    from: aFrom.e,
-    fromName: aFrom.n!,
-    extra: [{ labelIds: ['TRASH'], from: aFrom, unread: false }],
+    from: ADA.e,
+    fromName: ADA.n!,
+    extra: [{ labelIds: ['TRASH'], from: ADA, unread: false }],
   });
   return specs;
 }

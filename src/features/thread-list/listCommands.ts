@@ -1,7 +1,7 @@
 import type { ThreadAction, ThreadRow } from '../../app/ipc/types';
 import { useSelection } from '../../stores/selectionStore';
 import { useView } from '../../stores/viewStore';
-import { dispatchAction } from '../actions/dispatch';
+import { dispatchGesture } from '../actions/dispatch';
 import { registerCommand } from '../palette/registry';
 import { rowKey } from './threadWindow';
 
@@ -100,8 +100,10 @@ function actionFor(
 }
 
 /**
- * Run a mail command against the resolved targets, grouped per account so one
- * user gesture remains one undo group per account.
+ * Run a mail command against the resolved targets. A cross-account selection is
+ * one gesture with account-qualified targets (P6.3): splitting it into one call
+ * per account produced two undo groups for one user action, and undoing it
+ * only ever restored one account.
  */
 export function runMailCommand(
   command: MailCommand,
@@ -112,9 +114,10 @@ export function runMailCommand(
   if (!targets.length) return false;
   const primary = primaryRow(targets);
   const action = actionFor(command, primary, overrides);
-  for (const group of targets) {
-    void dispatchAction({ accountId: group.accountId, threadIds: group.threadIds, action });
-  }
+  void dispatchGesture(
+    targets.flatMap((group) => group.threadIds.map((threadId) => ({ accountId: group.accountId, threadId }))),
+    action,
+  );
   return true;
 }
 

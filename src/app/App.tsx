@@ -9,8 +9,10 @@ import { useAccounts } from '../stores/accountsStore';
 import { api } from './ipc/commands';
 import { on } from './ipc/events';
 import { useSync } from '../stores/syncStore';
+import { useOutbox } from '../stores/outboxStore';
 import { ConnectivityStrip } from '../features/sync/ConnectivityStrip';
-import type { ConnectivityState, SyncStatus, ThreadRef } from './ipc/types';
+import type { ConnectivityState, SyncStatus } from './ipc/types';
+import type { ComposeRequest } from '../features/compose/replyContext';
 import { engine } from '../keymap/engine';
 import { activeKeyScopes } from '../keymap/scopes';
 import { undoLast } from '../features/actions/dispatch';
@@ -40,7 +42,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [addAccountOpen, setAddAccountOpen] = useState(false);
-  const [composeOpen, setComposeOpen] = useState<null | { mode: string; thread?: ThreadRef }>(null);
+  const [composeOpen, setComposeOpen] = useState<ComposeRequest | null>(null);
   const [sidebarHidden, setSidebarHidden] = useState(false);
   // Lazy overlays mount on first open and stay mounted so their close
   // transitions still run; they are never parsed before the user asks.
@@ -49,6 +51,7 @@ export function App() {
   const prefetchedComposer = useRef(false);
   const accountsReady = useAccounts((s) => s.accounts.length > 0);
   const accounts = useAccounts((s) => s.accounts);
+  const included = useAccounts((s) => s.included);
   const scope = useView((s) => s.accountScope);
 
   const refreshAccounts = useAccounts((s) => s.refresh);
@@ -202,6 +205,10 @@ export function App() {
         // example the recipient suggestion list) is open: that layer closes
         // itself and clears the attribute, so the next Escape closes the sheet.
         if (document.querySelector('[data-compose-escape="1"]')) return;
+        // The sheet itself flushes the pending draft before it dismisses
+        // (P5.1), so this handler must not unsubscribe it. It only covers the
+        // moment before the lazy chunk has mounted.
+        if (document.querySelector('[data-compose-root]')) return;
         e.preventDefault();
         e.stopPropagation();
         setComposeOpen(null);
@@ -246,6 +253,40 @@ export function App() {
     refreshAccounts();
   }, [refreshAccounts]);
 
+  /**
+   * Startup outbox depth per account (P6.6). The event stream only reports
+   * transitions, so without this a queue that was already stuck before launch
+   * stays invisible until it changes again.
+   */
+  useEffect(() => {
+    const ids = accounts.filter((a) => included[a.id] !== false).map((a) => a.id);
+    if (!ids.length) return;
+    let cancelled = false;
+    void Promise.all(
+      ids.map((id) =>
+        api
+          .outbox_list({ accountIds: [id], limit: 1 })
+          .then((page) => ({ id, counts: page.counts }))
+          .catch(() => null),
+      ),
+    ).then((rows) => {
+      if (cancelled) return;
+      for (const row of rows) {
+        if (!row) continue;
+        useSync.getState().setOutbox(row.id, {
+          pending: row.counts.pending,
+          inflight: row.counts.inflight,
+          failed: row.counts.failed,
+          uncertain: row.counts.uncertain,
+          summary: [],
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accounts, included]);
+
   // Sync progress, outbox depth, and connectivity feed the first-run UI and
   // the sidebar status. Without this the mailbox looked empty during the
   // initial download with no feedback.
@@ -257,12 +298,33 @@ export function App() {
     })
       .then((u) => unsubs.push(u))
       .catch(() => {});
-    on<{ account_id: string; pending: number; summary?: { label: string; count: number }[] }>(
-      'outbox:state',
-      (p) => {
-        useSync.getState().setPending(p.account_id, p.pending, p.summary ?? []);
-      },
-    )
+    on<{
+      account_id: string;
+      pending: number;
+      inflight?: number;
+      failed?: number;
+      uncertain?: number;
+      summary?: { label: string; count: number }[];
+    }>('outbox:state', (p) => {
+      const summary = p.summary ?? [];
+      useSync.getState().setOutbox(p.account_id, {
+        pending: p.pending,
+        inflight: p.inflight ?? 0,
+        failed: p.failed ?? 0,
+        uncertain: p.uncertain ?? 0,
+        summary,
+      });
+      // The panel is a live view of the queue, not a snapshot: a claim, a
+      // failure or a completion must be visible without reopening it (P6.6).
+      if (useOutbox.getState().open) {
+        void useOutbox.getState().refresh(
+          useAccounts
+            .getState()
+            .accounts.filter((a) => useAccounts.getState().included[a.id] !== false)
+            .map((a) => a.id),
+        );
+      }
+    })
       .then((u) => unsubs.push(u))
       .catch(() => {});
     // Per-account connectivity (P4.6). The startup snapshot is authoritative:
@@ -361,7 +423,12 @@ export function App() {
                     setSettingsOpen(true);
                   }}
                 />
-                <ThreadList onCompose={() => setComposeOpen({ mode: 'new' })} />
+                <ThreadList
+                  onCompose={() => setComposeOpen({ mode: 'new' })}
+                  onOpenDraft={(draft) =>
+                    setComposeOpen({ mode: draft.mode || 'new', draftId: draft.localId })
+                  }
+                />
               </div>
             )}
             {showThread && (
@@ -402,6 +469,7 @@ export function App() {
           <ComposerSheet
             mode={composeOpen.mode}
             thread={composeOpen.thread}
+            draftId={composeOpen.draftId}
             onClose={() => setComposeOpen(null)}
           />
         </Suspense>

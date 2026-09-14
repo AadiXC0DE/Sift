@@ -19,16 +19,30 @@ import { useScopedConnectivity } from '../sync/ConnectivityStrip';
 import { relativeTime } from '../../lib/dates';
 import { SearchInput } from '../search/SearchInput';
 import { startServerSearch, useSearch, type SearchOrigin } from '../../stores/searchStore';
-import { dispatchAction, undoLast } from '../actions/dispatch';
+import { dispatchAction } from '../actions/dispatch';
+import { snoozeTargets, unsnoozeTargets } from '../snooze/snoozeActions';
 import { api } from '../../app/ipc/commands';
 import { Popover } from '../../ui/Popover';
 import { LabelPicker } from '../actions/LabelPicker';
-import { toast } from 'sonner';
 import type { Label } from '../../app/ipc/types';
 import { useKeymap } from '../../keymap/engine';
 import { Paperclip, Sun } from 'lucide-react';
+import type { Draft } from '../../app/ipc/types';
 
-export function ThreadList({ onCompose }: { onCompose: () => void }) {
+/**
+ * The Drafts view is a different data source (`drafts_list`) and its own
+ * surface (P5.2); it is lazy for the same reason the composer is — it must not
+ * weigh down the eager inbox bundle.
+ */
+const DraftsList = React.lazy(() => import('../drafts/DraftsList').then((m) => ({ default: m.DraftsList })));
+
+export function ThreadList({
+  onCompose,
+  onOpenDraft,
+}: {
+  onCompose: () => void;
+  onOpenDraft: (draft: Draft) => void;
+}) {
   void onCompose;
   const view = useView((s) => s.view);
   const scope = useView((s) => s.accountScope);
@@ -65,7 +79,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
   }: ThreadsWindowResult = useThreadsWindow(view, {
     unreadOnly,
     hasAttachment: hasAtt,
-    paused: gmailSearchActive,
+    paused: gmailSearchActive || view.kind === 'drafts',
   });
 
   const rows = gmailSearchActive ? search.results : windowRows;
@@ -187,15 +201,25 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     [keys, scrollFocusedIntoView],
   );
 
+  /**
+   * The list's snooze gesture goes through the same service as the reader's
+   * popover, so the returned gesture is registered for Undo before the toast is
+   * shown (P6.5). Calling `undoLast` here without registering undid whichever
+   * earlier gesture happened to be on top.
+   */
   const snoozeTomorrow = useCallback((accountId: string, threadIds: string[]) => {
     const d = new Date();
     d.setDate(d.getDate() + 1);
     d.setHours(8, 0, 0, 0);
-    void api.snooze_set(accountId, threadIds, d.getTime()).then(() => {
-      toast('Snoozed until Tomorrow 08:00', {
-        action: { label: 'Undo (z)', onClick: () => void undoLast() },
-      });
-    });
+    void snoozeTargets(
+      threadIds.map((threadId) => ({ accountId, threadId })),
+      d.getTime(),
+      'Tomorrow 08:00',
+    );
+  }, []);
+
+  const unsnooze = useCallback((accountId: string, threadIds: string[]) => {
+    void unsnoozeTargets(threadIds.map((threadId) => ({ accountId, threadId })));
   }, []);
 
   const openPicker = useCallback(
@@ -244,7 +268,7 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
     label: () => openPicker('label'),
     move: () => openPicker('move'),
   };
-  useKeymap('list', searchPending ? {} : listMap);
+  useKeymap('list', searchPending || view.kind === 'drafts' ? {} : listMap);
 
   // Escape clears the selection. Modals own Escape first (App's capture
   // handler stops propagation), so this never fights a dialog.
@@ -469,6 +493,31 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
       ? rowDomId(rows[focusedRowIndex])
       : undefined;
 
+  // Drafts are not conversations (P5.2): the view lists stored drafts from
+  // `drafts_list` and opens the composer on the one that was clicked.
+  if (view.kind === 'drafts') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+        <div
+          style={{
+            height: 'var(--toolbar-h)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '0 12px',
+            borderBottom: '1px solid var(--border)',
+            flexShrink: 0,
+          }}
+        >
+          <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>Drafts</span>
+        </div>
+        <React.Suspense fallback={null}>
+          <DraftsList accountIds={scopedIds} onOpenDraft={onOpenDraft} />
+        </React.Suspense>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div
@@ -611,6 +660,8 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
                     onAction={(kind) => {
                       if (kind === 'snooze') {
                         snoozeTomorrow(r.accountId, [r.id]);
+                      } else if (kind === 'unsnooze') {
+                        unsnooze(r.accountId, [r.id]);
                       } else if (kind === 'read') {
                         void dispatchAction({
                           accountId: r.accountId,
@@ -644,7 +695,11 @@ export function ThreadList({ onCompose }: { onCompose: () => void }) {
           </div>
         )}
       </div>
-      {openThread && <div style={{ display: 'none' }}>{openThread.accountId}:{openThread.threadId}</div>}
+      {openThread && (
+        <div style={{ display: 'none' }}>
+          {openThread.accountId}:{openThread.threadId}
+        </div>
+      )}
       {pickerHost && (
         <Popover
           open

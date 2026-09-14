@@ -11,7 +11,7 @@ import {
   setListContext,
 } from './listCommands';
 
-const threadsAction = vi.fn(async () => ({ undo_group: 'g1' }));
+const threadsAction = vi.fn(async () => ({ gestureId: 'g1', operations: [] }));
 
 vi.mock('../../app/ipc/commands', () => ({
   api: {
@@ -54,8 +54,8 @@ describe('P3.5 command target resolver', () => {
     expect(resolveCommandTargets('list')).toEqual([{ accountId: 'a', threadIds: ['t1'] }]);
     await runMailCommand('archive', 'list');
     expect(threadsAction).toHaveBeenCalledWith({
-      accountId: 'a',
-      threadIds: ['t1'],
+      gestureId: null,
+      targets: [{ accountId: 'a', threadId: 't1' }],
       action: { kind: 'archive' },
     });
   });
@@ -74,6 +74,21 @@ describe('P3.5 command target resolver', () => {
     expect(resolveCommandTargets('list')).toEqual([{ accountId: 'a', threadIds: ['t1'] }]);
   });
 
+  it('sends a cross-account selection as one gesture with qualified targets', async () => {
+    threadsAction.mockClear();
+    useSelection.setState({ selectedIds: new Set(['a:t1', 'b:t1']) });
+    await runMailCommand('archive', 'list');
+    expect(threadsAction).toHaveBeenCalledTimes(1);
+    expect(threadsAction).toHaveBeenCalledWith({
+      gestureId: null,
+      targets: [
+        { accountId: 'a', threadId: 't1' },
+        { accountId: 'b', threadId: 't1' },
+      ],
+      action: { kind: 'archive' },
+    });
+  });
+
   it('groups a bulk selection per account so one gesture is one group each', () => {
     expect(groupKeysByAccount(['a:1', 'b:2', 'a:3'])).toEqual([
       { accountId: 'a', threadIds: ['1', '3'] },
@@ -85,8 +100,8 @@ describe('P3.5 command target resolver', () => {
     useSelection.setState({ selectedIds: new Set(['a:t2']), focusedKey: 'a:t1' });
     await runMailCommand('star', 'list');
     expect(threadsAction).toHaveBeenCalledWith({
-      accountId: 'a',
-      threadIds: ['t2'],
+      gestureId: null,
+      targets: [{ accountId: 'a', threadId: 't2' }],
       action: { kind: 'star', on: true },
     });
   });

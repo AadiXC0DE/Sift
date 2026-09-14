@@ -48,10 +48,7 @@ test('connectivity: recovering one account clears only that account error', asyn
 
   // Retry re-runs one sync tick for the account the reader asked about; the
   // other account keeps its own error.
-  await strip
-    .locator('[data-account-id="acc-a"]')
-    .getByTestId('connectivity-retry')
-    .click();
+  await strip.locator('[data-account-id="acc-a"]').getByTestId('connectivity-retry').click();
 
   await expect(strip.locator('[data-account-id="acc-a"]')).toHaveCount(0);
   await expect(strip.locator('[data-account-id="acc-b"]')).toHaveAttribute('data-state', 'offline');

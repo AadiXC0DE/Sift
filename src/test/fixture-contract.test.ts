@@ -126,9 +126,11 @@ describe('fixture backend IPC contract', () => {
   it('applies action transitions to the stored thread and only returns declared fields', async () => {
     setDatabase(seedDatabase('default'));
     const result = (await invokeFixture('threads_action', {
-      req: { accountId: 'acc-a', threadIds: ['blue-01'], action: { kind: 'archive' } },
-    })) as { undo_group: string };
-    expect(JSON.stringify(Object.keys(result).sort())).toBe(JSON.stringify(['undo_group']));
+      gestureId: null,
+      targets: [{ accountId: 'acc-a', threadId: 'blue-01' }],
+      action: { kind: 'archive' },
+    })) as { gestureId: string; operations: unknown[] };
+    expect(JSON.stringify(Object.keys(result).sort())).toBe(JSON.stringify(['gestureId', 'operations']));
 
     const inbox = (await invokeFixture('threads_query', {
       query: { accountIds: ['acc-a'], view: { kind: 'inbox' }, limit: 500 },
@@ -140,7 +142,7 @@ describe('fixture backend IPC contract', () => {
     })) as { rows: { id: string }[] };
     expect(archive.rows.some((r) => r.id === 'blue-01')).toBe(true);
 
-    await invokeFixture('action_undo', { undoGroup: result.undo_group });
+    await invokeFixture('action_undo', { gestureId: result.gestureId });
     const restored = (await invokeFixture('threads_query', {
       query: { accountIds: ['acc-a'], view: { kind: 'inbox' }, limit: 500 },
     })) as { rows: { id: string }[] };

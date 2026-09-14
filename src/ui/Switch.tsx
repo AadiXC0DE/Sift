@@ -5,16 +5,20 @@ export function Switch({
   checked,
   onChange,
   label,
+  ariaLabel,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label?: string;
+  /** For rows whose visible label sits outside the control (Settings → General). */
+  ariaLabel?: string;
 }) {
   return (
     <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
       <BaseSwitch.Root
         checked={checked}
         onCheckedChange={onChange}
+        aria-label={ariaLabel}
         style={{
           width: 36,
           height: 22,

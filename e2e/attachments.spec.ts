@@ -55,7 +55,9 @@ test('attachments: Save All writes every non-inline part once and never clobbers
   expect(first[2]).toMatch(/^attachment-[a-z0-9]{8}\.bin$/);
 
   await page.getByTestId('attachment-save-all').click();
-  await expect.poll(async () => (await page.evaluate(() => window.__siftFixture!.control.savedPaths())).length).toBe(6);
+  await expect
+    .poll(async () => (await page.evaluate(() => window.__siftFixture!.control.savedPaths())).length)
+    .toBe(6);
 
   const all = await page.evaluate(() => window.__siftFixture!.control.savedPaths());
   expect(new Set(all).size, 'a second Save All must not overwrite the first').toBe(all.length);

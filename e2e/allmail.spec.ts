@@ -151,9 +151,15 @@ test('labels: a mutation never borrows the other account label id', async ({ pag
   await expect.poll(async () => (await fixtureCalls(page, 'threads_action')).length).toBeGreaterThan(0);
   const actions = await fixtureCalls(page, 'threads_action');
   const applied = actions
-    .map((c) => c.req as { accountId: string; action: { kind: string; labelId?: string } })
+    .map(
+      (c) =>
+        c as unknown as {
+          targets: { accountId: string; threadId: string }[];
+          action: { kind: string; labelId?: string };
+        },
+    )
     .filter((r) => r.action.kind === 'addLabel');
   expect(applied).toHaveLength(1);
-  expect(applied[0].accountId).toBe('acc-b');
+  expect(applied[0].targets.map((t) => t.accountId)).toEqual(['acc-b']);
   expect(applied[0].action.labelId).toBe('Label_B_Client');
 });

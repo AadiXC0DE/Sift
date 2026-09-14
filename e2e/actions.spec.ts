@@ -155,3 +155,100 @@ test('label: the account-qualified label id is what the query uses, not the disp
   expect(view.kind).toBe('label');
   expect(view.labelId).toBe('Label_A_Client');
 });
+
+/**
+ * P6.5 (TIME-01): the list's snooze toast registers the gesture it just made,
+ * so its Undo restores the conversation instead of undoing something else.
+ */
+test('P6.5 the list snooze toast Undo restores the conversation exactly', async ({ page, app }) => {
+  await app.gotoApp();
+  await app.ready();
+
+  await app.row('blue-01').click();
+  await pressList(page, 'h');
+
+  await expect.poll(async () => (await persistedThread(page, 'blue-01')).snoozedUntil).toBeTruthy();
+  expect((await persistedThread(page, 'blue-01')).labelIds).not.toContain('INBOX');
+  await expect(app.row('blue-01')).toHaveCount(0);
+
+  const toast = page.locator('[data-sonner-toast]', { hasText: 'Snoozed until Tomorrow 08:00' }).first();
+  await expect(toast).toBeVisible();
+  await toast.getByRole('button', { name: 'Undo (z)' }).click();
+
+  // The pre-snooze membership is restored, not a recomputed approximation.
+  await expect.poll(async () => (await persistedThread(page, 'blue-01')).snoozedUntil).toBeUndefined();
+  expect((await persistedThread(page, 'blue-01')).labelIds).toContain('INBOX');
+  await expect(app.row('blue-01')).toHaveCount(1);
+});
+
+test('P6.5 Unsnooze returns the conversation to the Inbox', async ({ page, app }) => {
+  await app.gotoApp();
+  await app.ready();
+
+  // Snooze first so the membership that Unsnooze restores is one this app set.
+  await app.row('blue-01').click();
+  await pressList(page, 'h');
+  await expect.poll(async () => (await persistedThread(page, 'blue-01')).snoozedUntil).toBeTruthy();
+  expect((await persistedThread(page, 'blue-01')).labelIds).not.toContain('INBOX');
+
+  await sidebarView(page, 'Snoozed');
+  await expect(app.row('blue-01')).toHaveCount(1);
+
+  await app.row('blue-01').hover();
+  await page.getByTitle('Unsnooze — move back to Inbox').first().click();
+
+  await expect.poll(async () => (await persistedThread(page, 'blue-01')).snoozedUntil).toBeUndefined();
+  expect((await persistedThread(page, 'blue-01')).labelIds).toContain('INBOX');
+  // It leaves the Snoozed view and is back where it came from.
+  await expect(app.row('blue-01')).toHaveCount(0);
+
+  await sidebarView(page, 'Inbox');
+  await expect(app.row('blue-01')).toHaveCount(1);
+});
+
+test('P6.5 the snooze popover states the local-device semantics and the wake policy', async ({
+  page,
+  app,
+}) => {
+  await app.gotoApp();
+  await app.ready();
+
+  await app.row('blue-01').click();
+  await page.getByTestId('thread-snooze').click();
+  const popover = page.getByText('Sift must be running and online to wake this.');
+  await expect(popover).toBeVisible();
+  // The configured policy is what the popover promises (defaultSettings: unread).
+  await expect(page.getByText('Wakes unread.')).toBeVisible();
+
+  await page.locator('button', { hasText: 'Tomorrow 08:00' }).first().click();
+  const call = (await fixtureCalls(page, 'snooze_set')).at(-1);
+  expect(call?.wakeUnread).toBe(true);
+  expect((call?.targets as { accountId: string; threadId: string }[])[0]).toEqual({
+    accountId: 'acc-a',
+    threadId: 'blue-01',
+  });
+});
+
+test('P6.5 the wake policy the popover promises follows the configured setting', async ({ page, app }) => {
+  await app.gotoApp();
+  await app.ready();
+
+  await app.row('blue-01').click();
+  await page.getByTestId('thread-snooze').click();
+  await expect(page.getByText('Wakes unread.')).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  // Turning the policy off is what the popover must then promise.
+  await page.keyboard.press('Meta+,');
+  const dialog = page.getByRole('dialog', { name: 'Settings' });
+  await dialog.getByRole('switch', { name: 'Wake snoozed conversations unread' }).click();
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toBeHidden();
+
+  await page.getByTestId('thread-snooze').click();
+  await expect(page.getByText('Wakes read.')).toBeVisible();
+  await page.locator('button', { hasText: 'Tomorrow 08:00' }).first().click();
+
+  const call = (await fixtureCalls(page, 'snooze_set')).at(-1);
+  expect(call?.wakeUnread).toBe(false);
+});

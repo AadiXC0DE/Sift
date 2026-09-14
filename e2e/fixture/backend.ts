@@ -22,6 +22,7 @@ import type {
   AttachmentRefKey,
   ConnectivityState,
   Draft,
+  DraftPage,
   Label,
   MessageBody,
   MessageMeta,
@@ -44,6 +45,7 @@ import {
   type FixtureDb,
   type FixtureDraft,
   type FixtureMessage,
+  type FixtureOutboxOp,
   type FixtureThread,
   seedDatabase,
   type Scenario,
@@ -83,6 +85,8 @@ const openCalls: string[] = [];
 const openUrlCalls: string[] = [];
 const delays: Record<string, (args: Args) => number> = {};
 let failAppPassword = false;
+/** Remaining `drafts_upsert` calls the fixture must reject (P5.1 storage failure). */
+let failDraftSaves = 0;
 
 /**
  * Connectivity (P4.6), mirroring `connectivity.rs`: the host hint is only a
@@ -134,6 +138,84 @@ function failAccount(accountId: string, failure: 'connectivity' | 'auth', messag
   h.lastError = message;
   h.since = FIXED_NOW;
   emitConnectivity(accountId);
+}
+
+/** IPC boundary for operations: the stored payload never leaves the fixture. */
+function outboxSummary(op: FixtureOutboxOp) {
+  return {
+    opId: op.op_id,
+    accountId: op.accountId,
+    kind: op.kind,
+    state: op.state,
+    action: op.action,
+    recipientSummary: op.recipientSummary || null,
+    subject: op.subject || null,
+    scheduledAt: op.scheduledAt,
+    retryAt: op.retryAt,
+    createdAt: op.createdAt,
+    errorCode: op.errorCode,
+    errorMessage: op.errorMessage,
+    draftId: op.draftId,
+    revision: op.revision,
+    requiresDuplicateAck: op.requiresDuplicateAck,
+  };
+}
+
+/**
+ * A gesture's operation summary. Label work is drained immediately, so the
+ * fixture never parks it in the outbox: these summaries exist for the response
+ * the toast reads, in the same shape `outbox_list` returns.
+ */
+function gestureOp(accountId: string, action: string) {
+  return {
+    opId: database().nextOpId++,
+    accountId,
+    kind: 'label',
+    state: 'pending' as const,
+    action,
+    recipientSummary: null,
+    subject: null,
+    scheduledAt: null,
+    retryAt: null,
+    createdAt: FIXED_NOW,
+    errorCode: null,
+    errorMessage: null,
+    draftId: null,
+    revision: null,
+    requiresDuplicateAck: false,
+  };
+}
+
+function groupByLabel(ops: FixtureOutboxOp[]): Map<string, { label: string; count: number }> {
+  const groups = new Map<string, { label: string; count: number }>();
+  for (const op of ops) {
+    const label = op.subject || op.action;
+    const found = groups.get(label);
+    if (found) found.count += 1;
+    else groups.set(label, { label, count: 1 });
+  }
+  return groups;
+}
+
+function countOps(ops: FixtureOutboxOp[]) {
+  const counts = { pending: 0, inflight: 0, uncertain: 0, done: 0, failed: 0, cancelled: 0 };
+  for (const op of ops) counts[op.state] += 1;
+  return counts;
+}
+
+function emitOutboxState(accountId: string): void {
+  const ops = database().outbox.filter((o) => o.accountId === accountId);
+  const counts = countOps(ops);
+  emit('outbox:state', {
+    account_id: accountId,
+    pending: counts.pending,
+    inflight: counts.inflight,
+    failed: counts.failed,
+    uncertain: counts.uncertain,
+    // Aggregated like the backend's summary columns: a queue of 10,000 must
+    // not arrive as 10,000 entries.
+    summary: [...groupByLabel(ops.filter((o) => o.state === 'pending' || o.state === 'inflight'))],
+  });
 }
 
 function scenarioFromLocation(): Scenario {
@@ -355,11 +437,12 @@ function toThreadRow(t: FixtureThread): ThreadRow {
   return row;
 }
 
-/** IPC boundary for drafts: store-only revision/state stay in the fixture. */
+/** IPC boundary for drafts: the fixture stores exactly what the app sends. */
 function toDraftDto(d: FixtureDraft): Draft {
   return {
     localId: d.localId,
     accountId: d.accountId,
+    fromEmail: d.fromEmail,
     mode: d.mode,
     toJson: d.toJson,
     ccJson: d.ccJson,
@@ -367,6 +450,11 @@ function toDraftDto(d: FixtureDraft): Draft {
     subject: d.subject,
     bodyHtml: d.bodyHtml,
     attachmentsJson: d.attachmentsJson,
+    threadId: d.threadId,
+    inReplyToMessageId: d.inReplyToMessageId,
+    rfcMessageId: d.rfcMessageId,
+    revision: d.revision,
+    state: d.state,
     updatedAt: d.updatedAt,
   };
 }
@@ -712,14 +800,18 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return `From: ${m.from.e}\r\nSubject: ${m.subject}\r\n\r\n${m.text}\r\n`;
   },
   threads_action: (args) => {
-    const req = args.req as ThreadAction;
-    const group = `undo-${database().nextOpId++}`;
+    const targets = (args.targets as { accountId: string; threadId: string }[]) ?? [];
+    const action = args.action as ThreadAction['action'];
+    const gestureId =
+      typeof args.gestureId === 'string' ? args.gestureId : `gesture-${database().nextOpId++}`;
     const snapshot: UndoSnapshot = { threads: [], messages: [] };
-    const touched: string[] = [];
-    for (const id of req.threadIds) {
-      const t = findThread(req.accountId, id);
+    const touchedByAccount = new Map<string, string[]>();
+    for (const target of targets) {
+      const t = findThread(target.accountId, target.threadId);
       if (!t) continue;
-      touched.push(id);
+      const touched = touchedByAccount.get(target.accountId) ?? [];
+      touched.push(t.id);
+      touchedByAccount.set(target.accountId, touched);
       snapshot.threads.push({
         accountId: t.accountId,
         id: t.id,
@@ -736,15 +828,21 @@ const handlers: Record<string, (args: Args) => unknown> = {
           isStarred: m.isStarred,
         });
       }
-      applyAction(t, req.action);
+      applyAction(t, action);
     }
-    if (req.action.kind !== 'deleteForever') undoGroups[group] = snapshot;
-    afterMutation([req.accountId], touched);
-    return { undo_group: group };
+    if (action.kind !== 'deleteForever') undoGroups[gestureId] = snapshot;
+    afterMutation([...touchedByAccount.keys()], [...touchedByAccount.values()].flat());
+    // One gesture, one operation summary per account it touched (P6.3).
+    return {
+      gestureId,
+      operations: [...touchedByAccount].map(([accountId, ids]) =>
+        gestureOp(accountId, `Update ${ids.length} conversation${ids.length === 1 ? '' : 's'}`),
+      ),
+    };
   },
   action_undo: (args) => {
-    const group = String(args.undoGroup);
-    const snap = undoGroups[group];
+    const gestureId = String(args.gestureId);
+    const snap = undoGroups[gestureId];
     if (!snap) throw new Error('undo_expired');
     for (const s of snap.threads) {
       const t = findThread(s.accountId, s.id);
@@ -764,50 +862,90 @@ const handlers: Record<string, (args: Args) => unknown> = {
       const t = findThread(s.accountId, s.id);
       if (t) recomputeThread(t);
     }
-    delete undoGroups[group];
+    delete undoGroups[gestureId];
     afterMutation(
       snap.threads.map((s) => s.accountId),
       snap.threads.map((s) => s.id),
     );
-    return null;
+    return { gestureId, operations: [], failures: [] };
   },
   snooze_set: (args) => {
-    const accountId = String(args.accountId);
-    const ids = (args.threadIds as string[]) ?? [];
+    const targets = (args.targets as { accountId: string; threadId: string }[]) ?? [];
+    const gestureId = typeof args.gestureId === 'string' ? args.gestureId : `snooze-${database().nextOpId++}`;
     const wakeAt = Number(args.wakeAt);
-    for (const id of ids) {
-      const t = findThread(accountId, id);
+    // The pre-snooze membership is saved, not recomputed (P6.5): Undo restores
+    // exactly the labels and timer the conversation had a moment ago.
+    const snapshot: UndoSnapshot = { threads: [], messages: [] };
+    for (const target of targets) {
+      const t = findThread(target.accountId, target.threadId);
       if (!t) continue;
+      snapshot.threads.push({
+        accountId: t.accountId,
+        id: t.id,
+        labelIds: [...t.labelIds],
+        isStarred: t.isStarred,
+        snoozedUntil: t.snoozedUntil,
+      });
+      for (const m of messagesOf(t.accountId, t.id)) {
+        snapshot.messages.push({
+          accountId: m.accountId,
+          id: m.id,
+          labelIds: [...m.labelIds],
+          isUnread: m.isUnread,
+          isStarred: m.isStarred,
+        });
+      }
       t.snoozedUntil = wakeAt;
       t.labelIds = t.labelIds.filter((l) => l !== 'INBOX');
-      for (const m of messagesOf(accountId, id)) m.labelIds = m.labelIds.filter((l) => l !== 'INBOX');
+      for (const m of messagesOf(t.accountId, t.id)) m.labelIds = m.labelIds.filter((l) => l !== 'INBOX');
     }
-    afterMutation([accountId], ids);
-    return { undo_group: `snooze-${database().nextOpId++}` };
+    undoGroups[gestureId] = snapshot;
+    afterMutation(
+      targets.map((t) => t.accountId),
+      targets.map((t) => t.threadId),
+    );
+    return { gestureId, operations: [] };
   },
   snooze_clear: (args) => {
-    const accountId = String(args.accountId);
-    const ids = (args.threadIds as string[]) ?? [];
-    for (const id of ids) {
-      const t = findThread(accountId, id);
+    const targets = (args.targets as { accountId: string; threadId: string }[]) ?? [];
+    const gestureId =
+      typeof args.gestureId === 'string' ? args.gestureId : `unsnooze-${database().nextOpId++}`;
+    for (const target of targets) {
+      const t = findThread(target.accountId, target.threadId);
       if (!t) continue;
       delete t.snoozedUntil;
+      // Clear means Unsnooze: the conversation returns to the Inbox it was
+      // snoozed out of.
       if (!t.labelIds.includes('INBOX')) t.labelIds.push('INBOX');
+      for (const m of messagesOf(target.accountId, target.threadId)) {
+        if (!m.labelIds.includes('INBOX')) m.labelIds.push('INBOX');
+      }
+      recomputeThread(t);
     }
-    afterMutation([accountId], ids);
-    return null;
+    afterMutation(
+      targets.map((t) => t.accountId),
+      targets.map((t) => t.threadId),
+    );
+    return { gestureId, operations: [] };
   },
   drafts_upsert: (args) => {
+    if (failDraftSaves > 0) {
+      failDraftSaves -= 1;
+      throw new Error('storage_unavailable');
+    }
     const incoming = args.draft as Draft;
-    const existing = incoming.localId
-      ? database().drafts.find((d) => d.localId === incoming.localId)
-      : undefined;
+    const existing = database().drafts.find((d) => d.localId === incoming.localId);
+    // The draft id is allocated by the composer; the fixture only mints one for
+    // a caller that sends none (explicit discard/legacy paths).
+    const localId =
+      existing?.localId ??
+      incoming.localId ??
+      `draft-${database().drafts.length + 1}-${database().nextOpId++}`;
+    const revision = Math.max(existing?.revision ?? 0, incoming.revision ?? 0);
     const saved: FixtureDraft = {
-      localId:
-        existing?.localId ??
-        incoming.localId ??
-        `draft-${database().drafts.length + 1}-${database().nextOpId++}`,
+      localId,
       accountId: incoming.accountId,
+      fromEmail: incoming.fromEmail,
       mode: incoming.mode,
       toJson: incoming.toJson ?? [],
       ccJson: incoming.ccJson ?? [],
@@ -815,15 +953,36 @@ const handlers: Record<string, (args: Args) => unknown> = {
       subject: incoming.subject ?? '',
       bodyHtml: incoming.bodyHtml ?? '',
       attachmentsJson: incoming.attachmentsJson ?? [],
+      threadId: incoming.threadId,
+      inReplyToMessageId: incoming.inReplyToMessageId,
+      rfcMessageId: incoming.rfcMessageId,
       updatedAt: FIXED_NOW + database().nextOpId,
-      revision: (existing?.revision ?? 0) + 1,
-      state: 'editing',
+      revision,
+      state: existing?.state === 'queued' ? 'queued' : 'editing',
     };
     if (existing) Object.assign(existing, saved);
     else database().drafts.push(saved);
     persist();
     emit('store:drafts', { account_id: saved.accountId, draft_id: saved.localId });
     return toDraftDto(saved);
+  },
+  drafts_get: (args) => {
+    const localId = String(args.localId);
+    const d = database().drafts.find((x) => x.localId === localId);
+    if (!d) throw new Error('draft_not_found');
+    return toDraftDto(d);
+  },
+  drafts_list: (args) => {
+    const ids = (args.accountIds as string[]) ?? [];
+    const limit = Math.min(100, Math.max(1, Number(args.limit ?? 30)));
+    const cursor = args.cursor === undefined ? 0 : Number(args.cursor);
+    const all = database()
+      .drafts.filter((d) => ids.includes(d.accountId))
+      .slice()
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.localId.localeCompare(b.localId));
+    const page = all.slice(cursor, cursor + limit);
+    const next = cursor + limit < all.length ? String(cursor + limit) : undefined;
+    return { drafts: page.map(toDraftDto), nextCursor: next } satisfies DraftPage;
   },
   drafts_delete: (args) => {
     db.drafts = db.drafts.filter((d) => d.localId !== args.localId);
@@ -834,33 +993,132 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const localId = String(args.localId);
     const d = database().drafts.find((x) => x.localId === localId);
     if (!d) throw new Error('draft_not_found');
+    const existing = database().outbox.find((o) => o.localId === localId && o.state === 'pending');
+    if (d.state === 'queued' || existing) {
+      // The queued payload is immutable and the key is (draft, revision): a
+      // second send of the same revision is refused rather than duplicated.
+      throw {
+        code: 'draft_queued',
+        message: 'This message is already queued',
+        retryable: false,
+        detail: { opId: existing?.op_id ?? 0 },
+      };
+    }
     d.state = 'queued';
-    const op = {
+    const notBefore = Number(args.notBefore ?? FIXED_NOW);
+    const recipients = [...(d.toJson ?? []), ...(d.ccJson ?? []), ...(d.bccJson ?? [])]
+      .map((a) => a.e)
+      .filter(Boolean);
+    const op: FixtureOutboxOp = {
       op_id: database().nextOpId++,
       localId,
-      state: 'pending' as const,
-      notBefore: FIXED_NOW + Number(args.undoDelayMs ?? 0),
+      draftId: localId,
+      kind: 'send',
+      state: 'pending',
+      notBefore,
       createdAt: FIXED_NOW,
       accountId: d.accountId,
       subject: d.subject,
+      recipientSummary: recipients.slice(0, 3).join(', '),
+      action: args.archiveAfterSend ? 'Send and archive' : 'Send',
+      scheduledAt: notBefore > FIXED_NOW ? notBefore : null,
+      retryAt: null,
+      startedAt: null,
+      completedAt: null,
+      errorCode: null,
+      errorMessage: null,
+      revision: Number(args.revision ?? d.revision),
+      requiresDuplicateAck: false,
+      payload: `raw-mime-body-for-${localId}`,
     };
     database().outbox.push(op);
     persist();
-    emit('outbox:state', { op_id: op.op_id, state: op.state });
-    return { op_id: op.op_id };
+    emitOutboxState(op.accountId);
+    return { opId: op.op_id, notBefore };
   },
   send_cancel: (args) => {
     const opId = Number(args.opId);
     const op = database().outbox.find((o) => o.op_id === opId);
-    if (!op) throw new Error('send_undo_expired');
-    if (op.state !== 'pending') throw new Error('send_undo_expired');
+    if (!op || op.state !== 'pending') {
+      // Too late: the state travels with the error so the UI can say what
+      // actually happened instead of claiming the undo worked.
+      throw {
+        code: 'send_undo_expired',
+        message:
+          op?.state === 'done'
+            ? 'This message was already sent'
+            : op?.state === 'uncertain'
+              ? 'Sift handed this message to the provider and cannot prove it did not send'
+              : 'This message has already left the queue',
+        retryable: false,
+        detail: { state: op?.state ?? 'done', opId, notBefore: op?.notBefore ?? FIXED_NOW },
+      };
+    }
     op.state = 'cancelled';
+    op.completedAt = FIXED_NOW;
     const d = database().drafts.find((x) => x.localId === op.localId);
     if (!d) throw new Error('draft_missing');
     d.state = 'editing';
     persist();
-    emit('outbox:state', { op_id: op.op_id, state: op.state });
+    emitOutboxState(op.accountId);
     return toDraftDto(d);
+  },
+  outbox_list: (args) => {
+    const accountIds = (args.accountIds as string[]) ?? [];
+    const states = (args.states as string[] | null) ?? null;
+    const limit = Math.max(1, Math.min(500, Number(args.limit ?? 50)));
+    const all = database()
+      .outbox.filter((o) => accountIds.includes(o.accountId))
+      .slice()
+      .sort((a, b) => b.op_id - a.op_id);
+    const counts = countOps(all);
+    const matching = states?.length ? all.filter((o) => states.includes(o.state)) : all;
+    const cursor = args.cursor === undefined || args.cursor === null ? null : Number(args.cursor);
+    const start = cursor === null ? 0 : matching.findIndex((o) => o.op_id === cursor) + 1;
+    const page = matching.slice(start, start + limit);
+    const last = page[page.length - 1];
+    const nextCursor = last && start + limit < matching.length ? last.op_id : null;
+    return {
+      operations: page.map(outboxSummary),
+      nextCursor,
+      total: matching.length,
+      counts,
+    };
+  },
+  outbox_get: (args) => {
+    const op = database().outbox.find((o) => o.op_id === Number(args.opId));
+    if (!op) throw { code: 'not_found', message: 'No such operation', retryable: false };
+    return outboxSummary(op);
+  },
+  outbox_retry: (args) => {
+    const op = database().outbox.find((o) => o.op_id === Number(args.opId));
+    if (!op) throw { code: 'not_found', message: 'No such operation', retryable: false };
+    if (op.state === 'uncertain') {
+      if (args.acknowledgeDuplicateRisk !== true) {
+        throw {
+          code: 'acknowledge_duplicate_risk',
+          message: 'Retrying an unconfirmed send may deliver the message twice',
+          retryable: false,
+          detail: { state: 'uncertain', opId: op.op_id },
+        };
+      }
+      op.requiresDuplicateAck = false;
+    } else if (op.state !== 'failed') {
+      throw {
+        code: 'not_retryable',
+        message: 'This operation is not retryable',
+        retryable: false,
+        detail: { state: op.state, opId: op.op_id },
+      };
+    }
+    op.state = 'pending';
+    op.retryAt = null;
+    op.errorCode = null;
+    op.errorMessage = null;
+    op.completedAt = null;
+    persist();
+    emitOutboxState(op.accountId);
+    return outboxSummary(op);
   },
   contacts_suggest: (args) => {
     const q = String(args.q ?? '').toLowerCase();
@@ -904,9 +1162,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
   /** Save All (P2.6): one folder, every non-inline part, no clobbering. */
   attachments_save_all: (args) => {
     const accountId = String(args.accountId);
-    const m = database().messages.find(
-      (x) => x.accountId === accountId && x.id === String(args.messageId),
-    );
+    const m = database().messages.find((x) => x.accountId === accountId && x.id === String(args.messageId));
     if (!m) throw new Error('message_not_found');
     const files = m.attachments.filter((a) => !a.isInline);
     if (files.length < 2) throw new Error('attachment_save_all_not_applicable');
@@ -933,6 +1189,19 @@ const handlers: Record<string, (args: Args) => unknown> = {
       size: 1024,
       path: p,
     }));
+  },
+  attachments_stage_from_message: (args) => {
+    const messageId = String(args.messageId);
+    const attachmentId = String(args.attachmentId);
+    const m = database().messages.find((x) => x.id === messageId);
+    const meta = m?.attachments.find((a) => a.id === attachmentId);
+    if (!meta) throw new Error('attachment_not_found');
+    return {
+      name: meta.filename ?? attachmentId,
+      mime: meta.mime,
+      size: meta.size,
+      path: `/fixture/compose-cache/${String(args.draftId)}/${meta.filename ?? attachmentId}`,
+    } satisfies AttachmentRef;
   },
   remote_images_load: (args) => {
     const id = String(args.messageId);
@@ -1007,7 +1276,20 @@ export interface FixtureControl {
     accounts: () => Account[];
     callCount: (cmd: string) => number;
     drafts: () => FixtureDraft[];
-    outbox: () => { op_id: number; state: string; subject: string }[];
+    /** Reject the next N draft saves, to exercise the storage-failure path. */
+    failDraftSaves: (times: number) => void;
+    outbox: () => {
+      op_id: number;
+      state: string;
+      subject: string;
+      recipientSummary: string;
+      errorMessage: string | null;
+      payload?: string;
+    }[];
+    /** Force an operation into the state the drain loop would have produced. */
+    setOpState: (opId: number, state: FixtureOutboxOp['state']) => unknown;
+    /** Seed a large queue without going through the composer. */
+    seedOutbox: (count: number, accountId?: string) => void;
     threads: (accountId?: string) => ThreadRow[];
     savedAs: () => { attachmentId: string; filename: string }[];
     /** Destination paths the fixture wrote, in order — collisions are visible. */
@@ -1049,7 +1331,71 @@ export function installControl(): void {
       accounts: () => database().accounts.map((a) => ({ ...a })),
       callCount: (cmd) => callLog.filter((c) => c.cmd === cmd).length,
       drafts: () => database().drafts.map((d) => ({ ...d })),
-      outbox: () => database().outbox.map((o) => ({ op_id: o.op_id, state: o.state, subject: o.subject })),
+      failDraftSaves: (times) => {
+        failDraftSaves = Math.max(0, Math.floor(times));
+      },
+      outbox: () =>
+        database().outbox.map((o) => ({
+          op_id: o.op_id,
+          state: o.state,
+          subject: o.subject,
+          recipientSummary: o.recipientSummary,
+          errorMessage: o.errorMessage,
+          payload: o.payload,
+        })),
+      /** Drive one operation to a state the drain loop would have produced. */
+      setOpState: (opId, state) => {
+        const op = database().outbox.find((o) => o.op_id === opId);
+        if (!op) throw new Error('op_not_found');
+        op.state = state;
+        if (state === 'failed') {
+          op.errorCode = 'smtp_rejected';
+          op.errorMessage = 'The provider rejected this message';
+          op.retryAt = FIXED_NOW + 60_000;
+        }
+        if (state === 'uncertain') {
+          op.requiresDuplicateAck = true;
+          op.errorMessage = 'Sift could not confirm whether the provider accepted this message';
+        }
+        if (state === 'inflight') op.startedAt = FIXED_NOW;
+        if (state === 'done' || state === 'cancelled') op.completedAt = FIXED_NOW;
+        persist();
+        emitOutboxState(op.accountId);
+        return outboxSummary(op);
+      },
+      /**
+       * Seed a large queue to prove the panel stays small (P6.6). Deliberately
+       * not persisted: 10,000 rows would overflow the fixture's localStorage,
+       * and the property under test is the panel's row count, not the store.
+       */
+      seedOutbox: (count, accountId) => {
+        const account = accountId ?? database().accounts[0]?.id ?? ACCOUNT_A;
+        for (let i = 0; i < count; i++) {
+          database().outbox.push({
+            op_id: database().nextOpId++,
+            localId: `seeded-${i}`,
+            draftId: `seeded-${i}`,
+            kind: 'label',
+            state: 'pending',
+            notBefore: FIXED_NOW + i,
+            createdAt: FIXED_NOW,
+            accountId: account,
+            subject: `Seeded operation ${i}`,
+            recipientSummary: '',
+            action: 'Archive',
+            scheduledAt: null,
+            retryAt: null,
+            startedAt: null,
+            completedAt: null,
+            errorCode: null,
+            errorMessage: null,
+            revision: 1,
+            requiresDuplicateAck: false,
+            payload: `raw-mime-body-for-seeded-${i}`,
+          });
+        }
+        emitOutboxState(account);
+      },
       threads: (accountId) =>
         threadRows()
           .filter((t) => !accountId || t.accountId === accountId)

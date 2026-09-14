@@ -103,7 +103,8 @@ export function ConnectivityStrip({
       }}
     >
       {rows.map((r) => {
-        const Icon = r.state === 'reauth_required' ? KeyRound : r.state === 'degraded' ? AlertTriangle : CloudOff;
+        const Icon =
+          r.state === 'reauth_required' ? KeyRound : r.state === 'degraded' ? AlertTriangle : CloudOff;
         return (
           <div
             key={r.accountId}

@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { Dialog } from '../../ui/Dialog';
-import { api } from '../../app/ipc/commands';
 import type { AttachmentMeta } from '../../app/ipc/types';
 import { ExternalLink } from 'lucide-react';
 
