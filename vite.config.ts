@@ -35,7 +35,7 @@ export default defineConfig({
   build: {
     target: buildTarget,
     minify: !isTauri ? 'esbuild' : true,
-    sourcemap: !!isTauri,
+    sourcemap: process.env.TAURI_ENV_DEBUG === 'true',
     chunkSizeWarningLimit: 300,
     // Emitted as dist/.vite/manifest.json; scripts/check-bundle.sh walks it to
     // find every statically imported chunk instead of guessing at "main".
