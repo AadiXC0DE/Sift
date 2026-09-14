@@ -455,7 +455,12 @@ pub async fn remove_account(state: &AppState, id: &str) -> Result<(), SiftError>
             log::warn!(target: "sift::accounts", "removing {id}: secret delete failed: {error}");
         }
     }
-    state.db.accounts_remove(id).await.map_err(db_error)
+    // 4. The account-owned cache goes last, after its tasks have stopped and
+    // its rows and operations are gone (P10.4): deleting files first would
+    // leave a live row pointing at a missing file if the transaction failed.
+    let draft_ids = state.db.accounts_remove(id).await.map_err(db_error)?;
+    crate::retention::remove_account_cache(&state.data_dir, id, &draft_ids);
+    Ok(())
 }
 
 #[tauri::command]

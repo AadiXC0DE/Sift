@@ -81,9 +81,9 @@ async fn tick(ctx: &Ctx, force_uid_diff: bool) -> PartialOutcome {
 }
 
 type Changed = Vec<(String, String)>;
-type NewMail = Vec<(String, String, String, String)>;
+type NewMailBatch = Vec<sift::provider::NewMail>;
 
-fn synced(out: PartialOutcome) -> (Changed, NewMail) {
+fn synced(out: PartialOutcome) -> (Changed, NewMailBatch) {
     match out {
         PartialOutcome::Synced {
             changed_threads,
@@ -108,10 +108,12 @@ async fn p11_t06_new_mail_notifies() {
     assert!(changed.iter().any(|(_, t)| *t == hex));
     let note = new_inbox
         .iter()
-        .find(|(_, t, _, _)| *t == hex)
+        .find(|m| m.thread_id == hex)
         .expect("notify:new-mail payload");
-    assert_eq!(note.2, "Zoe");
-    assert_eq!(note.3, "Hello from the outside");
+    assert_eq!(note.account_id, ctx.acc.id);
+    assert!(!note.message_id.is_empty(), "the payload names the message");
+    assert_eq!(note.from, "Zoe");
+    assert_eq!(note.subject, "Hello from the outside");
     // quiet tick right after: nothing changes (idempotent, cheap)
     let (changed2, new2) = synced(tick(&ctx, false).await);
     assert!(changed2.is_empty());

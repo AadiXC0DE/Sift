@@ -41,7 +41,7 @@ pub async fn run_partial_sync(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<PartialOutcome, SiftError> {
     let mut changed: Vec<(String, String)> = vec![];
-    let mut new_inbox: Vec<(String, String, String, String)> = vec![];
+    let mut new_inbox: Vec<crate::provider::NewMail> = vec![];
     // Deferred \All disappearances: resolved after trash/junk passes tell us
     // whether the message moved there or vanished entirely.
     let mut missing_from_all: Vec<String> = vec![];
@@ -185,7 +185,7 @@ pub async fn run_partial_sync(
 type FolderPass = (
     FolderCursor,
     Vec<(String, String)>,
-    Vec<(String, String, String, String)>,
+    Vec<crate::provider::NewMail>,
     Vec<String>,
 );
 
@@ -305,15 +305,16 @@ async fn sync_one_folder(
                     }
                     messages.push(up);
                     thread_ids.push(tid.clone());
-                    uid_rows.push((item.uid as i64, mid));
                     if is_new_inbox {
-                        batch_new_inbox.push((
-                            account_id.to_string(),
-                            tid,
+                        batch_new_inbox.push(crate::provider::NewMail {
+                            account_id: account_id.to_string(),
+                            thread_id: tid,
+                            message_id: mid.clone(),
                             from,
-                            item.headers.get("subject").cloned().unwrap_or_default(),
-                        ));
+                            subject: item.headers.get("subject").cloned().unwrap_or_default(),
+                        });
                     }
+                    uid_rows.push((item.uid as i64, mid));
                 }
             }
             let last_uid = chunk.last().copied().unwrap_or(from);

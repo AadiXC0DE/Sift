@@ -808,9 +808,112 @@ impl Provider for GmailImapProvider {
                 unread_count: 0,
                 total_count: 0,
                 sort_order: 200 + i as i64,
+                ..Default::default()
             });
         }
         Ok(out)
+    }
+
+    /// Rename a user label's folder (P8.5).
+    ///
+    /// The folder name is the label id for this transport, so the id legitimately
+    /// changes with the name. Gmail may implement RENAME as delete+create; either
+    /// way the fresh folder map is what the caller reconciles against, and
+    /// `X-GM-LABELS` keeps the message membership.
+    async fn rename_label(&self, id: &str, name: &str) -> Result<Label, SiftError> {
+        if !crate::labels::valid_label_name(name) {
+            return Err(SiftError::app(
+                "bad_label_name",
+                "A label name cannot be empty, cannot contain slashes at the ends, and cannot be longer than 225 characters.",
+                false,
+            ));
+        }
+        let from = id.strip_prefix("imap:").unwrap_or(id);
+        if from.eq_ignore_ascii_case("INBOX")
+            || matches!(from, "SENT" | "DRAFT" | "STARRED" | "IMPORTANT" | "TRASH" | "SPAM" | "UNREAD")
+        {
+            return Err(SiftError::app(
+                "unsupported_operation",
+                "Sift cannot rename a system label.",
+                false,
+            ));
+        }
+        if crate::labels::is_system_label(from) {
+            return Err(SiftError::app(
+                "unsupported_operation",
+                "Sift cannot rename a system label.",
+                false,
+            ));
+        }
+        let encoded_from = super::proto::encode_utf7_mailbox(from);
+        let encoded_to = super::proto::encode_utf7_mailbox(name);
+        {
+            let mut guard = self.pool.worker().await?;
+            let conn = guard.as_mut().expect("connected");
+            match conn.rename(&encoded_from, &encoded_to).await {
+                Ok(()) => {}
+                // A server that cascaded the parent's rename has already moved
+                // this folder: the requested end state is the one Sift has, so
+                // this is a no-op rather than a failure the user must read.
+                Err(SiftError::App { message, .. })
+                    if message.to_uppercase().contains("NONEXISTENT")
+                        || message.to_uppercase().contains("TRYCREATE") => {}
+                Err(e) => return Err(e),
+            }
+        }
+        // The discovered mapping is now stale; refresh it before anything else
+        // reads a folder name, so a following operation cannot address the old
+        // one.
+        {
+            let mut guard = self.pool.worker().await?;
+            let conn = guard.as_mut().expect("connected");
+            if let Ok(map) = folders::discover(conn).await {
+                *self.folders.lock().await = Some(map);
+            }
+        }
+        Ok(Label {
+            account_id: self.account_id.clone(),
+            id: format!("imap:{name}"),
+            name: name.into(),
+            kind: "user".into(),
+            visible: true,
+            sort_order: 200,
+            ..Default::default()
+        })
+    }
+
+    /// Delete a user label's folder (P8.5). Gmail keeps the messages; only the
+    /// folder (the label) goes away.
+    async fn delete_label(&self, id: &str) -> Result<(), SiftError> {
+        let name = id.strip_prefix("imap:").unwrap_or(id);
+        if name.eq_ignore_ascii_case("INBOX") || crate::labels::is_system_label(name) {
+            return Err(SiftError::app(
+                "unsupported_operation",
+                "Sift cannot delete a system label.",
+                false,
+            ));
+        }
+        let encoded = super::proto::encode_utf7_mailbox(name);
+        {
+            let mut guard = self.pool.worker().await?;
+            let conn = guard.as_mut().expect("connected");
+            match conn.delete_folder(&encoded).await {
+                Ok(()) => {}
+                // Already absent is the requested end state.
+                Err(SiftError::App { message, .. })
+                    if message.to_uppercase().contains("NONEXISTENT")
+                        || message.to_uppercase().contains("TRYCREATE") => {}
+                Err(e) => return Err(e),
+            }
+        }
+        {
+            let mut guard = self.pool.worker().await?;
+            let conn = guard.as_mut().expect("connected");
+            if let Ok(map) = folders::discover(conn).await {
+                *self.folders.lock().await = Some(map);
+            }
+        }
+        Ok(())
     }
 
     async fn create_label(&self, name: &str) -> Result<Label, SiftError> {
@@ -850,6 +953,7 @@ impl Provider for GmailImapProvider {
             unread_count: 0,
             total_count: 0,
             sort_order: 200,
+            ..Default::default()
         })
     }
 
@@ -1067,6 +1171,14 @@ impl Provider for GmailImapProvider {
         Ok(String::from_utf8_lossy(&raw).into_owned())
     }
 
+    /// Byte-exact raw MIME (P9.3): the FETCH body is handed back exactly as it
+    /// arrived. The text-shaped `fetch_raw` above is for display only, where a
+    /// lossy decode can be labelled as such.
+    async fn fetch_raw_bytes(&self, message_id: &str) -> Result<Vec<u8>, SiftError> {
+        let (raw, _) = self.fetch_raw_leased(message_id).await?;
+        Ok(raw)
+    }
+
     async fn apply(&self, op: &OutboxOp) -> Result<ApplyOutcome, SiftError> {
         let folders = self.folders_cached().await?;
         match op.kind.as_str() {
@@ -1150,6 +1262,49 @@ impl Provider for GmailImapProvider {
                     &targets,
                 )
                 .await
+            }
+            // A rule application is the same provider work as a gesture.
+            "rule_apply" => {
+                let ids: Vec<String> =
+                    serde_json::from_value(op.payload["ids"].clone()).unwrap_or_default();
+                let add: Vec<String> =
+                    serde_json::from_value(op.payload["add"].clone()).unwrap_or_default();
+                let remove: Vec<String> =
+                    serde_json::from_value(op.payload["remove"].clone()).unwrap_or_default();
+                if ids.is_empty() {
+                    return Ok(ApplyOutcome::AlreadyApplied);
+                }
+                super::ops::apply_modify_labels(
+                    &self.pool,
+                    &self.db,
+                    &folders,
+                    &self.account_id,
+                    &ids,
+                    &add,
+                    &remove,
+                )
+                .await
+            }
+            "label_rename" => {
+                let id = op.payload["id"].as_str().unwrap_or_default();
+                let name = op.payload["name"].as_str().unwrap_or_default();
+                if id.is_empty() || name.is_empty() {
+                    return Err(SiftError::app(
+                        "op",
+                        "a label rename needs a label and a name",
+                        false,
+                    ));
+                }
+                self.rename_label(id, name).await?;
+                Ok(ApplyOutcome::Done)
+            }
+            "label_delete" => {
+                let id = op.payload["id"].as_str().unwrap_or_default();
+                if id.is_empty() {
+                    return Err(SiftError::app("op", "a label delete needs a label", false));
+                }
+                self.delete_label(id).await?;
+                Ok(ApplyOutcome::Done)
             }
             "send" => {
                 // Executed by the outbox drain, which owns the prepared
@@ -1419,6 +1574,7 @@ pub(crate) fn sys_labels(account_id: &str) -> Vec<Label> {
         unread_count: 0,
         total_count: 0,
         sort_order: i as i64,
+        ..Default::default()
     })
     .collect()
 }

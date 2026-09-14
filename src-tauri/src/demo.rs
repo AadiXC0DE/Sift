@@ -66,6 +66,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
                 unread_count: 0,
                 total_count: 0,
                 sort_order: i as i64,
+                ..Default::default()
             })
             .await?;
         }
@@ -87,6 +88,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
             unread_count: 0,
             total_count: 0,
             sort_order: 200,
+            ..Default::default()
         })
         .await?;
     }
@@ -102,6 +104,7 @@ pub async fn seed_if_enabled(db: &Db) -> Result<bool> {
             unread_count: 0,
             total_count: 0,
             sort_order: 200,
+            ..Default::default()
         })
         .await?;
     }

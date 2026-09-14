@@ -975,6 +975,57 @@ impl Db {
         .await
     }
 
+    /// The next instant at which this account's queue can make progress, if
+    /// any. The drain loop sleeps until exactly this moment instead of polling
+    /// (P8.1): schedule precision comes from the persisted deadline, never
+    /// from how often inbox polling happens to run.
+    ///
+    /// Three sources matter: a pending operation's `not_before` (a scheduled
+    /// send, a retry backoff, a debounced draft sync), an uncertain send's
+    /// bounded reconciliation and — implicitly — nothing else. A pending
+    /// operation already due reports `now`, so the loop drains immediately.
+    pub async fn outbox_next_deadline(&self, account_id: Option<String>) -> Result<Option<i64>> {
+        let now = super::now_ms();
+        self.read(move |c| {
+            let filter = if account_id.is_some() {
+                " AND account_id=?"
+            } else {
+                ""
+            };
+            let sql = format!(
+                "SELECT MIN(x) FROM ( \
+                   SELECT CASE WHEN not_before<=?2 THEN ?2 ELSE not_before END AS x \
+                     FROM outbox_ops WHERE state='{STATE_PENDING}'{filter} \
+                   UNION ALL \
+                   SELECT reconcile_at FROM outbox_ops \
+                     WHERE state='{STATE_UNCERTAIN}' AND reconcile_at IS NOT NULL{filter} \
+                 )"
+            );
+            match &account_id {
+                Some(a) => Ok(c.query_row(&sql, params![a, now], |r| r.get(0))?),
+                None => Ok(c.query_row(&sql, params![rusqlite::types::Null, now], |r| r.get(0))?),
+            }
+        })
+        .await
+    }
+
+    /// Accounts whose queue has work that is due now, so the scheduler can
+    /// nudge exactly those.
+    pub async fn outbox_due_accounts(&self, now: i64) -> Result<Vec<String>> {
+        self.read(move |c| {
+            let mut s = c.prepare(
+                "SELECT DISTINCT account_id FROM outbox_ops \
+                 WHERE (state='pending' AND not_before<=?1) \
+                    OR (state='uncertain' AND reconcile_at IS NOT NULL AND reconcile_at<=?1)",
+            )?;
+            let rows = s
+                .query_map(params![now], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
     /// Retry an operation the user explicitly asked for (P6.1/P6.6).
     ///
     /// Only `failed` and `uncertain` rows move. An uncertain send needs the

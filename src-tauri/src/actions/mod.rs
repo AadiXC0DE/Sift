@@ -125,32 +125,90 @@ fn db_error(e: anyhow::Error) -> SiftError {
     SiftError::app("db", e.to_string(), false)
 }
 
-/// Read `(id, thread_id)` for a target thread. Star gestures touch only the
-/// newest message, which is the Gmail "star this conversation" semantic.
+/// Which messages of a thread a gesture touches (P8.5).
+///
+/// Starring is per message in Gmail, but the *gesture* is per thread, so the
+/// two directions are deliberately different:
+///
+/// * starring stars the latest non-draft message — "star this conversation";
+/// * unstarring clears **every** message that is currently starred, because a
+///   thread shown as starred because an older message carries the star must
+///   not stay starred after the user unstars it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageScope {
+    /// Every message in the thread, oldest first.
+    All,
+    /// The newest message that is not a draft.
+    LatestNonDraft,
+    /// Every message that currently carries the star.
+    StarredOnly,
+}
+
+fn scope_for(action: &ActionKind) -> MessageScope {
+    match action {
+        ActionKind::Star { on: true } => MessageScope::LatestNonDraft,
+        ActionKind::Star { on: false } => MessageScope::StarredOnly,
+        _ => MessageScope::All,
+    }
+}
+
+/// Read `(id, thread_id)` for a target thread.
 fn message_ids_conn(
     conn: &rusqlite::Connection,
     account_id: &str,
     thread_id: &str,
-    latest_only: bool,
+    scope: MessageScope,
 ) -> anyhow::Result<Vec<String>> {
-    if latest_only {
-        let one: Option<String> = conn
-            .query_row(
-                "SELECT id FROM messages WHERE account_id=? AND thread_id=? \
-                 ORDER BY internal_date DESC, id DESC LIMIT 1",
-                rusqlite::params![account_id, thread_id],
-                |r| r.get(0),
-            )
-            .ok();
-        return Ok(one.into_iter().collect());
+    match scope {
+        MessageScope::LatestNonDraft => {
+            let one: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM messages WHERE account_id=? AND thread_id=? AND is_draft=0 \
+                     ORDER BY internal_date DESC, id DESC LIMIT 1",
+                    rusqlite::params![account_id, thread_id],
+                    |r| r.get(0),
+                )
+                .ok();
+            Ok(one.into_iter().collect())
+        }
+        MessageScope::StarredOnly => {
+            let mut s = conn.prepare(
+                "SELECT id FROM messages WHERE account_id=? AND thread_id=? AND is_starred=1 \
+                 ORDER BY internal_date, id",
+            )?;
+            let rows: Vec<String> = s
+                .query_map(rusqlite::params![account_id, thread_id], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            Ok(rows)
+        }
+        MessageScope::All => {
+            let mut s = conn.prepare(
+                "SELECT id FROM messages WHERE account_id=? AND thread_id=? ORDER BY internal_date, id",
+            )?;
+            let rows: Vec<String> = s
+                .query_map(rusqlite::params![account_id, thread_id], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            Ok(rows)
+        }
     }
-    let mut s = conn.prepare(
-        "SELECT id FROM messages WHERE account_id=? AND thread_id=? ORDER BY internal_date, id",
-    )?;
-    let rows: Vec<String> = s
-        .query_map(rusqlite::params![account_id, thread_id], |r| r.get(0))?
-        .collect::<Result<Vec<String>, _>>()?;
-    Ok(rows)
+}
+
+/// Apply one message's label diff and roll its thread up, inside the caller's
+/// transaction.
+///
+/// Shared by the gesture path and the rule engine, so a rule can never reach a
+/// state a gesture could not: the same `message_labels` rows, the same derived
+/// flags and the same single thread recompute.
+pub fn apply_message_diff(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: &str,
+    thread_id: &str,
+    message_id: &str,
+    add: &[String],
+    remove: &[String],
+) -> anyhow::Result<()> {
+    apply_diff_conn(tx, account_id, message_id, add, remove)?;
+    crate::db::threads::recompute_thread_conn(tx, account_id, thread_id)
 }
 
 /// Apply a label diff to one message and refresh its denormalized flags.
@@ -177,7 +235,7 @@ fn apply_diff_conn(
 }
 
 /// Recompute the denormalized flags and the label list of one message.
-fn refresh_message_flags(
+pub(crate) fn refresh_message_flags(
     conn: &rusqlite::Connection,
     account_id: &str,
     message_id: &str,
@@ -237,7 +295,7 @@ fn apply_account_gesture(
     targets: &[GestureTarget],
     sets: &LabelSets,
     gesture_id: &str,
-    latest_only: bool,
+    scope: MessageScope,
 ) -> anyhow::Result<Option<i64>> {
     let touched = sets.touched();
     let mut real_ids: Vec<String> = vec![];
@@ -247,7 +305,7 @@ fn apply_account_gesture(
     };
     let mut threads: Vec<String> = vec![];
     for target in targets {
-        let ids = message_ids_conn(tx, account_id, &target.thread_id, latest_only)?;
+        let ids = message_ids_conn(tx, account_id, &target.thread_id, scope)?;
         let mut changed_thread = false;
         for id in ids {
             let prior = read_prior(tx, account_id, &id)?;
@@ -336,7 +394,7 @@ pub async fn apply_gesture(
     action: &ActionKind,
 ) -> Result<(GestureOutcome, Vec<GestureFailure>), SiftError> {
     let sets = label_sets(action);
-    let latest_only = matches!(action, ActionKind::Star { .. });
+    let scope = scope_for(action);
     if sets.delete_forever {
         return delete_forever(db, gesture_id, targets).await;
     }
@@ -358,7 +416,7 @@ pub async fn apply_gesture(
         let result = db
             .write_tx(move |tx| {
                 let ids: Vec<String> = scoped.iter().map(|t| t.thread_id.clone()).collect();
-                let op = apply_account_gesture(tx, &account, &scoped, &sets, &group, latest_only)?;
+                let op = apply_account_gesture(tx, &account, &scoped, &sets, &group, scope)?;
                 Ok((op, ids))
             })
             .await;
@@ -779,122 +837,250 @@ async fn delete_forever(
     Ok((outcome, failures))
 }
 
+/// One message's immutable identity for a permanent deletion (P6.4). The
+/// operation owns these, which is why the display rows may only disappear
+/// after they are written.
+struct DeleteIdentity {
+    value: serde_json::Value,
+    thread_id: String,
+    cache_path: Option<String>,
+}
+
+fn delete_identities(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: &str,
+    targets: &[(String, String)],
+) -> anyhow::Result<Vec<DeleteIdentity>> {
+    let mut out: Vec<DeleteIdentity> = Vec::with_capacity(targets.len());
+    for (id, thread_id) in targets {
+        out.push(delete_identity(tx, account_id, id, thread_id)?);
+    }
+    Ok(out)
+}
+
+fn delete_identity(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: &str,
+    id: &str,
+    thread_id: &str,
+) -> anyhow::Result<DeleteIdentity> {
+    let labels: Vec<String> = tx
+        .query_row(
+            "SELECT label_ids FROM messages WHERE account_id=? AND id=?",
+            rusqlite::params![account_id, id],
+            |r| r.get::<_, String>(0),
+        )
+        .map(|s| serde_json::from_str(&s).unwrap_or_default())
+        .unwrap_or_default();
+    // Membership is validated per message: a thread can hold one
+    // message in Trash and another in the inbox.
+    if !labels.iter().any(|l| l == "TRASH" || l == "SPAM") {
+        anyhow::bail!("a message is not in Trash or Spam");
+    }
+    let rfc: Option<String> = tx
+        .query_row(
+            "SELECT rfc_message_id FROM messages WHERE account_id=? AND id=?",
+            rusqlite::params![account_id, id],
+            |r| r.get(0),
+        )
+        .unwrap_or(None);
+    let cache_path: Option<String> = tx
+        .query_row(
+            "SELECT local_path FROM attachments WHERE account_id=? AND message_id=? \
+             AND local_path IS NOT NULL LIMIT 1",
+            rusqlite::params![account_id, id],
+            |r| r.get(0),
+        )
+        .ok();
+    // Original location and epoch, preferred Trash > Junk > anywhere.
+    // These are hints: the provider re-resolves unless the epoch still
+    // matches, so a stale UID can never address another message.
+    let loc: Option<(String, i64, i64)> = tx
+        .query_row(
+            "SELECT u.role, u.uid, f.uidvalidity FROM imap_uids u \
+             JOIN imap_folders f ON f.account_id=u.account_id AND f.role=u.role \
+             WHERE u.account_id=? AND u.message_id=? \
+             ORDER BY CASE u.role WHEN 'trash' THEN 0 WHEN 'junk' THEN 1 ELSE 2 END \
+             LIMIT 1",
+            rusqlite::params![account_id, id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok();
+    let (role, uid, uidvalidity) = match loc {
+        Some((role, uid, epoch)) => (
+            serde_json::Value::String(role),
+            serde_json::Value::from(uid),
+            serde_json::Value::from(epoch),
+        ),
+        None => (
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        ),
+    };
+    Ok(DeleteIdentity {
+        value: serde_json::json!({
+            "id": id,
+            "rfcMessageId": rfc,
+            "role": role,
+            "uid": uid,
+            "uidvalidity": uidvalidity,
+        }),
+        thread_id: thread_id.to_string(),
+        cache_path,
+    })
+}
+
+/// Write the delete operation(s) and then remove the display rows.
+///
+/// The identities are chunked: a Trash with thousands of messages becomes
+/// several bounded operations, each naming the exact messages it deletes.
+/// That is the difference between this and a blind `EXPUNGE`, and it is what
+/// makes a failed or uncertain deletion recoverable.
+fn enqueue_deletions(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: &str,
+    identities: &[DeleteIdentity],
+) -> anyhow::Result<Option<i64>> {
+    if identities.is_empty() {
+        return Ok(None);
+    }
+    let mut first: Option<i64> = None;
+    for chunk in identities.chunks(EMPTY_TRASH_CHUNK) {
+        let messages: Vec<serde_json::Value> =
+            chunk.iter().map(|i| i.value.clone()).collect();
+        let cache_paths: Vec<String> =
+            chunk.iter().filter_map(|i| i.cache_path.clone()).collect();
+        let payload = serde_json::json!({
+            "messages": messages,
+            "cachePaths": cache_paths,
+        })
+        .to_string();
+        let queued = NewOp {
+            account_id: account_id.to_string(),
+            kind: "delete".into(),
+            payload,
+            undo_group: None, // a confirmed permanent deletion promises no undo
+            not_before: 0,
+            summary_action: Some("Deleting permanently".into()),
+            summary_subject: Some(format!("{} messages", messages.len())),
+            ..Default::default()
+        };
+        let id = crate::db::outbox::insert_op(tx, &queued)?.id;
+        if first.is_none() {
+            first = Some(id);
+        }
+    }
+    // Only now are the display rows removed: the operations own the identities.
+    let mut touched: Vec<(String, String)> = Vec::new();
+    for i in identities {
+        tx.execute(
+            "DELETE FROM messages WHERE account_id=? AND id=?",
+            rusqlite::params![account_id, i.value["id"].as_str().unwrap_or_default()],
+        )?;
+        if !touched.iter().any(|(_, t)| t == &i.thread_id) {
+            touched.push((account_id.to_string(), i.thread_id.clone()));
+        }
+    }
+    for (account, thread) in touched {
+        crate::db::threads::recompute_thread_conn(tx, &account, &thread)?;
+    }
+    Ok(first)
+}
+
 fn delete_forever_account(
     tx: &rusqlite::Transaction<'_>,
     account_id: &str,
     targets: &[GestureTarget],
-    gesture_id: &str,
+    _gesture_id: &str,
 ) -> anyhow::Result<(Option<i64>, Vec<String>)> {
-    let mut messages: Vec<serde_json::Value> = vec![];
-    let mut cache_paths: Vec<String> = vec![];
+    let mut wanted: Vec<(String, String)> = vec![];
     let mut thread_ids: Vec<String> = vec![];
     for target in targets {
-        let ids = message_ids_conn(tx, account_id, &target.thread_id, false)?;
+        let ids = message_ids_conn(tx, account_id, &target.thread_id, MessageScope::All)?;
         if ids.is_empty() {
             continue;
         }
-        let mut any = false;
-        for id in &ids {
-            let labels: Vec<String> = tx
-                .query_row(
-                    "SELECT label_ids FROM messages WHERE account_id=? AND id=?",
-                    rusqlite::params![account_id, id],
-                    |r| r.get::<_, String>(0),
-                )
-                .map(|s| serde_json::from_str(&s).unwrap_or_default())
-                .unwrap_or_default();
-            // Membership is validated per message: a thread can hold one
-            // message in Trash and another in the inbox.
-            if !labels.iter().any(|l| l == "TRASH" || l == "SPAM") {
-                anyhow::bail!("a message is not in Trash or Spam");
-            }
-            let rfc: Option<String> = tx
-                .query_row(
-                    "SELECT rfc_message_id FROM messages WHERE account_id=? AND id=?",
-                    rusqlite::params![account_id, id],
-                    |r| r.get(0),
-                )
-                .unwrap_or(None);
-            let mut attached: Vec<String> = tx
-                .prepare("SELECT local_path FROM attachments WHERE account_id=? AND message_id=? AND local_path IS NOT NULL")?
-                .query_map(rusqlite::params![account_id, id], |r| r.get(0))?
-                .collect::<Result<Vec<String>, _>>()?;
-            for path in attached.drain(..) {
-                if !cache_paths.contains(&path) {
-                    cache_paths.push(path);
+        thread_ids.push(target.thread_id.clone());
+        for id in ids {
+            wanted.push((id, target.thread_id.clone()));
+        }
+    }
+    let identities = delete_identities(tx, account_id, &wanted)?;
+    let op_id = enqueue_deletions(tx, account_id, &identities)?;
+    Ok((op_id, thread_ids))
+}
+
+/// Empty Trash (P8.5).
+///
+/// The count is previewed first, then every message that is *actually* in
+/// Trash is named explicitly in the queued operation. Messages outside Trash
+/// are never included, and nothing here issues a folder-wide EXPUNGE.
+pub const EMPTY_TRASH_CHUNK: usize = 500;
+
+pub async fn empty_trash(
+    db: &Db,
+    gesture_id: &str,
+    account_ids: &[String],
+) -> Result<(GestureOutcome, Vec<GestureFailure>), SiftError> {
+    let mut outcome = GestureOutcome::default();
+    let mut failures: Vec<GestureFailure> = vec![];
+    for account_id in account_ids {
+        let account = account_id.clone();
+        let group = gesture_id.to_string();
+        let result = db
+            .write_tx(move |tx| empty_trash_account(tx, &account, &group))
+            .await;
+        match result {
+            Ok((op_id, thread_ids)) => {
+                outcome.thread_ids.extend(thread_ids);
+                if let Some(id) = op_id {
+                    if let Some(op) = db.outbox_get(id).await.map_err(db_error)? {
+                        outcome.operations.push(op);
+                    }
                 }
             }
-            // Original location and epoch, preferred Trash > Junk > anywhere.
-            // These are hints: the provider re-resolves unless the epoch still
-            // matches, so a stale UID can never address another message.
-            let loc: Option<(String, i64, i64)> = tx
-                .query_row(
-                    "SELECT u.role, u.uid, f.uidvalidity FROM imap_uids u \
-                     JOIN imap_folders f ON f.account_id=u.account_id AND f.role=u.role \
-                     WHERE u.account_id=? AND u.message_id=? \
-                     ORDER BY CASE u.role WHEN 'trash' THEN 0 WHEN 'junk' THEN 1 ELSE 2 END \
-                     LIMIT 1",
-                    rusqlite::params![account_id, id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .ok();
-            let (role, uid, uidvalidity) = match loc {
-                Some((role, uid, epoch)) => (
-                    serde_json::Value::String(role),
-                    serde_json::Value::from(uid),
-                    serde_json::Value::from(epoch),
-                ),
-                None => (
-                    serde_json::Value::Null,
-                    serde_json::Value::Null,
-                    serde_json::Value::Null,
-                ),
-            };
-            messages.push(serde_json::json!({
-                "id": id,
-                "rfcMessageId": rfc,
-                "role": role,
-                "uid": uid,
-                "uidvalidity": uidvalidity,
-            }));
-            any = true;
-        }
-        if any {
-            thread_ids.push(target.thread_id.clone());
+            Err(e) => failures.push(GestureFailure {
+                account_id: account_id.clone(),
+                code: "db".into(),
+                message: e.to_string(),
+            }),
         }
     }
-    if messages.is_empty() {
-        return Ok((None, vec![]));
-    }
-    let payload = serde_json::json!({
-        "messages": messages,
-        "cachePaths": cache_paths,
-    })
-    .to_string();
-    let queued = NewOp {
-        account_id: account_id.to_string(),
-        kind: "delete".into(),
-        payload,
-        undo_group: None, // a confirmed permanent deletion promises no undo
-        not_before: 0,
-        summary_action: Some("Deleting permanently".into()),
-        summary_subject: Some(format!("{} messages", messages.len())),
-        ..Default::default()
+    Ok((outcome, failures))
+}
+
+fn empty_trash_account(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: &str,
+    _gesture_id: &str,
+) -> anyhow::Result<(Option<i64>, Vec<String>)> {
+    let wanted = trash_message_ids(tx, account_id)?;
+    let thread_ids: Vec<String> = {
+        let mut t: Vec<String> = wanted.iter().map(|(_, thread)| thread.clone()).collect();
+        t.sort();
+        t.dedup();
+        t
     };
-    let op_id = crate::db::outbox::insert_op(tx, &queued)?.id;
-    // Only now are the display rows removed: the operation owns the identities.
-    for target in targets {
-        tx.execute(
-            "DELETE FROM messages WHERE account_id=? AND thread_id=?",
-            rusqlite::params![account_id, target.thread_id],
-        )?;
-        tx.execute(
-            "DELETE FROM threads WHERE account_id=? AND id=?",
-            rusqlite::params![account_id, target.thread_id],
-        )?;
-    }
-    let _ = gesture_id;
-    Ok((Some(op_id), thread_ids))
+    let identities = delete_identities(tx, account_id, &wanted)?;
+    let op_id = enqueue_deletions(tx, account_id, &identities)?;
+    Ok((op_id, thread_ids))
+}
+
+/// Every message that is genuinely in Trash for one account, with its thread.
+/// Membership is read from `message_labels`, not from a thread flag, so a
+/// partially trashed thread can never be expanded beyond what is in Trash.
+pub(crate) fn trash_message_ids(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let mut s = tx.prepare(
+        "SELECT m.id, m.thread_id FROM messages m          JOIN message_labels ml ON ml.account_id=m.account_id AND ml.message_id=m.id          WHERE m.account_id=? AND ml.label_id='TRASH' AND m.is_draft=0          ORDER BY m.internal_date, m.id",
+    )?;
+    let rows = s
+        .query_map(rusqlite::params![account_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<Vec<(String, String)>, _>>()?;
+    Ok(rows)
 }
 
 /// Remove the cached attachment files of a completed permanent deletion.

@@ -301,6 +301,9 @@ pub async fn ensure_local(
 ) -> Result<AttachmentCacheInfo, SiftError> {
     let basename = naming::basename(rec.filename.as_deref(), &rec.mime, &rec.id);
     let key = rec_key(rec);
+    // The file this call is about to hand out must not be evicted while it is
+    // being read (P10.4). The lease is released when this future is dropped.
+    let _lease = crate::attachments::in_use::acquire(&rec.account_id, &rec.id);
 
     // 1. A cache file already satisfies the read. Legacy rows are promoted
     //    from `unverified` to `ready` once the file checks out.
@@ -584,6 +587,8 @@ pub async fn resolve_bytes(
         .await
         .map_err(|e| SiftError::app("db", e.to_string(), false))?
         .ok_or_else(|| SiftError::NotFound("attachment".into()))?;
+    // A file being read for a preview is in use: eviction skips it (P10.4).
+    let _lease = crate::attachments::in_use::acquire(&rec.account_id, &rec.id);
     if let Some(data) = rec.data.as_ref() {
         return Ok((data.clone(), rec.mime));
     }

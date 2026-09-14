@@ -24,6 +24,9 @@ pub(crate) fn thread_row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadR
         has_attachments: r.get::<_, i64>("has_attachments")? != 0,
         label_ids,
         snoozed_until: r.get("snoozed_until")?,
+        // Absent from queries that do not join it: a reminder is an
+        // indicator, never a column a caller must supply.
+        reminder_at: r.get("reminder_at").unwrap_or(None),
         server_only: false,
     })
 }
@@ -207,7 +210,9 @@ impl Db {
             String::new()
         };
         let sql = format!(
-            "SELECT t.* FROM threads t WHERE t.account_id IN ({placeholders}) AND {where_c}{extra_unread}{extra_att}{keyset_clause} ORDER BY {order} LIMIT ?"
+            "SELECT t.*, (SELECT r.remind_at FROM reminders r WHERE r.account_id=t.account_id \
+                AND r.thread_id=t.id AND r.completed_at IS NULL) AS reminder_at \
+         FROM threads t WHERE t.account_id IN ({placeholders}) AND {where_c}{extra_unread}{extra_att}{keyset_clause} ORDER BY {order} LIMIT ?"
         );
         let account_ids = q.account_ids.clone();
         let key = cursor.map(|c| c.key);

@@ -87,7 +87,7 @@ async fn p53_send_is_deferred_then_delivered_with_the_prepared_envelope() {
 
     let provider = GmailApiProvider::new(acc.id.clone(), GmailClient::new("t".into()));
     let handle = db
-        .drafts_enqueue_send(&prepared, sift::db::now_ms() + 60_000, false)
+        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000), false)
         .await
         .unwrap();
     assert!(

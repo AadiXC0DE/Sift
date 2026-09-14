@@ -1559,6 +1559,49 @@ impl Conn {
         Ok(())
     }
 
+    /// RENAME a folder (P8.5). Folder names travel as sent, already encoded by
+    /// the caller; Gmail may report this as a delete plus a create, which is
+    /// exactly the case the label-id reconciliation exists for.
+    pub async fn rename(&mut self, from: &str, to: &str) -> Result<(), SiftError> {
+        if from.eq_ignore_ascii_case("INBOX") {
+            return Err(SiftError::app(
+                "unsupported_operation",
+                "INBOX cannot be renamed.",
+                false,
+            ));
+        }
+        let r = self
+            .cmd(&format!(
+                "RENAME {} {}",
+                quote_folder(from),
+                quote_folder(to)
+            ))
+            .await?;
+        if !r.tagged.ok {
+            super::errors::map_response("RENAME", &r.tagged.text)?;
+        }
+        Ok(())
+    }
+
+    /// DELETE a folder (P8.5). On Gmail this removes the label; the messages
+    /// that carried it stay in All Mail.
+    pub async fn delete_folder(&mut self, folder: &str) -> Result<(), SiftError> {
+        if folder.eq_ignore_ascii_case("INBOX") {
+            return Err(SiftError::app(
+                "unsupported_operation",
+                "INBOX cannot be deleted.",
+                false,
+            ));
+        }
+        let r = self
+            .cmd(&format!("DELETE {}", quote_folder(folder)))
+            .await?;
+        if !r.tagged.ok {
+            super::errors::map_response("DELETE", &r.tagged.text)?;
+        }
+        Ok(())
+    }
+
     /// APPEND a message; returns (uidvalidity, assigned uid) from APPENDUID.
     pub async fn append(
         &mut self,

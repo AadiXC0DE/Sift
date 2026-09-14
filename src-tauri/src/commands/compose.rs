@@ -76,6 +76,24 @@ pub async fn drafts_upsert(
     draft: Draft,
     expected_revision: Option<i64>,
 ) -> Result<Draft, SiftError> {
+    // Editing a scheduled message cancels its pending operation first (P8.1).
+    // Otherwise the draft would carry new content while the immutable revision
+    // it already queued still left the outbox at the old deadline.
+    if !draft.local_id.is_empty() {
+        let cancelled = state
+            .db
+            .drafts_cancel_pending_send(&draft.local_id)
+            .await
+            .map_err(db_error)?;
+        if cancelled {
+            log::info!(
+                "draft {} was edited: its scheduled send was cancelled",
+                draft.local_id
+            );
+            state.kick_outbox(&draft.account_id).await;
+            let _ = state.db.drafts_reopen(&draft.local_id).await;
+        }
+    }
     let saved = state
         .db
         .drafts_upsert(&draft, expected_revision)
@@ -140,6 +158,7 @@ pub async fn drafts_send(
     revision: i64,
     not_before: Option<i64>,
     archive_after_send: Option<bool>,
+    schedule: Option<crate::send_later::ScheduleRequest>,
 ) -> Result<SendHandle, SiftError> {
     let draft = state
         .db
@@ -165,12 +184,92 @@ pub async fn drafts_send(
     .await
     .map_err(|e| SiftError::app("storage", format!("send preparation failed: {e}"), true))??;
 
-    let deadline = not_before.unwrap_or(0).max(crate::db::now_ms());
+    // Two ways to ask for a future send: the structured schedule the Send Later
+    // menu produces, or a bare instant from the undo window. The structured
+    // request wins, and both are validated against the clock here — a time in
+    // the past is a user-visible refusal, never a silent "send now".
+    let now = crate::db::now_ms();
+    let schedule = match schedule {
+        Some(request) => crate::send_later::plan(&request, now)?,
+        None => match not_before {
+            Some(instant) if instant > now + crate::send_later::MIN_LEAD_MS => {
+                crate::send_later::validate_instant(instant, now)?;
+                crate::db::drafts::SendSchedule::now(instant)
+            }
+            // The undo window: due now, cancellable for `undoSendDelay`.
+            _ => crate::db::drafts::SendSchedule::now(now),
+        },
+    };
+    let handle = state
+        .db
+        .drafts_enqueue_send(&prepared, &schedule, archive_after_send.unwrap_or(false))
+        .await
+        .map_err(db_error)?;
+    state.kick_outbox(&draft.account_id).await;
+    Ok(handle)
+}
+
+/// The Send Later menu (P8.1). The backend computes "tomorrow 08:00" so the
+/// composer and the outbox cannot mean different instants by it.
+#[tauri::command]
+pub async fn send_later_options(
+    timezone: Option<String>,
+) -> Result<Vec<crate::dto::SendLaterOption>, SiftError> {
+    Ok(crate::send_later::options(
+        crate::db::now_ms(),
+        timezone.as_deref(),
+    ))
+}
+
+/// Move a scheduled send to a new time (P8.1).
+#[tauri::command]
+pub async fn send_reschedule(
+    state: State<'_, AppState>,
+    op_id: i64,
+    request: crate::send_later::ScheduleRequest,
+) -> Result<SendHandle, SiftError> {
+    let schedule = crate::send_later::plan(&request, crate::db::now_ms())?;
+    let handle = state
+        .db
+        .drafts_reschedule_send(op_id, schedule)
+        .await
+        .map_err(|e| match e.downcast::<SiftError>() {
+            Ok(sift) => sift,
+            Err(other) => db_error(other),
+        })?;
+    state.kick_outbox(&account_of_op(&state, op_id).await).await;
+    Ok(handle)
+}
+
+/// Send a scheduled message now (P8.1).
+#[tauri::command]
+pub async fn send_now(
+    state: State<'_, AppState>,
+    op_id: i64,
+) -> Result<SendHandle, SiftError> {
+    let handle = state
+        .db
+        .drafts_send_now(op_id)
+        .await
+        .map_err(|e| match e.downcast::<SiftError>() {
+            Ok(sift) => sift,
+            Err(other) => db_error(other),
+        })?;
+    state.kick_outbox(&account_of_op(&state, op_id).await).await;
+    Ok(handle)
+}
+
+/// The account an operation belongs to, so a reschedule nudges the right drain
+/// loop. An operation that cannot be read is simply not nudged.
+async fn account_of_op(state: &AppState, op_id: i64) -> String {
     state
         .db
-        .drafts_enqueue_send(&prepared, deadline, archive_after_send.unwrap_or(false))
+        .outbox_get(op_id)
         .await
-        .map_err(db_error)
+        .ok()
+        .flatten()
+        .map(|op| op.account_id)
+        .unwrap_or_default()
 }
 
 /// Cancel a send that has not been claimed yet and return the reopened draft.

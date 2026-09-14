@@ -302,6 +302,7 @@ async fn p6_5_wake_applies_the_exact_label_set_for_both_policies() {
             unread_count: 0,
             total_count: 0,
             sort_order: 200,
+            ..Default::default()
         })
         .await
         .unwrap();

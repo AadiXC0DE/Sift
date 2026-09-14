@@ -84,6 +84,10 @@ pub struct AppState {
     /// keys a body cache on the generation also invalidates it for a load-once
     /// grant (which deliberately does not change stored preferences).
     session_privacy_bumps: std::sync::Mutex<HashMap<String, i64>>,
+    /// P9.3: the bounded `mailto:` compose request waiting for the UI. Exactly
+    /// one is kept: a link that arrives before accounts load must survive, and
+    /// an older link must not shadow a newer one.
+    pending_mailto: std::sync::Mutex<Option<crate::dto::PendingMailto>>,
 }
 
 impl AppState {
@@ -113,7 +117,26 @@ impl AppState {
             outbox_kicks: Mutex::new(Default::default()),
             session_remote_loads: std::sync::Mutex::new(Default::default()),
             session_privacy_bumps: std::sync::Mutex::new(Default::default()),
+            pending_mailto: std::sync::Mutex::new(None),
         }
+    }
+
+    // -- pending mailto (P9.3) ----------------------------------------------
+
+    /// Hold a parsed `mailto:` request until the UI takes it.
+    pub fn remember_mailto(&self, pending: crate::dto::PendingMailto) {
+        if let Ok(mut slot) = self.pending_mailto.lock() {
+            *slot = Some(pending);
+        }
+    }
+
+    pub fn pending_mailto(&self) -> Option<crate::dto::PendingMailto> {
+        self.pending_mailto.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Consume the pending request; the second taker gets nothing.
+    pub fn take_mailto(&self) -> Option<crate::dto::PendingMailto> {
+        self.pending_mailto.lock().ok().and_then(|mut slot| slot.take())
     }
 
     // -- remote-content session permission (P9.1) ---------------------------

@@ -24,8 +24,10 @@ use crate::dto::{StorageCategory, StorageUsage};
 use crate::errors::SiftError;
 
 /// Cap used when `settings.attachment_cache_size` is unset or unparseable
-/// (512 MiB, the documented default).
-pub const DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES: i64 = 512 * 1024 * 1024;
+/// (512 MiB, the documented default). Defined by the retention module, which is
+/// the code that actually enforces it, so the number the panel shows and the
+/// number eviction uses cannot drift apart.
+pub use crate::retention::DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES;
 
 const ATTACHMENT_CACHE_DIR: &str = "attachments";
 
@@ -34,39 +36,7 @@ fn storage_error(e: anyhow::Error) -> SiftError {
     SiftError::app("storage", e.to_string(), false)
 }
 
-/// Parse a human size setting (`"512MB"`, `"2GB"`, `"500 MB"`, `"1GiB"`,
-/// `"1024KB"`, `"2048B"`) into bytes. Case-insensitive; every unit is binary
-/// (MB = MiB), matching how the cap is enforced elsewhere. An empty,
-/// negative, non-numeric or unknown-unit value falls back to
-/// [`DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES`]; an explicit `0` is honoured.
-pub fn parse_cache_limit(raw: &str) -> i64 {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES;
-    }
-    let split = trimmed
-        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .unwrap_or(trimmed.len());
-    let (number, unit) = trimmed.split_at(split);
-    let Ok(value) = number.parse::<f64>() else {
-        return DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES;
-    };
-    if !value.is_finite() || value < 0.0 {
-        return DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES;
-    }
-    let multiplier = match unit.trim().to_ascii_lowercase().as_str() {
-        "" | "b" | "byte" | "bytes" => 1.0,
-        "k" | "kb" | "kib" => 1024.0,
-        "m" | "mb" | "mib" => 1024.0 * 1024.0,
-        "g" | "gb" | "gib" => 1024.0 * 1024.0 * 1024.0,
-        _ => return DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES,
-    };
-    let bytes = value * multiplier;
-    if !bytes.is_finite() || bytes > i64::MAX as f64 {
-        return DEFAULT_ATTACHMENT_CACHE_LIMIT_BYTES;
-    }
-    bytes.round() as i64
-}
+pub use crate::retention::parse_cache_limit;
 
 /// Logical bytes and file count of every regular file under `root`,
 /// recursively. A missing directory is an empty cache, not an error, and a
@@ -156,6 +126,7 @@ fn assemble(
     attachment_files: i64,
     draft_cache: StorageCategory,
     limit: i64,
+    pinned_bytes: i64,
     computed_at: i64,
 ) -> StorageUsage {
     let metadata = StorageCategory {
@@ -184,6 +155,7 @@ fn assemble(
         attachments,
         draft_cache,
         attachment_cache_limit_bytes: limit,
+        pinned_bytes,
         total_bytes,
         computed_at,
     }
@@ -202,13 +174,18 @@ pub async fn measure(db: &Db, data_dir: &Path) -> Result<StorageUsage> {
             items: draft_usage.1,
         },
         limit,
+        db.pinned_attachment_bytes().await.unwrap_or(0),
         crate::db::now_ms(),
     ))
 }
 
-/// Remove the contents of `root`, leaving the directory itself in place so a
-/// concurrent writer can still find it. A missing root is a no-op.
-fn clear_dir(root: &Path) -> Result<()> {
+/// Remove the contents of `root`, except the files named in `keep`.
+///
+/// The row reset has already released every unpinned attachment, but a writer
+/// that was in flight when it ran can publish afterwards, so the directory is
+/// walked as well. A kept file — a pin, or anything a row still points at — is
+/// never touched, whatever else happens to sit beside it.
+fn clear_dir_except(root: &Path, keep: &std::collections::HashSet<String>) -> Result<()> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -218,14 +195,31 @@ fn clear_dir(root: &Path) -> Result<()> {
         let entry = entry?;
         let path = entry.path();
         let kind = entry.file_type()?;
-        let removed = if kind.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        removed.with_context(|| format!("remove {}", path.display()))?;
+        if kind.is_dir() {
+            clear_dir_except(&path, keep)?;
+            // Fails harmlessly while a kept file is still inside.
+            let _ = std::fs::remove_dir(&path);
+            continue;
+        }
+        if keep.contains(&path.to_string_lossy().to_string()) {
+            continue;
+        }
+        std::fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
     }
     Ok(())
+}
+
+/// Every path an attachment row still claims, read after the reset.
+pub async fn claimed_attachment_paths(db: &Db) -> Result<std::collections::HashSet<String>> {
+    db.read(|c| {
+        let mut out = std::collections::HashSet::new();
+        let mut s = c.prepare("SELECT local_path FROM attachments WHERE local_path IS NOT NULL")?;
+        for row in s.query_map([], |r| r.get::<_, String>(0))? {
+            out.insert(row?);
+        }
+        Ok(out)
+    })
+    .await
 }
 
 /// Clear the downloaded attachment cache: drop the cached payload and path
@@ -237,17 +231,85 @@ fn clear_dir(root: &Path) -> Result<()> {
 /// nothing at all). Attachment identity, filenames, MIME and the mail itself
 /// are preserved, so every cleared attachment is redownloadable.
 pub async fn clear_attachment_cache(db: &Db, data_dir: &Path) -> Result<StorageUsage> {
-    db.write_tx(|tx| {
+    // Pinned attachments stay: a pin means "keep this offline", and a general
+    // "free up space" action must not silently undo it. Everything else that is
+    // not in use is released — the row first, so a failed file deletion cannot
+    // leave a row claiming a file that is gone.
+    let candidates: Vec<crate::retention::CachedFile> = db
+        .evictable_attachments()
+        .await?
+        .into_iter()
+        .filter(|f| !crate::attachments::in_use::is_in_use(&f.account_id, &f.attachment_id))
+        .collect();
+    let ids: Vec<(String, String)> = candidates
+        .iter()
+        .map(|f| (f.account_id.clone(), f.attachment_id.clone()))
+        .collect();
+    let paths: Vec<std::path::PathBuf> = candidates
+        .iter()
+        .map(|f| std::path::PathBuf::from(&f.path))
+        .collect();
+    db.write_tx(move |tx| {
+        for (account_id, id) in &ids {
+            tx.execute(
+                "UPDATE attachments
+                    SET data_z=NULL, local_path=NULL, decoded_size=NULL, cache_state='missing'
+                  WHERE account_id=? AND id=?",
+                rusqlite::params![account_id, id],
+            )?;
+        }
+        // Rows without a file on disk (or never downloaded) are reset too: the
+        // action is "clear the downloaded cache", not "clear some of it".
         tx.execute(
             "UPDATE attachments
-                SET data_z=NULL, local_path=NULL, decoded_size=NULL, cache_state='missing'",
+                SET data_z=NULL, local_path=NULL, decoded_size=NULL, cache_state='missing'
+              WHERE pinned_at IS NULL",
             [],
         )?;
         Ok(())
     })
     .await?;
-    clear_dir(&data_dir.join(ATTACHMENT_CACHE_DIR))?;
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+    // In-flight and background writers can publish after the reset; the sweep
+    // removes what is left and the rows are already released. Pinned rows were
+    // not released, so their files are named in `keep` and survive.
+    let keep = claimed_attachment_paths(db).await?;
+    clear_dir_except(&data_dir.join(ATTACHMENT_CACHE_DIR), &keep)?;
     measure(db, data_dir).await
+}
+
+/// Enforce the configured attachment cap now (P10.4).
+///
+/// This is the same pass the periodic retention tick runs; it is exposed so the
+/// panel can offer "trim to the limit" without waiting for the next tick, and
+/// so the result is observable in Settings.
+#[tauri::command]
+pub async fn storage_trim_attachment_cache(
+    state: State<'_, AppState>,
+) -> Result<crate::retention::EvictionReport, SiftError> {
+    let settings = state.db.settings_get().await.map_err(storage_error)?;
+    let limit = parse_cache_limit(&settings.attachment_cache_size);
+    crate::retention::enforce_attachment_cap(&state.db, limit)
+        .await
+        .map_err(storage_error)
+}
+
+/// Pin or unpin one cached attachment: pinned files are never evicted
+/// automatically (P10.4).
+#[tauri::command]
+pub async fn storage_pin_attachment(
+    state: State<'_, AppState>,
+    account_id: String,
+    attachment_id: String,
+    pinned: bool,
+) -> Result<(), SiftError> {
+    state
+        .db
+        .attachment_pin(&account_id, &attachment_id, pinned)
+        .await
+        .map_err(storage_error)
 }
 
 /// Measured usage for the Settings → Storage panel.

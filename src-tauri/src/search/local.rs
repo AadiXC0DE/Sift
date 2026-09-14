@@ -125,7 +125,11 @@ pub(crate) fn hydrate(
     if pairs.is_empty() {
         return Ok(Vec::new());
     }
-    let mut sql = String::from("SELECT * FROM threads WHERE (account_id, id) IN (VALUES ");
+    let mut sql = String::from(
+        "SELECT t.*, (SELECT r.remind_at FROM reminders r WHERE r.account_id=t.account_id \
+         AND r.thread_id=t.id AND r.completed_at IS NULL) AS reminder_at \
+         FROM threads t WHERE (account_id, id) IN (VALUES ",
+    );
     for index in 0..pairs.len() {
         if index > 0 {
             sql.push(',');

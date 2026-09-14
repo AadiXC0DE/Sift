@@ -92,11 +92,25 @@ impl Cursor {
     }
 }
 
+/// One message that arrived in the Inbox during a partial sync (P8.4).
+///
+/// It carries the message id, not just the thread: "one message produces one
+/// notification" is only verifiable if Sift can name the message it reported,
+/// and the durable delivery record is keyed by it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewMail {
+    pub account_id: String,
+    pub thread_id: String,
+    pub message_id: String,
+    pub from: String,
+    pub subject: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum PartialOutcome {
     Synced {
         changed_threads: Vec<(String, String)>,
-        new_inbox: Vec<(String, String, String, String)>,
+        new_inbox: Vec<NewMail>,
     },
     NeedsFull,
 }
@@ -614,6 +628,22 @@ pub trait Provider: Send + Sync {
     async fn verify(&self) -> Result<ProfileInfo, SiftError>;
     async fn list_labels(&self) -> Result<Vec<Label>, SiftError>;
     async fn create_label(&self, name: &str) -> Result<Label, SiftError>;
+    /// Rename a label (P8.5).
+    ///
+    /// The returned label carries the provider's authoritative id and name:
+    /// for a transport whose label id is derived from the folder name (IMAP),
+    /// the id legitimately changes, and the caller reconciles its local
+    /// mapping to what comes back rather than assuming.
+    async fn rename_label(&self, id: &str, name: &str) -> Result<Label, SiftError>;
+    /// Delete a label (P8.5). This removes organisation only: Gmail drops the
+    /// label from every message, IMAP deletes the folder, and no message is
+    /// ever removed by it.
+    async fn delete_label(&self, id: &str) -> Result<(), SiftError>;
+    /// Whether rename and delete can be offered for this account at all. A UI
+    /// must never show a control that cannot work.
+    fn label_management(&self) -> bool {
+        true
+    }
     async fn full_sync(
         &self,
         sink: &dyn SyncSink,
@@ -665,8 +695,12 @@ pub trait Provider: Send + Sync {
         send_chunk(&tx, AttachmentChunk::Done { total_bytes: total }).await?;
         Ok(total)
     }
-    /// "View source".
+    /// Raw MIME for "View source". Text-shaped because the reader shows it;
+    /// never use this for export, because decoding arbitrary bytes as UTF-8 is
+    /// lossy and an exported `.eml` must be byte-exact (P9.3).
     async fn fetch_raw(&self, message_id: &str) -> Result<String, SiftError>;
+    /// Raw MIME as bytes, for Save as `.eml` and for the offline raw cache.
+    async fn fetch_raw_bytes(&self, message_id: &str) -> Result<Vec<u8>, SiftError>;
     /// One outbox op from the 8.4 table. Idempotent: re-applying an already
     /// applied op returns [`ApplyOutcome::AlreadyApplied`].
     async fn apply(&self, op: &OutboxOp) -> Result<ApplyOutcome, SiftError>;

@@ -80,16 +80,18 @@ pub async fn run_partial_sync(
                                 label_ids: labels.clone(),
                             };
                             let tid = a.message.thread_id.clone();
+                            let up_id = up.id.clone();
                             let _ = sink.upsert_message(up).await;
                             changed.push((account_id.to_string(), tid.clone()));
                             if labels.contains(&"INBOX".into()) && labels.contains(&"UNREAD".into())
                             {
-                                new_inbox.push((
-                                    account_id.to_string(),
-                                    tid,
-                                    from_raw,
-                                    get("subject"),
-                                ));
+                                new_inbox.push(crate::provider::NewMail {
+                                    account_id: account_id.to_string(),
+                                    thread_id: tid,
+                                    message_id: up_id,
+                                    from: from_raw,
+                                    subject: get("subject"),
+                                });
                             }
                         }
                         Err(crate::errors::SiftError::NotFound(_)) => { /* added then deleted: skip */

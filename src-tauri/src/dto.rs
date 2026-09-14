@@ -70,6 +70,63 @@ pub struct Label {
     pub unread_count: i64,
     pub total_count: i64,
     pub sort_order: i64,
+    /// P8.5: the parent label's id for a nested label (`Client Work/2026`), so
+    /// the sidebar and the picker can indent from data instead of re-parsing
+    /// the display name.
+    #[serde(rename = "parentId", skip_serializing_if = "Option::is_none", default)]
+    pub parent_id: Option<String>,
+    /// The leaf of a hierarchical name (`2026` for `Client Work/2026`), which
+    /// is what an indented row shows. Empty for a flat label, where `name` is
+    /// already the whole thing.
+    #[serde(rename = "displayName", default)]
+    pub display_name: String,
+    /// Nesting depth of the display name: 0 for a top-level label.
+    #[serde(default)]
+    pub depth: i64,
+}
+
+/// The display leaf and nesting depth of a hierarchical label name (`a/b` is
+/// one level below `a`). Provider ids are never parsed for structure, and the
+/// full name stays intact for queries.
+pub fn label_hierarchy(name: &str) -> (String, i64, Option<String>) {
+    let parts: Vec<&str> = name.split('/').collect();
+    let depth = parts.len().saturating_sub(1) as i64;
+    let leaf = parts.last().copied().unwrap_or(name).to_string();
+    let parent = if parts.len() > 1 {
+        Some(parts[..parts.len() - 1].join("/"))
+    } else {
+        None
+    };
+    (leaf, depth, parent)
+}
+
+impl Default for Label {
+    fn default() -> Self {
+        Self {
+            account_id: String::new(),
+            id: String::new(),
+            name: String::new(),
+            kind: "user".into(),
+            color_bg: None,
+            color_fg: None,
+            visible: true,
+            unread_count: 0,
+            total_count: 0,
+            sort_order: 0,
+            parent_id: None,
+            display_name: String::new(),
+            depth: 0,
+        }
+    }
+}
+
+/// Fill the derived presentation fields from the display name. Called on the
+/// read path, so a label stored by any transport shows the same hierarchy.
+pub fn label_presentation(label: &mut Label, parent_id: Option<String>) {
+    let (leaf, depth, _parent_name) = label_hierarchy(&label.name);
+    label.display_name = leaf;
+    label.depth = depth;
+    label.parent_id = parent_id;
 }
 
 // ---- Views / queries ----
@@ -146,6 +203,11 @@ pub struct ThreadRow {
     pub label_ids: Vec<String>,
     #[serde(rename = "snoozedUntil", skip_serializing_if = "Option::is_none")]
     pub snoozed_until: Option<i64>,
+    /// P8.2: an open reminder on this thread, if any. The list row uses it for
+    /// a subtle indicator; a reminder never moves the thread, so this is the
+    /// only place the row shows it.
+    #[serde(rename = "reminderAt", skip_serializing_if = "Option::is_none", default)]
+    pub reminder_at: Option<i64>,
     #[serde(default, rename = "serverOnly")]
     pub server_only: bool,
 }
@@ -826,6 +888,32 @@ pub struct SendHandle {
     pub op_id: i64,
     #[serde(rename = "notBefore")]
     pub not_before: i64,
+    /// P8.1: the UTC deadline the user chose, which is `not_before` for a send
+    /// later and `None` for an immediate send (undo window only).
+    #[serde(rename = "scheduledAt", skip_serializing_if = "Option::is_none", default)]
+    pub scheduled_at: Option<i64>,
+    /// The exact local wall time the user picked (`YYYY-MM-DDTHH:MM`), kept
+    /// verbatim so the UI shows what was intended rather than a re-derived
+    /// value that a DST change could shift.
+    #[serde(rename = "scheduledLocalTime", skip_serializing_if = "Option::is_none", default)]
+    pub scheduled_local_time: Option<String>,
+    /// The IANA zone that local time belongs to. Shown before queueing, and
+    /// shown again on the scheduled item, because the send itself is UTC.
+    #[serde(rename = "scheduledTimezone", skip_serializing_if = "Option::is_none", default)]
+    pub scheduled_timezone: Option<String>,
+}
+
+/// One value of the Send Later menu (P8.1). The composer renders these; the
+/// backend decides the actual instant so "tomorrow 08:00" cannot mean two
+/// different things in two places.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendLaterOption {
+    pub id: String,
+    pub label: String,
+    /// Present for the fixed choices; the "choose" option has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<i64>,
 }
 
 /// One account-qualified target of a UI gesture (P6.3).
@@ -1006,6 +1094,15 @@ pub struct Settings {
     pub split_inbox: bool,
     #[serde(rename = "notifications")]
     pub notifications: String,
+    /// P8.4: hide the subject line in the notification body. The notification
+    /// still says who wrote; it just does not put mailbox content on a lock
+    /// screen.
+    #[serde(rename = "notificationsHideSubject", default)]
+    pub notifications_hide_subject: bool,
+    /// P8.4: accounts whose notifications are turned off. Empty means every
+    /// account notifies; a disabled account is quiet no matter what arrives.
+    #[serde(rename = "notificationsMutedAccounts", default)]
+    pub notifications_muted_accounts: Vec<String>,
     #[serde(rename = "sound")]
     pub sound: String,
     #[serde(rename = "dockBadge")]
@@ -1059,6 +1156,8 @@ impl Default for Settings {
             wake_snoozed_unread: true,
             split_inbox: false,
             notifications: "inbox".into(),
+            notifications_hide_subject: false,
+            notifications_muted_accounts: Vec::new(),
             sound: "subtle".into(),
             dock_badge: "unread".into(),
             remote_images: "always".into(),
@@ -1114,10 +1213,155 @@ pub struct StorageUsage {
     /// Configured cap for `attachments`, in bytes (eviction target, not usage).
     #[serde(rename = "attachmentCacheLimitBytes")]
     pub attachment_cache_limit_bytes: i64,
+    /// P10.4: bytes held by pinned (offline) attachments, which eviction never
+    /// touches. Reported separately so the panel can explain why usage can
+    /// exceed the cap without anything being wrong.
+    #[serde(rename = "pinnedBytes", default)]
+    pub pinned_bytes: i64,
     /// Backend-reported sum of the four categories.
     #[serde(rename = "totalBytes")]
     pub total_bytes: i64,
     /// Unix ms when the backend measured.
     #[serde(rename = "computedAt")]
     pub computed_at: i64,
+}
+
+
+// ---------------------------------------------------------------------------
+// P8.3 Rules
+// ---------------------------------------------------------------------------
+
+/// One local rule (P8.3).
+///
+/// The vocabulary is closed: conditions are sender/recipient/subject/has
+/// attachment, actions are add label, archive, mark read, star and move to
+/// Junk. There is deliberately no script, regex, auto-reply, forward, permanent
+/// delete or URL action, and no field here could express one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailRule {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub account_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+    /// `all` or `any`.
+    #[serde(rename = "match", default = "rule_match_default")]
+    pub match_mode: String,
+    #[serde(default)]
+    pub conditions: Vec<RuleCondition>,
+    #[serde(default)]
+    pub actions: Vec<RuleAction>,
+    #[serde(default)]
+    pub sort_order: i64,
+    #[serde(default)]
+    pub revision: i64,
+    /// Set when the rule disabled itself because an action failed; the UI shows
+    /// it so a silent rule is never a mystery.
+    #[serde(rename = "lastError", skip_serializing_if = "Option::is_none", default)]
+    pub last_error: Option<String>,
+}
+
+fn rule_match_default() -> String {
+    "all".into()
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleCondition {
+    /// `sender` | `recipient` | `subject` | `hasAttachment`.
+    pub field: String,
+    /// `contains` | `is` | `domain` | `isTrue`.
+    pub op: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleAction {
+    /// `addLabel` | `archive` | `markRead` | `star` | `junk`.
+    pub kind: String,
+    #[serde(rename = "labelId", skip_serializing_if = "Option::is_none", default)]
+    pub label_id: Option<String>,
+}
+
+/// One row of a rule preview. The user sees what would happen before anything
+/// does.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulePreviewRow {
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+    pub subject: String,
+    #[serde(rename = "fromName", skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
+    #[serde(rename = "fromEmail")]
+    pub from_email: String,
+    #[serde(rename = "wouldJunk")]
+    pub would_junk: bool,
+}
+
+/// The count and sample an "Apply to existing mail" run starts from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulePreview {
+    pub count: i64,
+    pub sample: Vec<RulePreviewRow>,
+}
+
+// ---------------------------------------------------------------------------
+// P8.4 Notification state
+// ---------------------------------------------------------------------------
+
+/// What the settings surface needs to describe notification behaviour
+/// truthfully, including whether the OS actually granted permission.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationState {
+    pub enabled: bool,
+    /// `granted` | `denied` | `prompt` | `unsupported`.
+    pub permission: String,
+    /// `off` | `inbox` | `vip`.
+    pub filter: String,
+    #[serde(rename = "hideSubject")]
+    pub hide_subject: bool,
+    /// `none` | `native`. There is no in-app sound path any more.
+    pub sound: String,
+    /// Accounts the user turned notifications off for.
+    #[serde(rename = "mutedAccounts")]
+    pub muted_accounts: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// P9.3 mailto and raw export
+// ---------------------------------------------------------------------------
+
+/// A parsed `mailto:` request. Only these fields are ever carried, so no other
+/// header can be injected into the composed draft.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingMailto {
+    #[serde(default)]
+    pub to: Vec<String>,
+    #[serde(default)]
+    pub cc: Vec<String>,
+    #[serde(default)]
+    pub bcc: Vec<String>,
+    #[serde(default)]
+    pub subject: String,
+    #[serde(default)]
+    pub body: String,
+}
+
+/// The result of `message_raw_export`. `path` is `null` when the user
+/// cancelled the save panel; it is never a path Sift wrote on its own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawExport {
+    pub path: Option<String>,
 }

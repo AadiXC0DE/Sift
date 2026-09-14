@@ -31,6 +31,7 @@ impl Db {
                         unread_count: r.get("unread_count")?,
                         total_count: r.get("total_count")?,
                         sort_order: r.get("sort_order")?,
+                        ..Default::default()
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -143,6 +144,7 @@ impl Db {
             unread_count: 0,
             total_count: 0,
             sort_order: 200,
+            ..Default::default()
         };
         self.labels_upsert(&label).await?;
         Ok(placeholder)

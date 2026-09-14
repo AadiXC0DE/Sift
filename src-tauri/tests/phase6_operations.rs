@@ -173,7 +173,7 @@ async fn p6_1_crash_after_data_leaves_the_send_uncertain_and_unsent() {
         let prepared =
             sift::outgoing::prepare(dir.path(), &draft, &identity, 1_700_000_000).unwrap();
         let handle = db
-            .drafts_enqueue_send(&prepared, sift::db::now_ms(), false)
+            .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms()), false)
             .await
             .unwrap();
         // The app dies between claiming the operation and writing the outcome.
@@ -333,11 +333,11 @@ async fn p6_2_double_send_is_one_operation_and_undo_returns_the_draft() {
     };
     let prepared = sift::outgoing::prepare(dir.path(), &draft, &identity, 1_700_000_000).unwrap();
     let first = db
-        .drafts_enqueue_send(&prepared, sift::db::now_ms() + 60_000, false)
+        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000), false)
         .await
         .unwrap();
     let second = db
-        .drafts_enqueue_send(&prepared, sift::db::now_ms() + 60_000, false)
+        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000), false)
         .await
         .unwrap();
     assert_eq!(first.op_id, second.op_id, "one operation for one revision");
@@ -381,7 +381,7 @@ async fn p6_2_double_send_is_one_operation_and_undo_returns_the_draft() {
     }
     // And the same revision can be sent again as a fresh operation.
     let again = db
-        .drafts_enqueue_send(&prepared, sift::db::now_ms() + 60_000, false)
+        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 60_000), false)
         .await
         .unwrap();
     assert_ne!(again.op_id, first.op_id);
@@ -415,7 +415,7 @@ async fn p6_2_undo_works_after_restart_while_pending_and_offline() {
         let prepared =
             sift::outgoing::prepare(dir.path(), &draft, &identity, 1_700_000_000).unwrap();
         let handle = db
-            .drafts_enqueue_send(&prepared, sift::db::now_ms() + 30_000, false)
+            .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms() + 30_000), false)
             .await
             .unwrap();
         (handle.op_id, draft.local_id)
@@ -494,7 +494,7 @@ async fn p6_2_claimed_send_cannot_be_undone_and_its_archive_never_runs() {
     };
     let prepared = sift::outgoing::prepare(dir.path(), &draft, &identity, 1_700_000_000).unwrap();
     let handle = db
-        .drafts_enqueue_send(&prepared, 0, true)
+        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(0), true)
         .await
         .unwrap();
     let archive = db
@@ -566,7 +566,7 @@ async fn p6_2_undo_reports_the_state_it_lost_to() {
         display_name: None,
     };
     let prepared = sift::outgoing::prepare(dir.path(), &draft, &identity, 1_700_000_000).unwrap();
-    let handle = db.drafts_enqueue_send(&prepared, 0, false).await.unwrap();
+    let handle = db.drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(0), false).await.unwrap();
     assert!(db.outbox_claim(&acc.id).await.unwrap().is_some());
     match db.drafts_cancel_send_detailed(handle.op_id).await.unwrap() {
         sift::db::drafts::SendCancel::TooLate { state } => assert_eq!(state, "inflight"),

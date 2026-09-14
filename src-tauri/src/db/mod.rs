@@ -17,9 +17,13 @@ pub mod labels;
 pub mod messages;
 pub mod outbox;
 pub mod privacy;
+pub mod raw_cache;
+pub mod reminders;
+pub mod rules;
 pub mod saved_searches;
 pub mod settings;
 pub mod threads;
+pub mod vips;
 
 /// The schema version this build ships: the count of applied migrations.
 /// Tests assert against this instead of a hardcoded number, which is what made
@@ -77,6 +81,14 @@ static MIGRATIONS: &[(&str, &str)] = &[
         "0014_unsubscribe_auth",
         include_str!("migrations/0014_unsubscribe_auth.sql"),
     ),
+    (
+        "0015_mail_utilities",
+        include_str!("migrations/0015_mail_utilities.sql"),
+    ),
+    (
+        "0016_cache_retention",
+        include_str!("migrations/0016_cache_retention.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -124,10 +136,13 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
 /// how a message whose SMTP `DATA` had already been accepted was sent a second
 /// time. Recovery is now per kind:
 ///
-/// * label-set work (`modify_labels`, `trash`, `untrash`, `create_label`) and
-///   identity-addressed `delete` are idempotent: a crash between claim and
-///   acknowledgement only means the change may already have been applied, so
-///   they are requeued and re-checked against the server.
+/// * label-set work (`modify_labels`, `trash`, `untrash`, `create_label`,
+///   `label_rename`, `label_delete`) and identity-addressed `delete` are
+///   idempotent: a crash between claim and acknowledgement only means the
+///   change may already have been applied, so they are requeued and re-checked
+///   against the server. A rule application is the same kind of work: its
+///   `rule_applications` row is written before the operation is queued, so
+///   requeueing it can only re-apply the identical label diff.
 /// * a `draft_sync` is a push of one immutable revision: requeueing it can
 ///   only re-create the same remote draft.
 /// * an `inflight` **send** never resubmits. Its acceptance is unknown, so it
@@ -140,7 +155,7 @@ fn recover_outbox(conn: &Connection) -> Result<()> {
     let now = now_ms();
     conn.execute(
         "UPDATE outbox_ops SET state='pending', attempts=0, not_before=0, started_at=NULL, last_error=NULL \
-         WHERE state='inflight' AND kind IN ('modify_labels','trash','untrash','delete','draft_sync','create_label','label_rename','label_delete')",
+         WHERE state='inflight' AND kind IN ('modify_labels','trash','untrash','delete','draft_sync','create_label','label_rename','label_delete','rule_apply')",
         [],
     )?;
     conn.execute(

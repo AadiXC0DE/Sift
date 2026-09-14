@@ -68,10 +68,20 @@ impl Db {
     /// Remove an account and every row that belongs to it, in one transaction.
     /// The deletes are explicit rather than relying only on cascades so that
     /// tables without a foreign key to `accounts` (drafts, outbox, snoozes,
-    /// sender preferences, contacts, sync log) are covered too (P4.2).
-    pub async fn accounts_remove(&self, id: &str) -> Result<()> {
+    /// sender preferences, contacts, sync log, rule applications) are covered
+    /// too (P4.2).
+    ///
+    /// Returns the ids of the drafts that were removed, so the caller can
+    /// delete the on-disk staging and raw caches for the account **after** the
+    /// rows and operations are gone (P10.4). Deleting files first would leave a
+    /// live row pointing at a missing file if the transaction failed.
+    pub async fn accounts_remove(&self, id: &str) -> Result<Vec<String>> {
         let id = id.to_string();
         self.write_tx(move |c| {
+            let draft_ids: Vec<String> = c
+                .prepare("SELECT local_id FROM drafts WHERE account_id=?")?
+                .query_map(params![id], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
             for (table, column) in [
                 ("attachments", "account_id"),
                 ("bodies", "account_id"),
@@ -87,19 +97,28 @@ impl Db {
                 ("sender_prefs", "account_id"),
                 ("contacts", "account_id"),
                 ("sync_log", "account_id"),
+                ("reminders", "account_id"),
+                ("mail_rules", "account_id"),
+                ("vip_senders", "account_id"),
+                ("message_raw", "account_id"),
+                ("rule_queue", "account_id"),
+                ("notify_log", "account_id"),
             ] {
                 c.execute(
                     &format!("DELETE FROM {table} WHERE {column}=?"),
                     params![id],
                 )?;
             }
+            // Rule applications carry no account foreign key: the table is
+            // keyed by rule *and* account, and the rules are gone above.
+            c.execute("DELETE FROM rule_applications WHERE account_id=?", params![id])?;
             // FTS is a virtual table: delete its rows by the account key too.
             c.execute(
                 "DELETE FROM messages_fts WHERE account_id=?",
                 params![id],
             )?;
             c.execute("DELETE FROM accounts WHERE id=?", params![id])?;
-            Ok(())
+            Ok(draft_ids)
         })
         .await
     }

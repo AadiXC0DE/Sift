@@ -79,6 +79,14 @@ impl Default for MsgUpsert {
 /// thread once, inside the same transaction (`recompute_thread_conn`).
 pub(crate) fn messages_upsert_conn(c: &rusqlite::Connection, m: &MsgUpsert) -> Result<()> {
     let labels_json = serde_json::to_string(&m.label_ids)?;
+    // Was this message already known? A re-ingest of an existing row is a
+    // metadata refresh, not newly ingested mail, and must never be handed to
+    // the rule engine (P8.3).
+    let was_known: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE account_id=?1 AND id=?2)",
+        params![m.account_id, m.id],
+        |r| r.get(0),
+    )?;
     c.execute("INSERT INTO messages (id,account_id,thread_id,history_id,internal_date,from_name,from_email,to_json,cc_json,bcc_json,reply_to,subject,snippet,rfc_message_id,in_reply_to,references_json,list_unsubscribe,list_unsubscribe_post,list_unsubscribe_post_value,auth_results,auth_results_trusted,size_estimate,has_attachments,is_unread,is_starred,is_draft,is_sent_by_me,label_ids,body_state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,COALESCE((SELECT body_state FROM messages WHERE account_id=? AND id=?),'none'))
         ON CONFLICT(account_id,id) DO UPDATE SET account_id=excluded.account_id, thread_id=excluded.thread_id, history_id=excluded.history_id, internal_date=excluded.internal_date, from_name=excluded.from_name, from_email=excluded.from_email, to_json=excluded.to_json, cc_json=excluded.cc_json, bcc_json=excluded.bcc_json, reply_to=excluded.reply_to, subject=excluded.subject, snippet=excluded.snippet, label_ids=excluded.label_ids, is_unread=excluded.is_unread, is_starred=excluded.is_starred, is_draft=excluded.is_draft, has_attachments=MAX(messages.has_attachments, excluded.has_attachments), list_unsubscribe=COALESCE(excluded.list_unsubscribe, messages.list_unsubscribe), list_unsubscribe_post=MAX(messages.list_unsubscribe_post, excluded.list_unsubscribe_post), list_unsubscribe_post_value=COALESCE(excluded.list_unsubscribe_post_value, messages.list_unsubscribe_post_value), auth_results=COALESCE(excluded.auth_results, messages.auth_results), auth_results_trusted=MAX(messages.auth_results_trusted, excluded.auth_results_trusted)",
         params![m.id,m.account_id,m.thread_id,m.history_id,m.internal_date,m.from_name,m.from_email,m.to_json,m.cc_json,m.bcc_json,m.reply_to,m.subject,m.snippet,m.rfc_message_id,m.in_reply_to,m.references_json,m.list_unsubscribe,m.list_unsubscribe_post as i32,m.list_unsubscribe_post_value,m.auth_results,m.auth_results_trusted as i32,m.size_estimate,m.has_attachments as i32,m.is_unread as i32,m.is_starred as i32,m.is_draft as i32,m.is_sent_by_me as i32,labels_json,m.account_id,m.id])?;
@@ -102,6 +110,13 @@ pub(crate) fn messages_upsert_conn(c: &rusqlite::Connection, m: &MsgUpsert) -> R
     if updated == 0 {
         c.execute("INSERT INTO messages_fts (message_id,account_id,subject,from_text,to_text,body) VALUES (?,?,?,?,?,'')",
           params![m.id, m.account_id, m.subject, from_t, m.to_json])?;
+    }
+    // Rules evaluate newly ingested mail *after* the metadata commit (P8.3):
+    // the queue row is written here, in the same transaction, and drained
+    // later by the rule worker, outside the first-page path. Only genuinely
+    // new mail that arrives after the account's first sync is queued.
+    if !was_known {
+        crate::db::rules::queue_new_message_conn(c, &m.account_id, &m.id, super::now_ms())?;
     }
     Ok(())
 }

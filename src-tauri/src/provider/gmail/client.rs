@@ -155,6 +155,29 @@ impl GmailClient {
         let r = self.send_with_retry(self.http.post(format!("{}/labels", base_url())).json(&serde_json::json!({"name": name, "labelListVisibility": "labelShow", "messageListVisibility": "show"}))).await?;
         r.json().await.map_err(SiftError::from)
     }
+
+    /// Rename a label (P8.5): `PATCH /labels/{id}` with the new name.
+    ///
+    /// Only the name changes; the provider id and every message that carries
+    /// the label are untouched, which is what makes a rename an organisational
+    /// change rather than a move.
+    pub async fn patch_label(&self, id: &str, name: &str) -> Result<Label, SiftError> {
+        self.quota(5).await;
+        let url = format!("{}/labels/{}", base_url(), urlencoding::encode(id));
+        let r = self
+            .send_with_retry(self.http.patch(url).json(&serde_json::json!({ "name": name })))
+            .await?;
+        r.json().await.map_err(SiftError::from)
+    }
+
+    /// Delete a label (P8.5). Gmail removes the label from every message that
+    /// carried it; the messages themselves are untouched.
+    pub async fn delete_label(&self, id: &str) -> Result<(), SiftError> {
+        self.quota(5).await;
+        let url = format!("{}/labels/{}", base_url(), urlencoding::encode(id));
+        let _ = self.send_with_retry(self.http.delete(url)).await?;
+        Ok(())
+    }
     pub async fn list_messages(
         &self,
         page_token: Option<&str>,

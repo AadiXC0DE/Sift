@@ -37,6 +37,7 @@ pub async fn run_full_sync(
             unread_count: 0,
             total_count: 0,
             sort_order: 200 + i as i64,
+            ..Default::default()
         });
     }
     sink.upsert_labels(&labels)

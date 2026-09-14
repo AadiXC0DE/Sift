@@ -11,35 +11,113 @@ use tokio_util::sync::CancellationToken;
 /// `AppHandle`; tests record into plain closures instead of standing up a
 /// Tauri runtime.
 pub type EmitFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
-pub type NotifyFn = Arc<dyn Fn(&str, &str) + Send + Sync>;
+/// Raise one native notification. `false` means it was **not** shown (the OS
+/// denied permission), which is what lets a due reminder stay visibly due
+/// instead of being marked delivered.
+pub type NotifyFn = Arc<dyn Fn(crate::notify::NotificationRequest) -> bool + Send + Sync>;
 pub type FocusedFn = Arc<dyn Fn() -> bool + Send + Sync>;
+/// Whether notifications can be raised at all right now.
+pub type AvailableFn = Arc<dyn Fn() -> bool + Send + Sync>;
+/// Set the native dock badge (0 clears it).
+pub type BadgeFn = Arc<dyn Fn(i64) + Send + Sync>;
 
 pub struct RuntimeHost {
     pub emit: EmitFn,
     pub notify_os: NotifyFn,
     pub focused: FocusedFn,
+    pub notifications_available: AvailableFn,
+    pub badge: BadgeFn,
+}
+
+/// The most recent notification Sift raised, so bringing the app forward can
+/// open what it was about.
+///
+/// The OS reports *focus*, not which notification was clicked: the desktop
+/// notification API in use exposes no activation callback. Sift therefore
+/// remembers the ref it last notified about and opens it when the window comes
+/// forward within a short window after the banner — which is what a click does,
+/// and also what a deliberate switch back to the app does. Both land the user
+/// on the conversation they were just told about, and a stale ref is dropped
+/// rather than surprising anyone later.
+const NAV_FRESHNESS_MS: i64 = 10 * 60 * 1000;
+
+static PENDING_NAV: std::sync::LazyLock<std::sync::Mutex<Option<(String, String, i64)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+pub fn remember_nav_target(account_id: &str, thread_id: &str) {
+    if let Ok(mut slot) = PENDING_NAV.lock() {
+        *slot = Some((
+            account_id.to_string(),
+            thread_id.to_string(),
+            crate::db::now_ms(),
+        ));
+    }
+}
+
+/// Consume the pending navigation target, if it is still fresh.
+pub fn take_pending_nav() -> Option<(String, String)> {
+    let mut slot = PENDING_NAV.lock().ok()?;
+    let (account, thread, at) = slot.take()?;
+    if crate::db::now_ms() - at > NAV_FRESHNESS_MS {
+        return None;
+    }
+    Some((account, thread))
+}
+
+/// Bring the app forward and open the thread the last notification named.
+/// Called when the window gains focus.
+pub fn flush_pending_nav(app: &AppHandle) {
+    let Some((account_id, thread_id)) = take_pending_nav() else {
+        return;
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit(
+        "nav:open-thread",
+        serde_json::json!({ "accountId": account_id, "threadId": thread_id }),
+    );
 }
 
 impl RuntimeHost {
     pub fn for_app(app: &AppHandle) -> Self {
         let emitter = app.clone();
+        #[cfg(not(test))]
         let notifier = app.clone();
         let windows = app.clone();
+        let availability = app.clone();
+        let badged = app.clone();
         Self {
             emit: Arc::new(move |event, payload| {
                 let _ = emitter.emit(event, payload);
             }),
-            notify_os: Arc::new(move |title, body| {
-                let _ = (&notifier, title, body);
+            notify_os: Arc::new(move |request| {
+                // The ref is remembered before the banner so a click that
+                // arrives immediately still has somewhere to go.
+                remember_nav_target(&request.account_id, &request.thread_id);
                 #[cfg(not(test))]
                 {
                     use tauri_plugin_notification::NotificationExt;
-                    let _ = notifier
+                    if crate::notify::permission_state(&notifier) == "denied" {
+                        return false;
+                    }
+                    let mut builder = notifier
                         .notification()
                         .builder()
-                        .title(title)
-                        .body(body)
-                        .show();
+                        .title(request.title.clone())
+                        .body(request.body.clone());
+                    // Native sound only: the OS decides whether it is audible,
+                    // which is what makes Do Not Disturb work.
+                    if request.sound {
+                        builder = builder.sound("default");
+                    }
+                    builder.show().is_ok()
+                }
+                #[cfg(test)]
+                {
+                    true
                 }
             }),
             focused: Arc::new(move || {
@@ -47,6 +125,15 @@ impl RuntimeHost {
                     .webview_windows()
                     .values()
                     .any(|w| w.is_focused().unwrap_or(false))
+            }),
+            notifications_available: Arc::new(move || {
+                crate::notify::permission_state(&availability) != "denied"
+            }),
+            badge: Arc::new(move |count| {
+                if let Some(window) = badged.get_webview_window("main") {
+                    let value = if count > 0 { Some(count) } else { None };
+                    let _ = window.set_badge_count(value);
+                }
             }),
         }
     }
@@ -60,27 +147,13 @@ impl RuntimeHost {
 /// account cancels that generation, and the next supervisor tick re-arms the
 /// account only if a newer, live generation exists (P4.4).
 pub fn spawn_supervisor(app: AppHandle) {
-    // Snooze watcher (global, cheap): the nearest deadline wakes it, and a
-    // 30 second fallback bounds how long a clock change or a DST jump can
-    // strand a due thread. It runs once immediately on startup, so a timer
-    // that expired while the app was closed is honoured at launch.
-    let snooze_app = app.clone();
+    // The scheduler (P8.2): one service for snooze, reminder and queued-send
+    // deadlines. It runs once immediately on startup, so a deadline that
+    // expired while the app was closed is honoured at launch, and it then
+    // sleeps until the nearest deadline with a bounded fallback.
+    let scheduler_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        loop {
-            if let Err(e) = check_snoozes(&snooze_app).await {
-                eprintln!("snooze watcher: {e}");
-            }
-            let state = snooze_app.state::<AppState>();
-            let deadline = crate::snooze::next_deadline(&state.db)
-                .await
-                .ok()
-                .flatten();
-            let wait_ms = match deadline {
-                Some(when) => (when - crate::db::now_ms()).clamp(0, crate::snooze::WATCH_FALLBACK_MS),
-                None => crate::snooze::WATCH_FALLBACK_MS,
-            };
-            tokio::time::sleep(Duration::from_millis(wait_ms.max(50) as u64)).await;
-        }
+        crate::scheduler::run(scheduler_app).await;
     });
 
     // Per-account loops, spawned once accounts exist and re-armed whenever an
@@ -149,6 +222,7 @@ async fn spawn_account_loops(
         spawn_loop!(drain_loop),
         spawn_loop!(backfill_loop),
         spawn_loop!(idle_loop),
+        spawn_loop!(rules_loop),
     ];
     for handle in handles {
         state.register_task(account_id, generation, handle).await;
@@ -296,11 +370,28 @@ async fn drain_loop(
                 serde_json::json!({"account_id": account_id, "pending": n, "failed": failed, "summary": summary}),
             );
         }
-        let interval = if worked { 1 } else { 5 };
+        // Sleep until this account's nearest persisted deadline (P8.1). The
+        // deadline is the schedule, so a message queued for 08:00 leaves at
+        // 08:00 rather than when a poll interval happens to fall; a nudge from
+        // `kick_outbox` still cuts the sleep short.
+        let wait_ms = if worked {
+            1_000
+        } else {
+            let deadline = state
+                .db
+                .outbox_next_deadline(Some(account_id.to_string()))
+                .await
+                .ok()
+                .flatten();
+            match deadline {
+                Some(when) => (when - crate::db::now_ms()).clamp(1_000, 60_000),
+                None => 60_000,
+            }
+        };
         tokio::select! {
             _ = cancel.cancelled() => return,
             _ = wake.notified() => {}
-            _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
+            _ = tokio::time::sleep(Duration::from_millis(wait_ms as u64)) => {}
         }
     }
 }
@@ -316,6 +407,29 @@ async fn refresh_after_outbox(
     host: &RuntimeHost,
 ) {
     partial_tick(state, account_id, generation, cancel, provider, host).await;
+}
+
+/// Rule evaluation loop (P8.3).
+///
+/// It runs *after* ingest, never inside it: the queue row is written with the
+/// message, and this loop evaluates it in bounded batches that yield to
+/// foreground work. Rules are off by default, so a mailbox without rules costs
+/// one indexed query per tick and nothing else.
+async fn rules_loop(
+    state: &AppState,
+    account_id: &str,
+    _generation: u64,
+    cancel: &CancellationToken,
+    _host: &RuntimeHost,
+) {
+    loop {
+        if !crate::demo::is_demo() {
+            rules_tick(state, account_id).await;
+        }
+        if !sleep_or_cancel(cancel, 5).await {
+            return;
+        }
+    }
 }
 
 /// Body backfill loop (low priority, yields to foreground fetches).
@@ -448,6 +562,9 @@ async fn partial_tick(
             state.record_provider_ok(account_id);
             emit_store(host, account_id, &changed_threads).await;
             notify_new(&state.db, host, &new_inbox).await;
+            // The same query the sidebar uses (P8.4): the OS badge and the UI
+            // count are computed from one definition, so they cannot disagree.
+            refresh_badge(state, host).await;
             // A snoozed thread that received an incoming message is live
             // again: wake it by the same policy as a due timer (P6.5).
             let touched: Vec<String> = changed_threads
@@ -636,30 +753,118 @@ async fn emit_store(host: &RuntimeHost, account_id: &str, changed: &[(String, St
     );
 }
 
-async fn notify_new(db: &Db, host: &RuntimeHost, items: &[(String, String, String, String)]) {
+/// Announce newly arrived Inbox mail (P8.4).
+///
+/// Rust raises the notification; the frontend only receives the state event, so
+/// there is exactly one banner per message and no second sender to duplicate
+/// it. Delivery is recorded durably before anything is shown, so a replayed
+/// sync or a restart stays quiet.
+async fn notify_new(db: &Db, host: &RuntimeHost, items: &[crate::provider::NewMail]) {
     if items.is_empty() {
         return;
     }
     let settings = db.settings_get().await.unwrap_or_default();
-    if settings.notifications == "off" {
-        return;
+    let policy = crate::notify::Policy::from_settings(&settings);
+    let mut notices: Vec<crate::notify::Notice> = Vec::with_capacity(items.len());
+    for item in items {
+        // The filter decides on the state Sift stored, not on the transport's
+        // summary: the same Inbox membership and sender the list shows.
+        let (from_email, in_inbox) = db
+            .notify_context(&item.account_id, &item.message_id)
+            .await
+            .unwrap_or_default();
+        let is_vip = if policy.account_is_muted(&item.account_id) {
+            false
+        } else {
+            db.vip_is_vip(&item.account_id, &from_email)
+                .await
+                .unwrap_or(false)
+        };
+        notices.push(crate::notify::Notice {
+            account_id: item.account_id.clone(),
+            thread_id: item.thread_id.clone(),
+            message_id: item.message_id.clone(),
+            from: item.from.clone(),
+            subject: item.subject.clone(),
+            in_inbox,
+            is_vip,
+        });
     }
-    for (aid, tid, from, subject) in items.iter().take(3) {
-        (host.emit)(
-            "notify:new-mail",
-            serde_json::json!({"account_id": aid, "thread_id": tid, "from": from, "subject": subject}),
-        );
-        (host.notify_os)(from, subject);
-    }
-    if items.len() > 3 {
-        (host.emit)(
-            "notify:new-mail",
-            serde_json::json!({"account_id": items[0].0, "thread_id": items[0].1, "from": "Sift", "subject": format!("{} new messages", items.len())}),
-        );
+    let results = crate::notify::deliver_new_mail(db, host, &notices).await;
+    for (notice, delivery) in notices.iter().zip(results.iter()) {
+        if *delivery != crate::notify::Delivery::Suppressed {
+            (host.emit)(
+                "notify:new-mail",
+                serde_json::json!({
+                    "accountId": notice.account_id,
+                    "threadId": notice.thread_id,
+                    "messageId": notice.message_id,
+                    "from": notice.from,
+                    "subject": notice.subject,
+                    "hidden": policy.hide_subject,
+                    "shown": *delivery == crate::notify::Delivery::Shown,
+                }),
+            );
+        }
     }
 }
 
-async fn check_snoozes(app: &AppHandle) -> anyhow::Result<()> {
+/// Set the dock badge from the same query the sidebar's Inbox count uses
+/// (P8.4), so the OS number and the UI number cannot disagree. `dock_badge`
+/// of `off` clears it.
+pub async fn refresh_badge(state: &AppState, host: &RuntimeHost) {
+    let settings = state.db.settings_get().await.unwrap_or_default();
+    let count = if settings.dock_badge == "off" {
+        0
+    } else {
+        let accounts: Vec<String> = state
+            .db
+            .accounts_list()
+            .await
+            .map(|v| v.into_iter().map(|a| a.id).collect())
+            .unwrap_or_default();
+        state
+            .db
+            .unread_inbox_count(&accounts, &[])
+            .await
+            .unwrap_or(0)
+    };
+    (host.badge)(count);
+    (host.emit)("badge:update", serde_json::json!({ "count": count }));
+}
+
+/// Startup and post-commit entry point for the badge, from an app handle.
+pub async fn refresh_badge_for_app(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let host = RuntimeHost::for_app(app);
+    refresh_badge(&state, &host).await;
+}
+
+/// Drain newly ingested mail through the enabled rules (P8.3).
+///
+/// Runs outside the ingest path, in bounded batches, and yields to foreground
+/// work: a first sync of a large mailbox cannot be slowed down by a rule, and a
+/// rule can never fail the sync it follows.
+async fn rules_tick(state: &AppState, account_id: &str) {
+    let busy = state.foreground_inflight.load(std::sync::atomic::Ordering::Relaxed) > 0;
+    match crate::rules::process_queue(&state.db, account_id, busy).await {
+        Ok(report) if report.messages > 0 => {
+            log::debug!(
+                "rules for {account_id}: {} messages, {} applied, yielded={}",
+                report.messages,
+                report.applied,
+                report.yielded
+            );
+            if report.applied > 0 {
+                state.kick_outbox(account_id).await;
+            }
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("rules for {account_id}: {e}"),
+    }
+}
+
+pub(crate) async fn check_snoozes(app: &AppHandle) -> anyhow::Result<usize> {
     let state = app.state::<AppState>();
     let host = RuntimeHost::for_app(app);
     let now = crate::db::now_ms();
@@ -679,6 +884,7 @@ async fn check_snoozes(app: &AppHandle) -> anyhow::Result<()> {
     for (aid, _) in &live {
         state.kick_outbox(aid).await;
     }
+    let woken = live.len();
     if !live.is_empty() {
         let mut by_account: HashMap<String, Vec<String>> = HashMap::new();
         for (aid, tid) in &live {
@@ -693,7 +899,7 @@ async fn check_snoozes(app: &AppHandle) -> anyhow::Result<()> {
             );
         }
     }
-    Ok(())
+    Ok(woken)
 }
 
 /// Weekly maintenance (P6.6): finished operations lose their payload after
@@ -793,6 +999,12 @@ mod tests {
         async fn create_label(&self, _name: &str) -> Result<Label, SiftError> {
             Err(unused())
         }
+        async fn rename_label(&self, _id: &str, _name: &str) -> Result<Label, SiftError> {
+            Err(unused())
+        }
+        async fn delete_label(&self, _id: &str) -> Result<(), SiftError> {
+            Err(unused())
+        }
         async fn full_sync(
             &self,
             _sink: &dyn SyncSink,
@@ -827,6 +1039,9 @@ mod tests {
             Err(unused())
         }
         async fn fetch_raw(&self, _message_id: &str) -> Result<String, SiftError> {
+            Err(unused())
+        }
+        async fn fetch_raw_bytes(&self, _message_id: &str) -> Result<Vec<u8>, SiftError> {
             Err(unused())
         }
         async fn apply(&self, _op: &OutboxOp) -> Result<ApplyOutcome, SiftError> {
@@ -878,8 +1093,12 @@ mod tests {
             emit: Arc::new(move |_, _| {
                 events.fetch_add(1, Ordering::SeqCst);
             }),
-            notify_os: Arc::new(|_, _| {}),
+            // A test host always "shows" the notification: the callbacks that
+            // matter here are the state transitions, not the platform banner.
+            notify_os: Arc::new(|_| true),
             focused: Arc::new(|| true),
+            notifications_available: Arc::new(|| true),
+            badge: Arc::new(|_| {}),
         }
     }
 

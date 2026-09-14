@@ -392,7 +392,7 @@ async fn p51_send_keeps_the_draft_and_freezes_its_revision() {
     assert_eq!(prepared.envelope_recipients, vec!["bob@y.org".to_string()]);
 
     let handle = db
-        .drafts_enqueue_send(&prepared, sift::db::now_ms(), false)
+        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms()), false)
         .await
         .unwrap();
     let queued = db.drafts_get(&draft.local_id).await.unwrap().unwrap();
@@ -412,7 +412,7 @@ async fn p51_send_keeps_the_draft_and_freezes_its_revision() {
 
     // Re-queue and send for real: the draft survives the send.
     let handle = db
-        .drafts_enqueue_send(&prepared, sift::db::now_ms(), false)
+        .drafts_enqueue_send(&prepared, &sift::db::drafts::SendSchedule::now(sift::db::now_ms()), false)
         .await
         .unwrap();
     let provider = GmailApiProvider::new(acc.id.clone(), GmailClient::new("t".into()));

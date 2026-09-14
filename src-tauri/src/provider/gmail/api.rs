@@ -66,6 +66,7 @@ fn map_label(account_id: &str, l: &super::types::Label, i: usize) -> Label {
         unread_count: 0,
         total_count: 0,
         sort_order: sys_order(&l.id, i),
+        ..Default::default()
     }
 }
 
@@ -124,7 +125,36 @@ impl Provider for GmailApiProvider {
             unread_count: 0,
             total_count: 0,
             sort_order: 200,
+            ..Default::default()
         })
+    }
+
+    /// Rename a label through the REST label endpoint (P8.5). Gmail keeps the
+    /// label's id, so the local mapping does not have to move.
+    async fn rename_label(&self, id: &str, name: &str) -> Result<Label, SiftError> {
+        if !crate::labels::valid_label_name(name) {
+            return Err(SiftError::app(
+                "bad_label_name",
+                "A label name cannot be empty, cannot contain slashes at the ends, and cannot be longer than 225 characters.",
+                false,
+            ));
+        }
+        let remote = self.client.patch_label(id, name).await?;
+        Ok(Label {
+            account_id: self.account_id.clone(),
+            id: remote.id,
+            name: remote.name,
+            kind: "user".into(),
+            visible: true,
+            sort_order: 200,
+            ..Default::default()
+        })
+    }
+
+    /// Delete a label (P8.5). Gmail removes the label from every message that
+    /// carried it and leaves the messages alone.
+    async fn delete_label(&self, id: &str) -> Result<(), SiftError> {
+        self.client.delete_label(id).await
     }
 
     async fn full_sync(
@@ -195,16 +225,72 @@ impl Provider for GmailApiProvider {
             .unwrap_or_default())
     }
 
+    /// Byte-exact raw MIME for export (P9.3).
+    ///
+    /// The REST API returns the message base64url-encoded, so the bytes are
+    /// decoded straight from that — never through `String::from_utf8_lossy`,
+    /// which would replace every invalid sequence and change the file.
+    async fn fetch_raw_bytes(&self, message_id: &str) -> Result<Vec<u8>, SiftError> {
+        let message = self.client.get_message_raw(message_id).await?;
+        let encoded = message.raw.unwrap_or_default();
+        if encoded.is_empty() {
+            return Ok(Vec::new());
+        }
+        base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            encoded.trim_end_matches('='),
+        )
+        .map_err(|e| SiftError::app("raw_decode", format!("raw message decode: {e}"), false))
+    }
+
     async fn apply(&self, op: &OutboxOp) -> Result<ApplyOutcome, SiftError> {
         match op.kind.as_str() {
-            "modify_labels" => {
+            // A rule application is the same provider work as a gesture:
+            // exactly the (ids, add, remove) triple the local change used.
+            "modify_labels" | "rule_apply" => {
                 let ids: Vec<String> =
                     serde_json::from_value(op.payload["ids"].clone()).unwrap_or_default();
                 let add: Vec<String> =
                     serde_json::from_value(op.payload["add"].clone()).unwrap_or_default();
                 let remove: Vec<String> =
                     serde_json::from_value(op.payload["remove"].clone()).unwrap_or_default();
+                if ids.is_empty() {
+                    return Ok(ApplyOutcome::AlreadyApplied);
+                }
                 self.client.batch_modify(ids, add, remove).await?;
+            }
+            "label_rename" => {
+                let id = op.payload["id"].as_str().unwrap_or_default();
+                let name = op.payload["name"].as_str().unwrap_or_default();
+                if id.is_empty() || name.is_empty() {
+                    return Err(SiftError::app(
+                        "op",
+                        "a label rename needs a label and a name",
+                        false,
+                    ));
+                }
+                match self.client.patch_label(id, name).await {
+                    Ok(_) => {}
+                    // The label is gone: nothing to rename, and nothing else to
+                    // do about it.
+                    Err(SiftError::NotFound(_)) => return Ok(ApplyOutcome::AlreadyApplied),
+                    Err(e) => return Err(e),
+                }
+            }
+            "label_delete" => {
+                let id = op.payload["id"].as_str().unwrap_or_default();
+                if id.is_empty() {
+                    return Err(SiftError::app(
+                        "op",
+                        "a label delete needs a label",
+                        false,
+                    ));
+                }
+                match self.client.delete_label(id).await {
+                    // Already gone is the requested end state.
+                    Ok(()) | Err(SiftError::NotFound(_)) => {}
+                    Err(e) => return Err(e),
+                }
             }
             "trash" => {
                 let threads: Vec<String> =

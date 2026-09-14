@@ -64,6 +64,7 @@ pub async fn run_full_sync(
             unread_count: 0,
             total_count: 0,
             sort_order: sys_order(&l.id, i),
+            ..Default::default()
         })
         .collect();
     sink.upsert_labels(&dto_labels).await?;

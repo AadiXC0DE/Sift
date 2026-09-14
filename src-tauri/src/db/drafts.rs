@@ -43,6 +43,38 @@ pub enum SendCancel {
     TooLate { state: String },
 }
 
+/// When a queued send should leave, and what the user actually asked for
+/// (P8.1).
+///
+/// Three separate things are stored on purpose. `not_before` is the UTC
+/// instant the outbox enforces; `scheduled_local_time` is the exact wall-clock
+/// string the user picked; `scheduled_timezone` is the IANA zone that string
+/// belongs to. A DST shift, a timezone change or a clock moved backwards
+/// cannot make Sift send at a time the user did not choose, because the
+/// instant and the intention are both on the row and the sent evidence reports
+/// the real send time rather than the intended one.
+#[derive(Debug, Clone, Default)]
+pub struct SendSchedule {
+    pub not_before: i64,
+    pub scheduled_at: Option<i64>,
+    pub scheduled_local_time: Option<String>,
+    pub scheduled_timezone: Option<String>,
+}
+
+impl SendSchedule {
+    /// An immediate send (the undo window is expressed by `not_before`).
+    pub fn now(not_before: i64) -> Self {
+        Self {
+            not_before,
+            ..Default::default()
+        }
+    }
+
+    pub fn is_scheduled(&self) -> bool {
+        self.scheduled_at.is_some()
+    }
+}
+
 /// A privacy-safe recipient summary for the Outbox panel: the first display
 /// name (or address) plus a count, never the message.
 fn summarize_recipients(recipients: &[serde_json::Value]) -> String {
@@ -632,7 +664,8 @@ impl Db {
         let id = local_id.to_string();
         self.write(move |c| {
             c.execute(
-                "UPDATE drafts SET state=?, not_before=NULL WHERE local_id=?",
+                "UPDATE drafts SET state=?, not_before=NULL, scheduled_at=NULL, scheduled_local_time=NULL, \
+                   scheduled_timezone=NULL WHERE local_id=?",
                 params![crate::dto::DRAFT_STATE_EDITING, id],
             )?;
             c.query_row(
@@ -641,6 +674,162 @@ impl Db {
                 row_to_draft,
             )
             .map_err(Into::into)
+        })
+        .await
+    }
+
+    /// Move a queued, unclaimed send to a new deadline (P8.1).
+    ///
+    /// Only a `pending` operation may move: once it has been claimed the mail
+    /// may already be on its way, and Sift never pretends otherwise. The
+    /// attempt counter is reset because this is a fresh user decision, not a
+    /// retry, and the draft row keeps the same intention for the UI.
+    pub async fn drafts_reschedule_send(
+        &self,
+        op_id: i64,
+        schedule: SendSchedule,
+    ) -> Result<crate::dto::SendHandle> {
+        let schedule = schedule.clone();
+        self.write(move |c| {
+            let tx = c.unchecked_transaction()?;
+            let payload: String = tx
+                .query_row(
+                    "SELECT payload FROM outbox_ops WHERE id=? AND kind='send' AND state='pending'",
+                    params![op_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(crate::errors::SiftError::app(
+                        "send_already_claimed",
+                        "Sift already started sending this message, so the schedule can no longer move.",
+                        false,
+                    ))
+                })?;
+            let local_id: String = serde_json::from_str::<serde_json::Value>(&payload)
+                .ok()
+                .and_then(|v| {
+                    v.get("localId")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            tx.execute(
+                "UPDATE outbox_ops SET not_before=?, attempts=0, last_error=NULL WHERE id=?",
+                params![schedule.not_before, op_id],
+            )?;
+            tx.execute(
+                "UPDATE drafts SET not_before=?, scheduled_at=?, scheduled_local_time=?, scheduled_timezone=? \
+                 WHERE local_id=?",
+                params![
+                    schedule.not_before,
+                    schedule.scheduled_at,
+                    schedule.scheduled_local_time,
+                    schedule.scheduled_timezone,
+                    local_id
+                ],
+            )?;
+            tx.commit()?;
+            Ok(crate::dto::SendHandle {
+                op_id,
+                not_before: schedule.not_before,
+                scheduled_at: schedule.scheduled_at,
+                scheduled_local_time: schedule.scheduled_local_time,
+                scheduled_timezone: schedule.scheduled_timezone,
+            })
+        })
+        .await
+    }
+
+    /// Drop the schedule and let the message leave on the next drain (P8.1).
+    /// The draft's scheduling metadata is cleared with it, so a reopened draft
+    /// never claims a time it no longer has.
+    pub async fn drafts_send_now(&self, op_id: i64) -> Result<crate::dto::SendHandle> {
+        self.write(move |c| {
+            let tx = c.unchecked_transaction()?;
+            let payload: String = tx
+                .query_row(
+                    "SELECT payload FROM outbox_ops WHERE id=? AND kind='send' AND state='pending'",
+                    params![op_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(crate::errors::SiftError::app(
+                        "send_already_claimed",
+                        "Sift already started sending this message.",
+                        false,
+                    ))
+                })?;
+            let local_id: String = serde_json::from_str::<serde_json::Value>(&payload)
+                .ok()
+                .and_then(|v| v.get("localId").and_then(|x| x.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            tx.execute(
+                "UPDATE outbox_ops SET not_before=?, attempts=0, last_error=NULL WHERE id=?",
+                params![super::now_ms(), op_id],
+            )?;
+            tx.execute(
+                "UPDATE drafts SET not_before=NULL, scheduled_at=NULL, scheduled_local_time=NULL, \
+                   scheduled_timezone=NULL WHERE local_id=?",
+                params![local_id],
+            )?;
+            tx.commit()?;
+            Ok(crate::dto::SendHandle {
+                op_id,
+                not_before: super::now_ms(),
+                scheduled_at: None,
+                scheduled_local_time: None,
+                scheduled_timezone: None,
+            })
+        })
+        .await
+    }
+
+    /// Cancel the send waiting on a draft and return it to the editor.
+    ///
+    /// Called before an edit is accepted: editing a scheduled message must
+    /// cancel its pending operation first, otherwise the draft would carry new
+    /// content while the frozen revision it already queued still left the
+    /// outbox. Returns `true` when an operation was actually cancelled.
+    pub async fn drafts_cancel_pending_send(&self, local_id: &str) -> Result<bool> {
+        let id = local_id.to_string();
+        self.write(move |c| {
+            let tx = c.unchecked_transaction()?;
+            let op_id: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM outbox_ops WHERE kind='send' AND state='pending' \
+                     AND draft_id=? ORDER BY id DESC LIMIT 1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(op_id) = op_id else {
+                return Ok(false);
+            };
+            let changed = tx.execute(
+                "UPDATE outbox_ops SET state='cancelled', completed_at=?1, \
+                   failure_code='edited_after_scheduling', \
+                   last_error='the draft was edited, so this send was cancelled' \
+                 WHERE id=?2 AND state='pending'",
+                params![super::now_ms(), op_id],
+            )?;
+            if changed == 0 {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE outbox_ops SET state='cancelled', completed_at=?1, \
+                   failure_code='dependency_failed' \
+                 WHERE depends_on_op_id=?2 AND state='pending'",
+                params![super::now_ms(), op_id],
+            )?;
+            tx.execute(
+                "UPDATE drafts SET state=?, not_before=NULL, scheduled_at=NULL, \
+                   scheduled_local_time=NULL, scheduled_timezone=NULL WHERE local_id=?",
+                params![crate::dto::DRAFT_STATE_EDITING, id],
+            )?;
+            tx.commit()?;
+            Ok(true)
         })
         .await
     }
@@ -688,10 +877,12 @@ impl Db {
     pub async fn drafts_enqueue_send(
         &self,
         prepared: &crate::outgoing::PreparedSend,
-        not_before: i64,
+        schedule: &SendSchedule,
         archive_after_send: bool,
     ) -> Result<crate::dto::SendHandle> {
         let p = prepared.clone();
+        let schedule = schedule.clone();
+        let not_before = schedule.not_before;
         self.write(move |c| {
             let tx = c.unchecked_transaction()?;
             let key = crate::outbox::send_operation_key(&p.draft_id, p.revision);
@@ -705,9 +896,20 @@ impl Db {
                 .optional()?;
             if let Some((id, not_before, state)) = existing {
                 if crate::db::outbox::STATE_CANCELLED != state {
+                    let (scheduled_at, local, tz): (Option<i64>, Option<String>, Option<String>) = tx
+                        .query_row(
+                            "SELECT scheduled_at, scheduled_local_time, scheduled_timezone FROM drafts WHERE local_id=?",
+                            params![p.draft_id],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .optional()?
+                        .unwrap_or_default();
                     return Ok(crate::dto::SendHandle {
                         op_id: id,
                         not_before,
+                        scheduled_at,
+                        scheduled_local_time: local,
+                        scheduled_timezone: tz,
                     });
                 }
                 // A cancelled attempt released its key (an Undo returns the
@@ -731,12 +933,16 @@ impl Db {
                 serde_json::from_str(&to_json).unwrap_or_default();
             let recipient_summary = summarize_recipients(&recipients);
             let changed = tx.execute(
-                "UPDATE drafts SET state=?, not_before=?, rfc_message_id=? \
+                "UPDATE drafts SET state=?, not_before=?, rfc_message_id=?, \
+                   scheduled_at=?, scheduled_local_time=?, scheduled_timezone=? \
                  WHERE local_id=? AND revision=?",
                 params![
                     crate::dto::DRAFT_STATE_QUEUED,
                     not_before,
                     p.rfc_message_id,
+                    schedule.scheduled_at,
+                    schedule.scheduled_local_time,
+                    schedule.scheduled_timezone,
                     p.draft_id,
                     p.revision
                 ],
@@ -819,7 +1025,13 @@ impl Db {
                 }
             }
             tx.commit()?;
-            Ok(crate::dto::SendHandle { op_id, not_before })
+            Ok(crate::dto::SendHandle {
+                op_id,
+                not_before,
+                scheduled_at: schedule.scheduled_at,
+                scheduled_local_time: schedule.scheduled_local_time.clone(),
+                scheduled_timezone: schedule.scheduled_timezone.clone(),
+            })
         })
         .await
     }
@@ -879,7 +1091,8 @@ impl Db {
             let payload: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
             let local_id = payload["localId"].as_str().unwrap_or_default().to_string();
             tx.execute(
-                "UPDATE drafts SET state=?, not_before=NULL WHERE local_id=?",
+                "UPDATE drafts SET state=?, not_before=NULL, scheduled_at=NULL, scheduled_local_time=NULL, \
+                   scheduled_timezone=NULL WHERE local_id=?",
                 params![crate::dto::DRAFT_STATE_EDITING, local_id],
             )?;
             let draft = tx
@@ -903,7 +1116,8 @@ impl Db {
         let l = local_id.to_string();
         self.write(move |c| {
             c.execute(
-                "UPDATE drafts SET state=?, not_before=NULL WHERE local_id=? AND revision=?",
+                "UPDATE drafts SET state=?, not_before=NULL, scheduled_at=NULL, scheduled_local_time=NULL, \
+                   scheduled_timezone=NULL WHERE local_id=? AND revision=?",
                 params![crate::dto::DRAFT_STATE_SENT, l, revision],
             )?;
             Ok(())

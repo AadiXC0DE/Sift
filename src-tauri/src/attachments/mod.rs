@@ -5,12 +5,15 @@
 //! * [`cache`] — on-disk layout and atomic publication.
 //! * [`naming`] — safe basenames and the original display name.
 //! * [`quarantine`] — macOS download marking for cache files and user copies.
+//! * [`in_use`] — leases that keep a file being read from being evicted
+//!   (P10.4).
 //!
 //! `attachments_open`, `attachments_save_as`, `attachments_save_all`,
 //! `attachments_cancel`, URI resolution and inline rendering all go through
 //! here, so there is one locator rule and one cache state machine.
 
 pub mod cache;
+pub mod in_use;
 pub mod naming;
 pub mod quarantine;
 pub mod service;

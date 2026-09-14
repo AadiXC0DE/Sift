@@ -7,13 +7,20 @@ pub mod db;
 pub mod demo;
 pub mod dto;
 pub mod errors;
+pub mod labels;
 pub mod logging;
+pub mod mailto;
 pub mod notify;
 pub mod outgoing;
 pub mod outbox;
 pub mod provider;
+pub mod reminders;
 pub mod render;
+pub mod retention;
+pub mod rules;
 pub mod runtime;
+pub mod scheduler;
+pub mod send_later;
 pub mod snooze;
 pub mod search;
 pub mod secrets;
@@ -152,14 +159,50 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             // runtime host; they need the window handle (P4.6).
             state.set_emitter(app.app_handle().clone());
             app.manage(state);
-            // Background engine: per-account poll/drain/backfill + snooze watcher.
+            // Background engine: per-account poll/drain/backfill + the one
+            // scheduler that owns snooze, reminder and send deadlines (P8.2).
             crate::runtime::spawn_supervisor(app.app_handle().clone());
             // Bounded retention for finished work (P6.6). It never touches
             // pending, failed, uncertain or scheduled operations.
             let prune_app = app.app_handle().clone();
             tauri::async_runtime::spawn(async move {
                 crate::runtime::prune_finished_work(&prune_app).await;
+                crate::retention::run_retention_loop(prune_app).await;
             });
+            // P8.4: the badge is computed once at startup from the same query
+            // the sidebar uses, so the first number the OS shows is the real
+            // one even before any event arrives.
+            let badge_app = app.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                crate::runtime::refresh_badge_for_app(&badge_app).await;
+            });
+            // P9.3: deep links. A `mailto:` that launched the app (or arrived
+            // while it was starting) is parsed and held until the composer can
+            // take it; nothing is ever sent from a link.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let link_app = app.app_handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        crate::commands::mailto::handle_url(&link_app, url.as_str());
+                    }
+                });
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    for url in urls {
+                        crate::commands::mailto::handle_url(app.app_handle(), url.as_str());
+                    }
+                }
+            }
+            // Bringing the app forward from a notification opens what it was
+            // about (P8.4). The OS reports focus, not the clicked banner.
+            if let Some(window) = app.get_webview_window("main") {
+                let focus_app = app.app_handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(true) = event {
+                        crate::runtime::flush_pending_nav(&focus_app);
+                    }
+                });
+            }
             Ok(())
         })
         .register_uri_scheme_protocol("sift-att", |ctx, req| {
@@ -256,6 +299,40 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::threads::remote_content_policy_get,
             commands::threads::remote_content_policy_set,
             commands::threads::remote_content_sender_revoke,
+            commands::reminders::reminder_set,
+            commands::reminders::reminder_clear,
+            commands::reminders::reminder_complete,
+            commands::reminders::reminders_list,
+            commands::reminders::reminders_open_count,
+            commands::rules::rules_list,
+            commands::rules::rules_upsert,
+            commands::rules::rules_delete,
+            commands::rules::rules_preview,
+            commands::rules::rules_apply_existing,
+            commands::rules::rule_block_sender,
+            commands::rules::rules_diagnostics,
+            commands::notifications::notifications_state,
+            commands::notifications::notifications_enable,
+            commands::notifications::notifications_update,
+            commands::notifications::vip_list,
+            commands::notifications::vip_set,
+            commands::notifications::vip_candidates,
+            commands::notifications::notification_pending_open,
+            commands::mailto::mailto_pending,
+            commands::mailto::mailto_take,
+            commands::mailto::mailto_parse,
+            commands::raw_source::message_view_source,
+            commands::raw_source::message_raw_export,
+            commands::actions::labels_with_hierarchy,
+            commands::actions::label_rename,
+            commands::actions::label_delete,
+            commands::actions::trash_empty_preview,
+            commands::actions::trash_empty,
+            commands::storage::storage_trim_attachment_cache,
+            commands::storage::storage_pin_attachment,
+            commands::compose::send_later_options,
+            commands::compose::send_reschedule,
+            commands::compose::send_now,
             commands::outbox::threads_action,
             commands::outbox::action_undo,
             commands::outbox::snooze_set,

@@ -81,6 +81,7 @@ async fn label(db: &Db, account_id: &str, id: &str, name: &str) {
         unread_count: 0,
         total_count: 0,
         sort_order: 1,
+        ..Default::default()
     })
     .await
     .unwrap();
