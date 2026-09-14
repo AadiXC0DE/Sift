@@ -44,3 +44,4 @@ fixtures/mailbox-100k/*.db
 
 # Test-only fixture bundle (e2e preview server)
 .e2e-build/
+.vercel
