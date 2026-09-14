@@ -176,6 +176,23 @@ select:focus-visible,
   background: transparent;
   flex-shrink: 0;
 }
+/* P8.5 — a label row's rename/delete control stays out of the way until the row
+   is hovered, and appears on keyboard focus for the same reason every hover
+   affordance does (P9.5). */
+.sift-label-actions {
+  opacity: 0;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.sift-label-row:hover .sift-label-actions,
+.sift-label-row:focus-within .sift-label-actions {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sift-label-actions {
+    transition: opacity 80ms ease;
+  }
+}
 .sift-divider::after {
   content: '';
   position: absolute;

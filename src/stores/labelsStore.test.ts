@@ -22,6 +22,7 @@ function label(account_id: string, id: string, name: string): Label {
     unread_count: 0,
     total_count: 0,
     sort_order: 0,
+    depth: 0,
   };
 }
 

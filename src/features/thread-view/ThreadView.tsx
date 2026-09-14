@@ -1,6 +1,6 @@
 import React, { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../app/ipc/commands';
-import type { MessageBody, ThreadDetail, Address, ActionKind } from '../../app/ipc/types';
+import type { MessageBody, ThreadDetail, Address, ActionKind, MessageMeta } from '../../app/ipc/types';
 import type { ComposeContext } from '../compose/replyContext';
 import { useView } from '../../stores/viewStore';
 import { useSelection } from '../../stores/selectionStore';
@@ -22,6 +22,8 @@ import { Star, Archive, Trash2, Clock, MoreHorizontal, Reply, Tag } from 'lucide
 import { IconButton } from '../../ui/IconButton';
 import { Popover } from '../../ui/Popover';
 import { Menu } from '../../ui/Menu';
+import type { MenuItem } from '../../ui/Menu';
+import { toast } from 'sonner';
 import { SnoozeButton } from '../snooze/SnoozePopover';
 import { LabelPicker } from '../actions/LabelPicker';
 import { on } from '../../app/ipc/events';
@@ -33,6 +35,14 @@ import { decodeRfc2047 } from '../../lib/rfc2047';
 import { labelKey, useLabels } from '../../stores/labelsStore';
 import { cacheGet } from './bodyCache';
 import { fetchBodiesNewestFirst, idsNewestFirst, pollBody, type BodyOutcome } from './bodyFetch';
+import { FindBar } from './FindBar';
+import { ViewSourceDialog } from './ViewSourceDialog';
+import { PrintDialog } from './PrintDialog';
+import { saveEmlMenuItem } from './saveEml';
+import { ReminderDialog } from '../reminders/ReminderDialog';
+import { useReminders } from '../reminders/remindersStore';
+import type { ReminderRow } from '../mail-utilities/ipc';
+import { formatInZone, timezoneName } from '../mail-utilities/time';
 
 /**
  * Thread metadata is paginated at 50 messages (P9.2): a 200-message
@@ -90,6 +100,19 @@ export function ThreadView({
   const [bodies, setBodies] = useState<Record<string, BodyEntry>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [focusMsg, setFocusMsg] = useState(0);
+  /**
+   * Reader-local find and the per-message utilities (P9.3). Each of these is an
+   * overlay over the reader, so while one is open the reader counts as obscured
+   * and its "mark as read after Ns" timer cannot fire behind it.
+   */
+  const [findOpen, setFindOpen] = useState(false);
+  const [utility, setUtility] = useState<{ kind: 'source' | 'print' | 'reminder'; messageId: string } | null>(
+    null,
+  );
+  // The conversation's reminder, if any (P8.2). It is a local row: it never
+  // changes a provider label, and the message stays where it is.
+  const reminderRows = useReminders((s) => s.rows);
+  const refreshReminders = useReminders((s) => s.refresh);
   // How many of the conversation's newest messages are rendered. Older ones are
   // revealed a page at a time (P9.2).
   const [visibleCount, setVisibleCount] = useState(MESSAGE_PAGE);
@@ -181,7 +204,7 @@ export function ThreadView({
   useEffect(() => {
     clearReadTimer();
     if (markAsRead === 'manual') return;
-    if (obscured || !detail || !openThread) return;
+    if (obscured || utility != null || !detail || !openThread) return;
     const threadKey = `${openThread.accountId}:${openThread.threadId}`;
     if (!detail.messages.some((m) => m.isUnread)) return;
     if (markAsRead === 'on-open') {
@@ -215,7 +238,16 @@ export function ThreadView({
     }, 2000);
     return clearReadTimer;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, focusMsg, markAsRead, obscured, openThread?.accountId, openThread?.threadId, clearReadTimer]);
+  }, [
+    detail,
+    focusMsg,
+    markAsRead,
+    obscured,
+    utility,
+    openThread?.accountId,
+    openThread?.threadId,
+    clearReadTimer,
+  ]);
 
   /**
    * Fetch the expanded messages of the *active* thread, newest first, two at a
@@ -381,6 +413,7 @@ export function ThreadView({
           markUnread: () => runThreadMail('markUnread'),
           markRead: () => runThreadMail('markRead'),
           snooze: () => pick('snooze'),
+          find: () => setFindOpen(true),
           label: () => pick('label'),
           move: () => pick('move'),
           reply: () => {
@@ -438,6 +471,51 @@ export function ThreadView({
 
   const selected = useSelection((s) => s.selectedIds);
   const windowStart = detail ? Math.max(0, detail.messages.length - visibleCount) : 0;
+
+  /**
+   * The conversation's reminder (P8.2), if it has one. Reminders are keyed by
+   * `(account, thread)`, so every message menu in a conversation edits the same
+   * row — which is what "leave this conversation in place" means.
+   */
+  const reminder: ReminderRow | null = detail
+    ? (reminderRows.find((r) => r.accountId === detail.accountId && r.threadId === detail.id) ?? null)
+    : null;
+  const refreshRemindersNow = () => void refreshReminders(detail ? [detail.accountId] : []);
+
+  const copyValue = (value: string, what: string) => {
+    if (!value) return;
+    navigator.clipboard
+      .writeText(value)
+      .then(() => toast.success(`${what} copied`))
+      .catch(() => toast.error('The clipboard is unavailable'));
+  };
+
+  /** The body the reader already has for this message, cached or in state. */
+  const bodyFor = (messageId: string): MessageBody | undefined =>
+    detail ? (bodies[messageId]?.body ?? cacheGet(detail.accountId, messageId) ?? undefined) : undefined;
+
+  const addrText = (a: Address) => (a.n ? `${a.n} <${a.e}>` : a.e);
+
+  /**
+   * The per-message menu (P8.2/P8.5/P9.3). Message-level operations live on the
+   * message they apply to; a conversation-wide action is never assumed from a
+   * single message's row.
+   */
+  const messageMenuItems = (m: MessageMeta): MenuItem[] => {
+    if (!detail) return [];
+    const accountId = detail.accountId;
+    return [
+      {
+        label: reminder ? `Reminder: ${formatInZone(reminder.remindAt, timezoneName())}` : 'Remind me…',
+        action: () => setUtility({ kind: 'reminder', messageId: m.id }),
+      },
+      { label: 'Copy address', action: () => copyValue(m.from.e, 'Address') },
+      { label: 'Copy subject', action: () => copyValue(decodeRfc2047(detail.subject), 'Subject') },
+      { label: 'View source', action: () => setUtility({ kind: 'source', messageId: m.id }) },
+      saveEmlMenuItem({ accountId, messageId: m.id }),
+      { label: 'Print…', action: () => setUtility({ kind: 'print', messageId: m.id }) },
+    ];
+  };
   const visibleMessages = detail ? detail.messages.slice(windowStart) : [];
   const olderCount = detail ? windowStart : 0;
   if (selected.size > 1) {
@@ -474,7 +552,17 @@ export function ThreadView({
   }
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
+    <div
+      style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minWidth: 0,
+        minHeight: 0,
+        // The find bar is absolutely positioned over the reader (P9.3).
+        position: 'relative',
+      }}
+    >
       <div
         style={{
           position: 'sticky',
@@ -657,16 +745,37 @@ export function ThreadView({
                     </button>
                     <button
                       onClick={() => setFocusMsg(i)}
+                      aria-label={focusMsg === i ? 'Focused message' : `Focus this message (${i + 1})`}
+                      title={focusMsg === i ? 'Focused' : 'Focus this message'}
                       style={{
                         background: 'none',
                         border: 'none',
                         cursor: 'pointer',
-                        color: 'var(--fg-3)',
+                        color: focusMsg === i ? 'var(--fg-2)' : 'var(--fg-3)',
                         fontSize: 12,
                       }}
                     >
-                      ⋯ ({focusMsg === i ? 'focused' : 'focus'})
+                      {focusMsg === i ? '●' : '○'}
                     </button>
+                    <Menu
+                      trigger={
+                        <button
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            color: 'var(--fg-3)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                          }}
+                          data-testid={`message-actions-${m.id}`}
+                          aria-label={`More actions for the message from ${m.from.n ?? m.from.e}`}
+                        >
+                          <MoreHorizontal size={14} />
+                        </button>
+                      }
+                      items={messageMenuItems(m)}
+                    />
                   </div>
                 </div>
               )}
@@ -710,6 +819,45 @@ export function ThreadView({
           </button>
         </div>
       </div>
+      <FindBar open={findOpen} onClose={() => setFindOpen(false)} />
+      {utility?.kind === 'source' && (
+        <ViewSourceDialog
+          open
+          onClose={() => setUtility(null)}
+          accountId={detail.accountId}
+          messageId={utility.messageId}
+          subject={decodeRfc2047(detail.subject)}
+        />
+      )}
+      {utility?.kind === 'print' &&
+        (() => {
+          const m = detail.messages.find((x) => x.id === utility.messageId);
+          if (!m) return null;
+          const body = bodyFor(m.id);
+          return (
+            <PrintDialog
+              open
+              onClose={() => setUtility(null)}
+              subject={decodeRfc2047(detail.subject)}
+              from={addrText(m.from)}
+              to={m.to.map(addrText).join(', ')}
+              cc={m.cc.map(addrText)}
+              date={m.internalDate}
+              html={body?.html}
+              text={body?.text}
+            />
+          );
+        })()}
+      <ReminderDialog
+        target={utility?.kind === 'reminder' ? { accountId: detail.accountId, threadId: detail.id } : null}
+        subject={decodeRfc2047(detail.subject)}
+        existing={reminder}
+        onClose={() => setUtility(null)}
+        onSaved={() => {
+          setUtility(null);
+          refreshRemindersNow();
+        }}
+      />
     </div>
   );
 }
@@ -820,6 +968,43 @@ function HeaderActions({ detail, onReply }: { detail: ThreadDetail; onReply: (mo
           { label: 'Reply', hint: 'r', action: () => onReply('reply') },
           { label: 'Reply all', hint: 'a', action: () => onReply('reply_all') },
           { label: 'Forward', hint: 'f', action: () => onReply('forward') },
+          // Not-junk and untrash are only offered where they mean something
+          // (P8.5): a control that cannot apply to this conversation is absent
+          // rather than present and inert.
+          ...(detail.labelIds.includes('SPAM')
+            ? [
+                {
+                  label: 'Not junk',
+                  action: () =>
+                    void dispatchAction({
+                      accountId,
+                      threadIds: [threadId],
+                      action: { kind: 'unspam' as const },
+                    }),
+                },
+              ]
+            : []),
+          ...(detail.labelIds.includes('TRASH')
+            ? [
+                {
+                  label: 'Move to Inbox',
+                  action: () =>
+                    void dispatchAction({
+                      accountId,
+                      threadIds: [threadId],
+                      action: { kind: 'untrash' as const },
+                    }),
+                },
+              ]
+            : []),
+          {
+            label: 'Move to…',
+            hint: 'v',
+            action: () => {
+              setPickerMode('move');
+              setLabelOpen(true);
+            },
+          },
           {
             label: unread ? 'Mark as read' : 'Mark as unread',
             hint: '⇧i',

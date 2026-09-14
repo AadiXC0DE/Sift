@@ -76,6 +76,16 @@ export function buildShim(nonce: string, token: string): string {
   });
   window.addEventListener('blur', function(){ clearTimeout(hoverT); post({ type:'hover', href: '' }); });
   document.addEventListener('keydown', function(e){
+    // Cmd/Ctrl+F inside the message asks the app to open its own find bar
+    // (P9.3): the chord belongs to the app, so mail HTML never sees it.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+      e.preventDefault();
+      post({ type:'find-open' });
+      return;
+    }
+    // Escape only leaves the frame while a find the app started is live, so an
+    // unmodified Escape inside mail HTML keeps its own meaning (P9.3).
+    if (e.key === 'Escape' && findActive) { post({ type:'find-escape' }); return; }
     // Navigation only, and only without modifiers: a modifier chord belongs to
     // the app's own windows, not to mail HTML (P9.2).
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -91,31 +101,135 @@ export function buildShim(nonce: string, token: string): string {
     var t = e.target;
     if (!(t.closest && (t.closest('a') || t.closest('img')))) e.preventDefault();
   });
-  // find-in-thread
-  window.__siftFind = function(q){
-    document.querySelectorAll('mark.__sift-hl').forEach(function(m){ m.replaceWith(document.createTextNode(m.textContent)); });
-    if (!q) return 0;
-    var count = 0;
-    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  // find-in-thread (P9.3)
+  // The frame is sandboxed with an opaque origin, so the app cannot call in:
+  // a search arrives as a postMessage carrying this frame's token, and every
+  // answer goes back the same way.
+  var findMarks = [];      // highlight wrappers, in document order
+  var findIndex = -1;      // 0-based position within findMarks
+  var findActive = false;  // a find started by the app is live
+
+  // Merge the text nodes that splitText created back into their parents, so the
+  // message reads exactly as it shipped and the next scan starts clean.
+  function unwrapMarks(){
+    var marks = document.querySelectorAll('mark.__sift-hl');
+    var parents = [];
+    for (var i = 0; i < marks.length; i++) {
+      var m = marks[i];
+      var p = m.parentNode;
+      if (!p) continue;
+      p.replaceChild(document.createTextNode(m.textContent), m);
+      if (parents.indexOf(p) < 0) parents.push(p);
+    }
+    for (var j = 0; j < parents.length; j++) {
+      if (parents[j].normalize) parents[j].normalize();
+    }
+    findMarks = [];
+  }
+
+  function isOwnMark(node){
+    return node.nodeName === 'MARK' && String(node.className || '').indexOf('__sift-hl') >= 0;
+  }
+
+  // Never search our own highlight text, or the frame's own script/style nodes
+  // — neither is message content, and marking them would corrupt it.
+  function skipText(node){
+    var p = node.parentNode;
+    while (p && p.nodeType === 1) {
+      if (isOwnMark(p)) return true;
+      var tag = p.nodeName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' ||
+          tag === 'TEXTAREA' || tag === 'TITLE') return true;
+      p = p.parentNode;
+    }
+    return false;
+  }
+
+  // Every non-overlapping occurrence, left to right, across all text nodes —
+  // a match count has to describe the message, not one hit per text node.
+  function scanText(q){
+    var needle = q.toLowerCase();
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
     var nodes = [];
-    while (walker.nextNode()) nodes.push(walker.currentNode);
-    nodes.forEach(function(n){
-      var i = n.textContent.toLowerCase().indexOf(q.toLowerCase());
-      if (i >= 0 && n.parentElement.tagName !== 'MARK') {
+    var node;
+    while ((node = walker.nextNode())) {
+      if (!skipText(node)) nodes.push(node);
+    }
+    var found = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var rest = nodes[i];
+      while (rest) {
+        var at = rest.textContent.toLowerCase().indexOf(needle);
+        if (at < 0) break;
+        var mid = rest.splitText(at);
+        var tail = mid.splitText(needle.length);
         var mark = document.createElement('mark');
         mark.className = '__sift-hl';
+        mark.setAttribute('data-sift-match', String(found.length + 1));
         mark.style.background = 'var(--sift-mark)';
         mark.style.color = 'inherit';
-        var mid = n.splitText(i);
-        var end = mid.splitText(q.length);
-        mid.parentNode.insertBefore(mark, end);
+        mid.parentNode.insertBefore(mark, mid);
         mark.appendChild(mid);
-        count++;
+        found.push(mark);
+        rest = tail;
       }
-    });
-    report();
-    return count;
+    }
+    return found;
+  }
+
+  function activate(idx){
+    for (var i = 0; i < findMarks.length; i++) {
+      var active = i === idx;
+      findMarks[i].className = active ? '__sift-hl __sift-hl-active' : '__sift-hl';
+      findMarks[i].style.background = active ? 'var(--sift-mark-active)' : 'var(--sift-mark)';
+      findMarks[i].style.color = 'inherit';
+    }
+    if (idx >= 0 && findMarks[idx] && findMarks[idx].scrollIntoView) {
+      try { findMarks[idx].scrollIntoView({ block: 'center' }); } catch (e) {}
+    }
+  }
+
+  // A reset request re-scans the whole message and lands on match 1; otherwise
+  // the current match moves one step, wrapping at either end.
+  window.__siftFind = function(q, direction, reset){
+    var text = typeof q === 'string' ? q : '';
+    if (!text) {
+      unwrapMarks();
+      findIndex = -1;
+      findActive = false;
+      return { count: 0, index: 0 };
+    }
+    findActive = true;
+    // A scan that had to run anyway (fresh body, or the first Next after a
+    // reload) already points at match 1, so it does not also step.
+    var rescanned = false;
+    if (reset || !findMarks.length) {
+      unwrapMarks();
+      findMarks = scanText(text);
+      findIndex = 0;
+      rescanned = true;
+    }
+    if (findMarks.length && !rescanned) {
+      var step = direction < 0 ? -1 : 1;
+      findIndex = (findIndex + step + findMarks.length) % findMarks.length;
+    }
+    if (!findMarks.length) findIndex = -1;
+    activate(findIndex);
+    return { count: findMarks.length, index: findIndex < 0 ? 0 : findIndex + 1 };
   };
+
+  window.addEventListener('message', function(e){
+    // The token ties the request to this frame; a source check alone cannot
+    // separate two frames that share an origin.
+    if (e.source !== parent) return;
+    var d = e.data;
+    if (!d || typeof d !== 'object' || d.__siftFindReq !== true) return;
+    if (d.token !== TOKEN || d.type !== 'find') return;
+    var res = window.__siftFind(d.q, d.direction, d.reset);
+    post({ type:'find-result', count: res.count, index: res.index });
+    // Highlighting changes line wrapping, so the frame has to re-report.
+    report();
+  });
 })();
 `;
 }

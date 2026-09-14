@@ -73,6 +73,12 @@ export interface Label {
   unread_count: number;
   total_count: number;
   sort_order: number;
+  /** The leaf of a hierarchical name (`a/b` -> `b`), for display (P8.5). */
+  displayName?: string;
+  /** The parent label's id, resolved from this account's own label set. */
+  parentId?: string;
+  /** Nesting depth of the display name: 0 for a top-level label. */
+  depth: number;
 }
 export type View =
   | { kind: 'inbox' }
@@ -139,6 +145,8 @@ export interface ThreadRow {
   hasAttachments: boolean;
   labelIds: string[];
   snoozedUntil?: number;
+  /** P8.2: an open reminder on this thread, for the subtle row indicator. */
+  reminderAt?: number | null;
   serverOnly?: boolean;
 }
 export interface ThreadsPage {
@@ -472,6 +480,12 @@ export interface DraftPage {
 export interface SendHandle {
   opId: number;
   notBefore: number;
+  /** P8.1: the UTC deadline the user chose; absent for an immediate send. */
+  scheduledAt?: number;
+  /** The exact local wall time the user picked (`YYYY-MM-DDTHH:MM`). */
+  scheduledLocalTime?: string;
+  /** The IANA zone that wall time belongs to. */
+  scheduledTimezone?: string;
 }
 export interface ComposeLimits {
   rawMimeLimitBytes: number;
@@ -509,6 +523,10 @@ export interface Settings {
   wakeSnoozedUnread: boolean;
   splitInbox: boolean;
   notifications: string;
+  /** P8.4: hide the subject line in the notification body. */
+  notificationsHideSubject: boolean;
+  /** P8.4: accounts the user turned notifications off for. */
+  notificationsMutedAccounts: string[];
   sound: string;
   dockBadge: string;
   remoteImages: string;
@@ -543,6 +561,8 @@ export const defaultSettings: Settings = {
   wakeSnoozedUnread: true,
   splitInbox: false,
   notifications: 'inbox',
+  notificationsHideSubject: false,
+  notificationsMutedAccounts: [],
   sound: 'subtle',
   dockBadge: 'unread',
   remoteImages: 'always',
@@ -579,10 +599,84 @@ export interface StorageUsage {
   draftCache: StorageCategory;
   /** Configured cap for `attachments`, in bytes (eviction target, not usage). */
   attachmentCacheLimitBytes: number;
+  /**
+   * P10.4: bytes held by pinned (offline) attachments, which eviction never
+   * touches. Reported separately so the panel can explain why usage can exceed
+   * the cap without anything being wrong.
+   */
+  pinnedBytes: number;
   /** Backend-reported sum of the four categories. */
   totalBytes: number;
   /** Unix ms when the backend measured. */
   computedAt: number;
+}
+
+/**
+ * One local rule (P8.3). The vocabulary is closed: conditions are
+ * sender/recipient/subject/hasAttachment, actions are add label, archive, mark
+ * read, star and move to Junk.
+ */
+export interface RuleCondition {
+  field: string;
+  op: string;
+  value: string;
+}
+export interface RuleAction {
+  kind: string;
+  labelId?: string;
+}
+export interface MailRule {
+  id: string;
+  accountId: string;
+  name: string;
+  enabled: boolean;
+  /** Rust `match_mode`: `all` or `any`. */
+  match: string;
+  conditions: RuleCondition[];
+  actions: RuleAction[];
+  sortOrder: number;
+  revision: number;
+  /** Set when the rule disabled itself because an action failed. */
+  lastError?: string | null;
+}
+/** One row of an "Apply to existing mail" preview: nothing has happened yet. */
+export interface RulePreviewRow {
+  messageId: string;
+  threadId: string;
+  subject: string;
+  fromName?: string | null;
+  fromEmail: string;
+  wouldJunk: boolean;
+}
+export interface RulePreview {
+  count: number;
+  sample: RulePreviewRow[];
+}
+
+/** One choice the composer offers for a delayed send (P8.1). */
+export interface SendLaterOption {
+  /** `now` | `tomorrow` | `custom`. */
+  id: string;
+  label: string;
+  /** Rust `not_before`: present for the fixed choices, absent for "choose". */
+  notBefore?: number;
+}
+
+/**
+ * What the settings surface needs to describe notification behaviour
+ * truthfully (P8.4), including whether the OS granted permission.
+ */
+export interface NotificationState {
+  enabled: boolean;
+  /** `granted` | `denied` | `prompt` | `unsupported`. */
+  permission: string;
+  /** `off` | `inbox` | `vip`. */
+  filter: string;
+  hideSubject: boolean;
+  /** `none` | `native`; there is no in-app sound path any more. */
+  sound: string;
+  /** Accounts the user turned notifications off for. */
+  mutedAccounts: string[];
 }
 
 export type SetupProgress =

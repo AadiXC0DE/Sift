@@ -101,6 +101,7 @@ describe('P3.6 row metadata', () => {
         unread_count: 0,
         total_count: 0,
         sort_order: 0,
+        depth: 0,
       },
     ]);
     const { container } = render(

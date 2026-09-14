@@ -4,9 +4,20 @@ import { useView } from '../../stores/viewStore';
 import { dispatchGesture } from '../actions/dispatch';
 import { registerCommand } from '../palette/registry';
 import { rowKey } from './threadWindow';
+import { toast } from 'sonner';
 
 export type ListScope = 'list' | 'thread';
-export type MailCommand = 'archive' | 'trash' | 'spam' | 'star' | 'markRead' | 'markUnread';
+export type MailCommand =
+  | 'archive'
+  | 'trash'
+  | 'spam'
+  | 'star'
+  | 'markRead'
+  | 'markUnread'
+  /** Not junk: the inverse of `spam` (P8.5). */
+  | 'notJunk'
+  /** Untrash: moves a conversation out of Trash (P8.5). */
+  | 'untrash';
 export type ListPickerKind = 'label' | 'move' | 'snooze';
 
 export interface TargetGroup {
@@ -35,6 +46,19 @@ export function listRows(): ThreadRow[] {
 
 export function hasListContext(): boolean {
   return context !== null && context.rows.length > 0;
+}
+
+/**
+ * Copy one value for a palette command (P8.5), reporting the outcome: a
+ * clipboard that is unavailable must not look like a successful copy.
+ */
+async function copyToClipboard(value: string, what: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(value);
+    toast.success(`${what} copied`);
+  } catch {
+    toast.error('The clipboard is unavailable');
+  }
 }
 
 export function groupKeysByAccount(keys: Iterable<string>): TargetGroup[] {
@@ -96,6 +120,10 @@ function actionFor(
   if (command === 'markRead' || command === 'markUnread') {
     return { kind: 'read', on: command === 'markRead' };
   }
+  // Not junk and untrash are the exact inverses of the two actions the list
+  // already performs, so they go through the same gesture + undo path (P8.5).
+  if (command === 'notJunk') return { kind: 'unspam' };
+  if (command === 'untrash') return { kind: 'untrash' };
   return { kind: command };
 }
 
@@ -209,4 +237,45 @@ registerCommand({
   shortcut: 'esc',
   when: () => useSelection.getState().selectedIds.size > 0,
   run: () => useSelection.getState().clearSelection(),
+});
+// Not junk / Move to Inbox only exist where they can apply (P8.5), so the
+// palette never offers an action that would do nothing.
+registerCommand({
+  id: 'list-not-junk',
+  title: 'Not junk',
+  section: 'Actions',
+  when: () => useView.getState().view.kind === 'spam' && hasListContext(),
+  run: () => void runMailCommand('notJunk', 'list'),
+});
+registerCommand({
+  id: 'list-untrash',
+  title: 'Move to Inbox',
+  section: 'Actions',
+  when: () => useView.getState().view.kind === 'trash' && hasListContext(),
+  run: () => void runMailCommand('untrash', 'list'),
+});
+// Message-level copy actions (P8.5). They read the resolved target's own row,
+// so a mixed selection copies the row the command named rather than guessing.
+registerCommand({
+  id: 'list-copy-address',
+  title: 'Copy address',
+  section: 'Actions',
+  when: () => primaryRow(resolveCommandTargets('list')) !== undefined,
+  run: () => {
+    const row = primaryRow(resolveCommandTargets('list'));
+    const address = row?.participants[0]?.e;
+    if (!address) return;
+    void copyToClipboard(address, 'Address');
+  },
+});
+registerCommand({
+  id: 'list-copy-subject',
+  title: 'Copy subject',
+  section: 'Actions',
+  when: () => primaryRow(resolveCommandTargets('list')) !== undefined,
+  run: () => {
+    const row = primaryRow(resolveCommandTargets('list'));
+    if (!row?.subject) return;
+    void copyToClipboard(row.subject, 'Subject');
+  },
 });

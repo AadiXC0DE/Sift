@@ -1,0 +1,104 @@
+/*
+ * Print stylesheet (P9.3).
+ *
+ * Embedded verbatim into the standalone document `printDocument.ts` builds, so
+ * it must not reference the app's CSS custom properties: nothing but what this
+ * file defines exists inside the print frame. The page-level rules (page
+ * margins, page-break avoidance, hidden collapsed quotes) are added by the
+ * builder, because they encode the "include quoted text" decision.
+ */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+  font-size: 11pt;
+  line-height: 1.45;
+  color: #000;
+  background: #fff;
+}
+
+/* Header block: subject, then sender/date/recipients. */
+.sift-print-head {
+  margin: 0 0 12px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid #999;
+}
+
+.sift-print-subject {
+  margin: 0 0 6px;
+  font-size: 14pt;
+  font-weight: 600;
+}
+
+.sift-print-row {
+  display: flex;
+  gap: 8px;
+  font-size: 9pt;
+}
+
+.sift-print-label {
+  flex: 0 0 44px;
+  color: #555;
+}
+
+.sift-print-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #000;
+  overflow-wrap: anywhere;
+}
+
+.sift-print-body {
+  font-size: 11pt;
+}
+
+/* Keep images inside the page; authored inline styles still win. */
+.sift-print-body img {
+  max-width: 100%;
+}
+
+/* Structure in HTML mail is authored, so only the page unfriendly parts of a
+   table are normalised here. */
+.sift-print-body table {
+  border-collapse: collapse;
+}
+
+/* Plain-text mail keeps authored whitespace (indentation, code, ASCII art). */
+.sift-print-text {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9.5pt;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* Collapsed quoted replies, matching the reader (MailFrame / shim). */
+details.sift-quote {
+  margin-top: 8px;
+  color: #444;
+}
+
+details.sift-quote > summary {
+  font-size: 9pt;
+  color: #666;
+  list-style: none;
+}
+
+details.sift-quote > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.sift-quote > summary::before {
+  content: '••• ';
+}
+
+details.sift-quote[open] > summary::before {
+  content: '▾ ';
+}

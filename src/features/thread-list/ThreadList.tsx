@@ -25,6 +25,7 @@ import { api } from '../../app/ipc/commands';
 import { Popover } from '../../ui/Popover';
 import { hasBlockingSurface } from '../../ui/overlayStack';
 import { LabelPicker } from '../actions/LabelPicker';
+import { EmptyTrashButton } from './EmptyTrashButton';
 import type { Label } from '../../app/ipc/types';
 import { useKeymap } from '../../keymap/engine';
 import { Paperclip, Sun } from 'lucide-react';
@@ -626,6 +627,7 @@ export function ThreadList({
         >
           <Paperclip size={14} />
         </button>
+        {view.kind === 'trash' && <EmptyTrashButton accountIds={scopedIds} />}
       </div>
       {rows.length > 0 && <SyncInlineBar progress={progress} />}
       {error && rows.length > 0 && (

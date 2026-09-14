@@ -20,6 +20,7 @@ import type {
   MessageBody,
   MessageMeta,
   OperationState,
+  SendHandle,
 } from '../../app/ipc/types';
 import { on } from '../../app/ipc/events';
 import { readSiftError } from '../../lib/siftError';
@@ -43,6 +44,10 @@ import {
 } from './replyContext';
 import { forwardHtml, quoteHtml } from './quote';
 import { QuoteBlock } from './quoteNode';
+import { SendLaterMenu } from '../send-later/SendLaterMenu';
+import { ScheduleDialog, type ScheduleChoice } from '../send-later/ScheduleDialog';
+import { utilities, type ScheduleHandleFields } from '../mail-utilities/ipc';
+import { SEND_LATER_COPY, formatInZone, localWallTime, timezoneName } from '../mail-utilities/time';
 
 type Field = 'to' | 'cc' | 'bcc';
 const FIELDS: Field[] = ['to', 'cc', 'bcc'];
@@ -60,6 +65,12 @@ interface QueuedSend {
   notBefore: number;
   state: OperationState;
   message: string | null;
+  /**
+   * Present when this operation is a scheduled send (P8.1). The exact local
+   * wall time and zone travel with the row so the banner can name the instant
+   * the user chose, not just a UTC timestamp in their current zone.
+   */
+  schedule?: { localTime: string; timezone: string } | null;
 }
 
 export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest & { onClose: () => void }) {
@@ -93,6 +104,10 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
   const [pending, setPending] = useState<{ path: string; name: string }[]>([]);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [sending, setSending] = useState(false);
+  /** Open state of the "Choose date and time…" dialog (P8.1). */
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  /** Open state of the "Change send time" dialog for the queued operation. */
+  const [movingSchedule, setMovingSchedule] = useState(false);
   /**
    * The composer never says "Sent" because it queued something (P6.2): this
    * holds the operation the composer is waiting on, and it survives while the
@@ -731,7 +746,7 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
     }
   }, [applyReturnedDraft]);
 
-  const send = async (archive = false) => {
+  const send = async (archive = false, schedule?: ScheduleChoice | null) => {
     if (sending || queuedRef.current) return;
     if (pending.length) {
       toast.error('Attachments are still being added');
@@ -759,20 +774,35 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
       return;
     }
     rememberLastSender(from);
-    const notBefore = Date.now() + settings.undoSendDelay * 1000;
+    // A scheduled send's deadline is the instant the user picked; only an
+    // immediate send carries the Undo-send grace delay (P8.1).
+    const notBefore = schedule ? schedule.notBefore : Date.now() + settings.undoSendDelay * 1000;
     try {
       // Send-and-archive is a dependent operation: the backend queues the
       // archive label change behind this send and only runs it once the
       // provider accepted the message. Archiving from here would archive the
       // source thread even when the send fails.
-      const { opId } = await api.drafts_send({
+      const handle: SendHandle & ScheduleHandleFields = await api.drafts_send({
         localId: saved.localId,
         revision: saved.revision,
         notBefore,
-        archiveAfterSend: archive,
+        archiveAfterSend: schedule ? schedule.archiveAfterSend : archive,
       });
-      setQueued({ opId, notBefore, state: 'pending', message: null });
+      const { opId } = handle;
+      setQueued({
+        opId,
+        notBefore: handle.notBefore || notBefore,
+        state: 'pending',
+        message: null,
+        schedule: schedule
+          ? {
+              localTime: handle.scheduledLocalTime || schedule.localTime,
+              timezone: handle.scheduledTimezone || schedule.timezone,
+            }
+          : null,
+      });
       setSending(false);
+      setScheduleOpen(false);
       // The composer stays open on "Queued · Undo": the draft row is still
       // there, and Undo can still reopen it (P6.2).
     } catch (e) {
@@ -825,10 +855,67 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
     }
   }, [resolveQueued]);
 
+  /**
+   * Send a scheduled message right now (P8.1). This clears the deadline; it
+   * does not bypass the claim, so the banner keeps following the outbox and
+   * never reports "Sent" before the provider accepted it.
+   */
+  const sendQueuedNow = useCallback(async () => {
+    const current = queuedRef.current;
+    if (!current) return;
+    try {
+      await utilities.send_now({ opId: current.opId });
+      await resolveQueued(current.opId);
+    } catch (e) {
+      toast.error(readSiftError(e).message);
+    }
+  }, [resolveQueued]);
+
+  /**
+   * Move an already-queued send's deadline. Past the claim boundary the backend
+   * refuses; the refusal is shown as-is rather than the banner pretending the
+   * move happened.
+   */
+  const moveSchedule = useCallback(
+    async (choice: ScheduleChoice) => {
+      const current = queuedRef.current;
+      if (!current) return;
+      setMovingSchedule(false);
+      try {
+        const handle = await utilities.send_reschedule({
+          opId: current.opId,
+          notBefore: choice.notBefore,
+          scheduledLocalTime: choice.localTime,
+          scheduledTimezone: choice.timezone,
+        });
+        setQueued((q) =>
+          q && q.opId === current.opId
+            ? {
+                ...q,
+                notBefore: handle.notBefore || choice.notBefore,
+                schedule: { localTime: choice.localTime, timezone: choice.timezone },
+              }
+            : q,
+        );
+        toast(`Scheduled for ${formatInZone(choice.notBefore, choice.timezone)}`);
+      } catch (e) {
+        toast.error(readSiftError(e).message);
+        await resolveQueued(current.opId);
+      }
+    },
+    [resolveQueued],
+  );
+
   const sendRef = useRef(send);
   sendRef.current = send;
   const pickAttachmentsRef = useRef(pickAttachments);
   pickAttachmentsRef.current = pickAttachments;
+
+  /**
+   * One predicate for every send entry point (P8.1): the split control must not
+   * offer to schedule a message the primary Send button would refuse.
+   */
+  const sendBlocked = sending || locked || pending.length > 0 || quoted === 'loading';
 
   /**
    * The composer dismisses itself (P9.5): its own capture handler owns Escape
@@ -850,6 +937,14 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
       if (mod && e.shiftKey && e.key.toLowerCase() === 'a') {
         e.preventDefault();
         void pickAttachmentsRef.current();
+        return;
+      }
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'l') {
+        // Same guarantee as the Send path: the draft is flushed before the
+        // scheduling dialog opens, so a schedule can never describe text the
+        // draft does not have (P8.1).
+        e.preventDefault();
+        setScheduleOpen(true);
         return;
       }
       if (plainRef.current && mod && ['b', 'i', 'u'].includes(e.key.toLowerCase())) {
@@ -1237,7 +1332,13 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
         )}
 
         {queued && (
-          <QueuedBanner queued={queued} onUndo={() => void undoQueued()} onRetry={() => void retryQueued()} />
+          <QueuedBanner
+            queued={queued}
+            onUndo={() => void undoQueued()}
+            onRetry={() => void retryQueued()}
+            onSendNow={() => void sendQueuedNow()}
+            onEditTime={() => setMovingSchedule(true)}
+          />
         )}
 
         <div
@@ -1249,19 +1350,37 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
             alignItems: 'center',
           }}
         >
-          <Button
-            variant="primary"
-            onClick={() => void send()}
-            disabled={sending || locked || pending.length > 0 || quoted === 'loading'}
-            style={{ padding: '8px 20px', height: 36, fontWeight: 600 }}
-          >
-            {sending ? 'Sending…' : 'Send ⌘↵'}
-          </Button>
-          <Button
-            onClick={() => void send(true)}
-            disabled={sending || locked || pending.length > 0 || quoted === 'loading'}
-            title="Send and archive (⌘⇧↵)"
-          >
+          <div style={{ display: 'inline-flex' }}>
+            <Button
+              variant="primary"
+              onClick={() => void send()}
+              disabled={sendBlocked}
+              style={{
+                padding: '8px 20px',
+                height: 36,
+                fontWeight: 600,
+                // The caret beside it is the other half of one control (P8.1).
+                borderTopRightRadius: 0,
+                borderBottomRightRadius: 0,
+              }}
+            >
+              {sending ? 'Sending…' : 'Send ⌘↵'}
+            </Button>
+            <SendLaterMenu
+              disabled={sendBlocked}
+              onSendNow={() => void send()}
+              onTomorrow={(at) =>
+                void send(false, {
+                  notBefore: at.getTime(),
+                  localTime: localWallTime(at),
+                  timezone: timezoneName(),
+                  archiveAfterSend: false,
+                })
+              }
+              onChoose={() => setScheduleOpen(true)}
+            />
+          </div>
+          <Button onClick={() => void send(true)} disabled={sendBlocked} title="Send and archive (⌘⇧↵)">
             Send & archive
           </Button>
           <Button
@@ -1275,6 +1394,22 @@ export function ComposerSheet({ mode, thread, draftId, onClose }: ComposeRequest
           <span style={{ fontSize: 11, color: 'var(--fg-3)' }}>Esc saves draft</span>
         </div>
       </div>
+      <ScheduleDialog
+        open={scheduleOpen}
+        archiveDefault={settings.sendAndArchiveDefault}
+        onClose={() => setScheduleOpen(false)}
+        onConfirm={(choice) => void send(false, choice)}
+      />
+      {movingSchedule && queued?.schedule && (
+        <ScheduleDialog
+          open
+          title="Change send time"
+          submitLabel="Move send"
+          initialLocal={queued.schedule.localTime}
+          onClose={() => setMovingSchedule(false)}
+          onConfirm={(choice) => void moveSchedule(choice)}
+        />
+      )}
     </Sheet>
   );
 }
@@ -1288,10 +1423,14 @@ function QueuedBanner({
   queued,
   onUndo,
   onRetry,
+  onSendNow,
+  onEditTime,
 }: {
   queued: QueuedSend;
   onUndo: () => void;
   onRetry: () => void;
+  onSendNow: () => void;
+  onEditTime: () => void;
 }) {
   const tone =
     queued.state === 'failed'
@@ -1300,7 +1439,7 @@ function QueuedBanner({
         ? 'var(--warning)'
         : 'var(--fg-2)';
   const text: Record<OperationState, string> = {
-    pending: 'Queued · Undo',
+    pending: queued.schedule ? 'Scheduled' : 'Queued · Undo',
     inflight: 'Sending now — too late to undo',
     uncertain: 'Unconfirmed: Sift cannot prove this was not sent',
     failed: 'Not sent',
@@ -1324,6 +1463,14 @@ function QueuedBanner({
       }}
     >
       <span style={{ fontWeight: 550 }}>{text[queued.state]}</span>
+      {queued.schedule && queued.state !== 'cancelled' && (
+        <span style={{ color: 'var(--fg-2)' }} data-testid="compose-scheduled-at">
+          sends {formatInZone(queued.notBefore, queued.schedule.timezone)} · {queued.schedule.timezone}
+        </span>
+      )}
+      {queued.schedule && queued.state === 'pending' && (
+        <span style={{ color: 'var(--fg-3)' }}>{SEND_LATER_COPY}</span>
+      )}
       {queued.state === 'uncertain' && (
         <span style={{ color: 'var(--fg-3)' }}>the Outbox shows the reconciliation state</span>
       )}
@@ -1333,6 +1480,16 @@ function QueuedBanner({
         </span>
       )}
       <span style={{ flex: 1 }} />
+      {queued.state === 'pending' && queued.schedule && (
+        <>
+          <Button onClick={onEditTime} style={{ height: 28, padding: '0 12px' }}>
+            Edit time
+          </Button>
+          <Button onClick={onSendNow} style={{ height: 28, padding: '0 12px' }}>
+            Send now
+          </Button>
+        </>
+      )}
       {queued.state === 'pending' && (
         <Button onClick={onUndo} style={{ height: 28, padding: '0 12px' }}>
           Undo

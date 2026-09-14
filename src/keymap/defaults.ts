@@ -39,6 +39,10 @@ export const defaultBindings: Binding[] = [
   { key: ']', scope: 'thread', action: 'archiveNext' },
   { key: '[', scope: 'thread', action: 'archivePrev' },
   { key: '/', scope: 'global', action: 'search' },
+  // Reader-local find (P9.3): a real binding, so the reader shows it and a
+  // remap to another chord keeps working. Next/previous live inside the find
+  // bar itself (Enter / Shift+Enter), where the focus already is.
+  { key: '⌘f', scope: 'thread', action: 'find' },
   { key: '⌘k', scope: 'global', action: 'palette' },
   { key: 'g i', scope: 'global', action: 'goInbox' },
   { key: 'g s', scope: 'global', action: 'goStarred' },

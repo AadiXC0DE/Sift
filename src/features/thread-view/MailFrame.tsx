@@ -1,6 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { buildShim } from './shim';
 import { api } from '../../app/ipc/commands';
+import {
+  createFrameFinder,
+  escapeFinder,
+  focusFinder,
+  registerFinder,
+  resolveFindResult,
+  subscribeFindRequests,
+  type FrameFinder,
+} from './find';
 import mailCss from '../../styles/mail-frame.css?raw';
 
 interface Props {
@@ -68,6 +77,7 @@ export function MailFrame({ messageId, html, allowed, darkSafe }: Props) {
   const token = useMemo(randomToken, []);
   const appDark = useAppDarkTheme();
   const surface = appDark && darkSafe ? 'dark' : 'light';
+  const finderRef = useRef<FrameFinder | null>(null);
 
   const srcdoc = useMemo(() => {
     const remote = allowed ? ' http: https:' : '';
@@ -77,6 +87,43 @@ export function MailFrame({ messageId, html, allowed, darkSafe }: Props) {
     const csp = `default-src 'none'; img-src data: blob: sift-att:${remote}; media-src data: blob: sift-att:${remote}; style-src 'unsafe-inline'${remote}; font-src data:${remote}; script-src 'nonce-${nonce}'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'`;
     return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><style>${mailCss}</style></head><body class="sift-mail sift-mail-${surface}">${html ?? ''}<script nonce="${nonce}">${buildShim(nonce, token)}</script></body></html>`;
   }, [allowed, html, nonce, token, surface]);
+
+  useEffect(() => {
+    const finder = createFrameFinder(messageId);
+    finderRef.current = finder;
+    const unregister = registerFinder(finder);
+    // Requests for this frame are posted in, token and all (P9.3): the app
+    // document cannot call into a sandboxed frame, and the token is what ties
+    // the answer back to this message rather than to its neighbour.
+    const unsubscribe = subscribeFindRequests((req) => {
+      if (req.messageId !== messageId) return;
+      const target = ref.current?.contentWindow;
+      // No frame yet: find() gives up on its own timeout instead of hanging.
+      if (!target) return;
+      target.postMessage(
+        {
+          __siftFindReq: true,
+          token,
+          type: 'find',
+          q: req.q,
+          direction: req.direction,
+          reset: req.reset,
+        },
+        '*',
+      );
+    });
+    return () => {
+      unsubscribe();
+      unregister();
+      finderRef.current = null;
+    };
+  }, [messageId, token]);
+
+  // A new body reloads the frame, so whatever the previous one highlighted is
+  // gone while the find bar still shows a count: drop the stale search (P9.3).
+  useEffect(() => {
+    finderRef.current?.clear();
+  }, [srcdoc]);
 
   useEffect(() => {
     setHeight(null);
@@ -96,6 +143,8 @@ export function MailFrame({ messageId, html, allowed, darkSafe }: Props) {
             metaKey?: unknown;
             ctrlKey?: unknown;
             altKey?: unknown;
+            count?: unknown;
+            index?: unknown;
           }
         | null
         | undefined;
@@ -147,6 +196,29 @@ export function MailFrame({ messageId, html, allowed, darkSafe }: Props) {
           window.dispatchEvent(new KeyboardEvent('keydown', { key: data.key, bubbles: true }));
           return;
         }
+        case 'find-result': {
+          const count = Number(data.count);
+          const index = Number(data.index);
+          // A frame that cannot count its own matches answers nothing useful.
+          if (!Number.isFinite(count) || !Number.isFinite(index)) return;
+          resolveFindResult(messageId, { count, index });
+          return;
+        }
+        case 'find-open': {
+          // Cmd/Ctrl+F pressed inside the message (P9.3). The frame cannot open
+          // the app's find bar, so it hands the intent over: this frame becomes
+          // the target, and the app's own keymap path runs exactly as if the
+          // key had been pressed over the reader.
+          focusFinder(messageId);
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }));
+          return;
+        }
+        case 'find-escape': {
+          // Escape inside the message travels the app's Escape path, so the
+          // overlay stack closes whichever surface is on top.
+          escapeFinder();
+          return;
+        }
         default:
           return;
       }
@@ -172,6 +244,8 @@ export function MailFrame({ messageId, html, allowed, darkSafe }: Props) {
         // document even if sanitizing ever missed something (P9.2).
         sandbox="allow-scripts"
         srcDoc={srcdoc}
+        // Clicking into a message makes it the one Cmd+F searches (P9.3).
+        onFocus={() => focusFinder(messageId)}
         style={{
           width: '100%',
           maxWidth: '100%',

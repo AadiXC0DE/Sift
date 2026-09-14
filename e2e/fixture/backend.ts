@@ -45,11 +45,17 @@ import {
   type FixtureDb,
   type FixtureDraft,
   type FixtureMessage,
+  type FixtureNotificationState,
   type FixtureOutboxOp,
+  type FixtureReminder,
+  type FixtureRule,
   type FixtureThread,
   seedDatabase,
   type Scenario,
 } from './dataset';
+// The same wall-clock helpers the app uses, so the fixture's scheduled local
+// time and zone are produced exactly the way a real queue produces them (P8.1).
+import { localWallTime, timezoneName } from '../../src/features/mail-utilities/time';
 
 export type Args = Record<string, unknown>;
 
@@ -161,6 +167,9 @@ function outboxSummary(op: FixtureOutboxOp) {
     recipientSummary: op.recipientSummary || null,
     subject: op.subject || null,
     scheduledAt: op.scheduledAt,
+    scheduledLocalTime: op.scheduledLocalTime ?? null,
+    scheduledTimezone: op.scheduledTimezone ?? null,
+    canSendNow: op.state === 'pending',
     retryAt: op.retryAt,
     createdAt: op.createdAt,
     errorCode: op.errorCode,
@@ -658,10 +667,212 @@ function usageSnapshot(): StorageUsage {
     bodies: { bytes: bodies, items: database().messages.length },
     attachments: attachmentsCategory,
     draftCache: { bytes: draftCache, items: database().drafts.length },
-    attachmentCacheLimitBytes: 2 * 1024 * 1024 * 1024,
+    pinnedBytes: 0,
+    attachmentCacheLimitBytes: attachmentCapBytes,
     totalBytes: metadata + bodies + attachments + draftCache,
     computedAt: FIXED_NOW,
   };
+}
+
+// ---------------------------------------------------------------------------
+// P8 local state helpers (Send Later, reminders, rules, notifications)
+// ---------------------------------------------------------------------------
+
+/**
+ * The fixture's clock. The page pins `Date.now` at seed time; `advanceClock`
+ * moves it so "sleep across the due time" and "quit and relaunch" are real
+ * transitions rather than assumptions (P8.1/P8.2).
+ */
+let clockSkew = 0;
+function now(): number {
+  return FIXED_NOW + clockSkew;
+}
+
+function setClock(skew: number): void {
+  clockSkew = skew;
+  // `index.e2e.html` pinned the clock for reproducible dates; the suite moves
+  // it deliberately, and everything read afterwards must agree.
+  Date.now = () => FIXED_NOW + clockSkew;
+}
+
+/** The configured attachment-cache cap (P10.4); settable through the UI. */
+let attachmentCapBytes = 2 * 1024 * 1024 * 1024;
+
+function outboxOp(opId: number): FixtureOutboxOp {
+  const op = database().outbox.find((o) => o.op_id === opId);
+  if (!op) throw new Error('op_not_found');
+  return op;
+}
+
+function scheduleHandle(op: FixtureOutboxOp) {
+  return {
+    opId: op.op_id,
+    notBefore: op.notBefore,
+    scheduledAt: op.scheduledAt,
+    scheduledLocalTime: op.scheduledLocalTime,
+    scheduledTimezone: op.scheduledTimezone,
+  };
+}
+
+/** What `reminders_list` returns: a reminder plus the conversation it names. */
+export interface ReminderDto {
+  accountId: string;
+  threadId: string;
+  remindAt: number;
+  completedAt: number | null;
+  deliveredAt: number | null;
+  state: FixtureReminder['state'];
+  subject: string | null;
+  fromName: string | null;
+  unread: boolean;
+}
+
+function reminderRow(r: FixtureReminder): ReminderDto {
+  const thread = findThread(r.accountId, r.threadId);
+  const last = messagesOf(r.accountId, r.threadId).at(-1);
+  return {
+    accountId: r.accountId,
+    threadId: r.threadId,
+    remindAt: r.remindAt,
+    completedAt: r.completedAt,
+    deliveredAt: r.deliveredAt,
+    state: r.state,
+    subject: thread?.subject ?? null,
+    fromName: last?.from.n ?? last?.from.e ?? null,
+    unread: (thread?.unreadCount ?? 0) > 0,
+  };
+}
+
+function reminderRows(accountIds: string[], includeCompleted = false) {
+  return database()
+    .reminders.filter((r) => accountIds.includes(r.accountId))
+    .filter((r) => includeCompleted || r.completedAt == null)
+    .map(reminderRow);
+}
+
+function labelOf(accountId: string, labelId: string): Label {
+  const label = database().labels.find((l) => l.account_id === accountId && l.id === labelId);
+  if (!label) throw new Error('label_not_found');
+  return label;
+}
+
+function trashThreads(accountIds: string[]): FixtureThread[] {
+  return database().threads.filter((t) => accountIds.includes(t.accountId) && t.labelIds.includes('TRASH'));
+}
+
+function ownedMessage(accountId: string, messageId: string): FixtureMessage {
+  const message = database().messages.find((m) => m.accountId === accountId && m.id === messageId);
+  if (!message) throw new Error('message_not_found');
+  return message;
+}
+
+/** Whether one rule's conditions match a thread's own metadata (P8.3). */
+function ruleMatches(rule: FixtureRule, t: FixtureThread): boolean {
+  const probes: Record<string, string[]> = {
+    sender: t.participants.map((p) => `${p.e} ${p.n ?? ''}`.toLowerCase()),
+    recipient: messagesOf(t.accountId, t.id)
+      .flatMap((m) => [...m.to, ...m.cc])
+      .map((a) => a.e.toLowerCase()),
+    subject: [t.subject.toLowerCase()],
+    hasAttachment: [String(t.hasAttachments)],
+  };
+  const test = (c: FixtureRule['conditions'][number]): boolean => {
+    if (c.field === 'hasAttachment') return t.hasAttachments;
+    const haystack = probes[c.field] ?? [];
+    const needle = c.value.toLowerCase().trim();
+    if (!needle) return false;
+    if (c.op === 'domain') return haystack.some((h) => h.includes(`@${needle.replace(/^@/, '')}`));
+    if (c.op === 'is') return haystack.some((h) => h.split(/\s+/).includes(needle) || h === needle);
+    return haystack.some((h) => h.includes(needle));
+  };
+  if (!rule.conditions.length) return false;
+  return rule.match === 'all' ? rule.conditions.every(test) : rule.conditions.some(test);
+}
+
+/** Applies a rule's actions; returns false when nothing changed. */
+function applyRuleActions(rule: FixtureRule, t: FixtureThread): boolean {
+  let changed = false;
+  for (const action of rule.actions) {
+    const before = t.labelIds.join(',');
+    if (action.kind === 'addLabel' && action.labelId)
+      applyAction(t, { kind: 'addLabel', labelId: action.labelId });
+    if (action.kind === 'archive') applyAction(t, { kind: 'archive' });
+    if (action.kind === 'junk') applyAction(t, { kind: 'spam' });
+    if (action.kind === 'markRead') {
+      for (const m of messagesOf(t.accountId, t.id)) m.isUnread = false;
+      applyAction(t, { kind: 'read', on: true });
+    }
+    if (action.kind === 'star') {
+      const msgs = messagesOf(t.accountId, t.id);
+      const standing = msgs.filter((m) => m.isStarred).at(-1) ?? msgs.at(-1);
+      if (standing) standing.isStarred = true;
+      applyAction(t, { kind: 'star', on: true });
+    }
+    if (t.labelIds.join(',') !== before) changed = true;
+  }
+  // A rule's own label change must not re-trigger it on the next evaluation.
+  return changed;
+}
+
+function toPreviewRow(t: FixtureThread) {
+  const last = messagesOf(t.accountId, t.id).at(-1);
+  return {
+    threadId: t.id,
+    subject: t.subject,
+    fromName: last?.from.n ?? null,
+    fromEmail: last?.from.e ?? '',
+    wouldJunk: t.labelIds.includes('SPAM'),
+  };
+}
+
+/** The unread-Inbox-thread count the runtime publishes as the dock badge. */
+function unreadInboxThreads(): number {
+  return database().threads.filter((t) => t.labelIds.includes('INBOX') && t.unreadCount > 0).length;
+}
+
+function emitBadge(): void {
+  emit('badge:update', { count: unreadInboxThreads() });
+}
+
+/**
+ * Whether one thread is eligible for a notification under the configured
+ * filter (P8.4). `vip` needs the sender to be on the account's VIP list; `off`
+ * and a disabled account are silent.
+ */
+function notificationAllowed(accountId: string, t: FixtureThread): boolean {
+  const cfg = database().notifications;
+  if (!cfg.enabled || cfg.filter === 'off') return false;
+  if (!cfg.accountIds.includes(accountId)) return false;
+  if (cfg.filter === 'vip') {
+    const vips = database().vips[accountId] ?? [];
+    return t.participants.some((p) => vips.includes(p.e.toLowerCase()));
+  }
+  return t.labelIds.includes('INBOX');
+}
+
+/** Every notification the runtime emitted, in order — the "one message, one notification" evidence. */
+const notifyLog: { accountId: string; threadId: string; subject: string | null; hidden: boolean }[] = [];
+let lastNotified: { accountId: string; threadId: string } | null = null;
+
+function notifyThread(accountId: string, t: FixtureThread): void {
+  if (!notificationAllowed(accountId, t)) return;
+  const cfg = database().notifications;
+  const entry = {
+    accountId,
+    threadId: t.id,
+    subject: cfg.hideSubject ? null : t.subject,
+    hidden: cfg.hideSubject,
+  };
+  notifyLog.push(entry);
+  lastNotified = { accountId, threadId: t.id };
+  emit('notify:new', {
+    accountId,
+    threadId: t.id,
+    title: t.participants[0]?.n ?? t.participants[0]?.e ?? 'New mail',
+    subject: entry.subject,
+    body: cfg.hideSubject ? 'New message' : t.snippet,
+    hidden: cfg.hideSubject,
+  });
 }
 
 const handlers: Record<string, (args: Args) => unknown> = {
@@ -780,6 +991,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
       unread_count: 0,
       total_count: 0,
       sort_order: 99,
+      depth: 0,
     };
     database().labels.push(l);
     persist();
@@ -1046,6 +1258,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
       recipientSummary: recipients.slice(0, 3).join(', '),
       action: args.archiveAfterSend ? 'Send and archive' : 'Send',
       scheduledAt: notBefore > FIXED_NOW ? notBefore : null,
+      scheduledLocalTime: notBefore > FIXED_NOW ? localWallTime(new Date(notBefore)) : null,
+      scheduledTimezone: notBefore > FIXED_NOW ? timezoneName() : null,
       retryAt: null,
       startedAt: null,
       completedAt: null,
@@ -1263,6 +1477,275 @@ const handlers: Record<string, (args: Args) => unknown> = {
   unsubscribe: () => ({ method: 'one-click', done: true }),
   diagnostics_export: () => ({ path: '/tmp/sift-e2e/diagnostics.json' }),
   perf_mark: () => null,
+
+  // --- P8.1 Send Later ------------------------------------------------------
+  send_reschedule: (args) => {
+    const op = outboxOp(Number(args.opId));
+    if (op.state !== 'pending') {
+      throw {
+        code: 'send_already_claimed',
+        message: 'This message has already left the queue',
+        retryable: false,
+        detail: { state: op.state, opId: op.op_id },
+      };
+    }
+    op.notBefore = Number(args.notBefore);
+    op.scheduledAt = op.notBefore;
+    op.scheduledLocalTime = String(args.scheduledLocalTime ?? '');
+    op.scheduledTimezone = String(args.scheduledTimezone ?? '');
+    persist();
+    emitOutboxState(op.accountId);
+    return scheduleHandle(op);
+  },
+  send_now: (args) => {
+    const op = outboxOp(Number(args.opId));
+    // Clearing the deadline does not bypass the claim: the op still drains in
+    // order, it is simply no longer scheduled.
+    op.notBefore = FIXED_NOW;
+    op.scheduledAt = null;
+    op.scheduledLocalTime = null;
+    op.scheduledTimezone = null;
+    persist();
+    emitOutboxState(op.accountId);
+    return scheduleHandle(op);
+  },
+
+  // --- P8.2 Reminders -------------------------------------------------------
+  reminder_set: (args) => {
+    const remindAt = Number(args.remindAt);
+    for (const target of (args.targets as { accountId: string; threadId: string }[]) ?? []) {
+      const existing = database().reminders.find(
+        (r) => r.accountId === target.accountId && r.threadId === target.threadId,
+      );
+      const row: FixtureReminder = {
+        accountId: target.accountId,
+        threadId: target.threadId,
+        remindAt,
+        completedAt: null,
+        deliveredAt: null,
+        state: remindAt <= now() ? 'due' : 'scheduled',
+      };
+      if (existing) Object.assign(existing, row);
+      else database().reminders.push(row);
+      afterMutation([target.accountId], [target.threadId]);
+    }
+    return reminderRows((args.targets as { accountId: string }[])?.map((t) => t.accountId) ?? []);
+  },
+  reminder_clear: (args) => {
+    const targets = (args.targets as { accountId: string; threadId: string }[]) ?? [];
+    const removed = database().reminders.filter((r) =>
+      targets.some((t) => t.accountId === r.accountId && t.threadId === r.threadId),
+    );
+    db.reminders = database().reminders.filter(
+      (r) => !targets.some((t) => t.accountId === r.accountId && t.threadId === r.threadId),
+    );
+    persist();
+    for (const accountId of new Set(removed.map((r) => r.accountId))) {
+      emit('store:threads', { account_id: accountId, thread_ids: removed.map((r) => r.threadId) });
+    }
+    return removed.map((r) => reminderRow(r));
+  },
+  reminders_list: (args) => reminderRows((args.accountIds as string[]) ?? [], Boolean(args.includeCompleted)),
+
+  // --- P8.3 Rules -----------------------------------------------------------
+  rules_list: (args) => database().rules.filter((r) => r.accountId === args.accountId),
+  rules_upsert: (args) => {
+    const incoming = args.rule as Omit<FixtureRule, 'id' | 'revision' | 'lastError'> & { id?: string };
+    const expected = args.expectedRevision;
+    const existing = incoming.id ? database().rules.find((r) => r.id === incoming.id) : undefined;
+    if (existing && expected !== undefined && Number(expected) !== existing.revision) {
+      throw {
+        code: 'rule_revision_conflict',
+        message: 'This rule changed elsewhere; reload it before saving',
+        retryable: true,
+      };
+    }
+    const saved: FixtureRule = {
+      id: existing?.id ?? `rule-${database().nextRuleId++}`,
+      accountId: incoming.accountId,
+      name: incoming.name,
+      enabled: incoming.enabled,
+      match: incoming.match,
+      conditions: incoming.conditions,
+      actions: incoming.actions,
+      sortOrder: Number(incoming.sortOrder ?? 0),
+      revision: (existing?.revision ?? 0) + 1,
+      lastError: null,
+    };
+    if (existing) Object.assign(existing, saved);
+    else database().rules.push(saved);
+    persist();
+    return saved;
+  },
+  rules_delete: (args) => {
+    db.rules = database().rules.filter((r) => r.id !== args.ruleId);
+    persist();
+    return null;
+  },
+  rules_preview: (args) => {
+    const rule = args.rule as FixtureRule;
+    const matches = database().threads.filter((t) => t.accountId === rule.accountId && ruleMatches(rule, t));
+    const limit = Math.max(0, Math.min(10, Number(args.limit ?? 3)));
+    return {
+      count: matches.length,
+      sample: matches.slice(0, limit).map((t) => toPreviewRow(t)),
+    };
+  },
+  rules_apply_existing: (args) => {
+    const rule = database().rules.find((r) => r.id === args.ruleId);
+    if (!rule) throw new Error('rule_not_found');
+    if (Number(args.revision) !== rule.revision) {
+      throw {
+        code: 'rule_revision_conflict',
+        message: 'This rule changed elsewhere; reload it before applying',
+        retryable: true,
+      };
+    }
+    let applied = 0;
+    let skipped = 0;
+    for (const t of database().threads) {
+      if (t.accountId !== rule.accountId || !ruleMatches(rule, t)) continue;
+      if (applyRuleActions(rule, t)) applied += 1;
+      else skipped += 1;
+    }
+    afterMutation([rule.accountId], []);
+    return { applied, skipped };
+  },
+  rule_block_sender: (args) => {
+    const email = String(args.email).toLowerCase();
+    const rule: FixtureRule = {
+      id: `rule-${database().nextRuleId++}`,
+      accountId: String(args.accountId),
+      name: `Block ${args.name ?? email}`,
+      enabled: true,
+      match: 'any',
+      conditions: [{ field: 'sender', op: 'is', value: email }],
+      actions: [{ kind: 'junk', labelId: null }],
+      sortOrder: 0,
+      revision: 1,
+      lastError: null,
+    };
+    database().rules.push(rule);
+    persist();
+    return rule;
+  },
+
+  // --- P8.4 Notifications and VIPs -----------------------------------------
+  notifications_state: () => database().notifications,
+  notifications_enable: (args) => {
+    const next = database().notifications;
+    next.enabled = Boolean(args.enabled);
+    // The permission is requested (and can be refused) on enable, never on
+    // every incoming message: a denied OS prompt must not loop.
+    if (next.enabled) next.permission = next.permission === 'unsupported' ? 'unsupported' : 'granted';
+    persist();
+    return next;
+  },
+  notifications_update: (args) => {
+    const next = database().notifications;
+    if (args.filter !== undefined) next.filter = args.filter as FixtureNotificationState['filter'];
+    if (args.hideSubject !== undefined) next.hideSubject = Boolean(args.hideSubject);
+    if (args.sound !== undefined) next.sound = args.sound as FixtureNotificationState['sound'];
+    if (args.accountIds !== undefined) next.accountIds = args.accountIds as string[];
+    persist();
+    return next;
+  },
+  vip_list: (args) => database().vips[String(args.accountId)] ?? [],
+  vip_set: (args) => {
+    const accountId = String(args.accountId);
+    const email = String(args.email).toLowerCase();
+    const list = database().vips[accountId] ?? [];
+    database().vips[accountId] = args.vip ? [...new Set([...list, email])] : list.filter((e) => e !== email);
+    persist();
+    return database().vips[accountId];
+  },
+  vip_candidates: (args) => {
+    const accountId = String(args.accountId);
+    const limit = Math.max(1, Math.min(50, Number(args.limit ?? 20)));
+    const seen = new Set<string>();
+    const out: { email: string; name: string | null; lastUsedAt: number; useCount: number }[] = [];
+    for (const m of database().messages) {
+      if (m.accountId !== accountId || m.isSentByMe) continue;
+      const email = m.from.e.toLowerCase();
+      if (seen.has(email)) continue;
+      seen.add(email);
+      out.push({ email, name: m.from.n ?? null, lastUsedAt: m.internalDate, useCount: 1 });
+      if (out.length >= limit) break;
+    }
+    return out;
+  },
+
+  // --- P8.5 Labels and message management ----------------------------------
+  label_rename: (args) => {
+    const label = labelOf(String(args.accountId), String(args.labelId));
+    const name = String(args.name).trim();
+    if (!name) throw { code: 'label_name_required', message: 'A label needs a name', retryable: false };
+    const clash = database().labels.find(
+      (l) =>
+        l.account_id === label.account_id && l.id !== label.id && l.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (clash) {
+      throw {
+        code: 'label_name_taken',
+        message: 'A label with that name already exists in this account',
+        retryable: false,
+      };
+    }
+    label.name = name;
+    afterMutation([label.account_id], []);
+    return label;
+  },
+  label_delete: (args) => {
+    const accountId = String(args.accountId);
+    const labelId = String(args.labelId);
+    const label = labelOf(accountId, labelId);
+    db.labels = database().labels.filter((l) => !(l.account_id === accountId && l.id === labelId));
+    // Organization only: the conversations and every other label stay.
+    for (const t of database().threads) {
+      if (t.accountId === accountId) t.labelIds = t.labelIds.filter((l) => l !== labelId);
+    }
+    for (const m of database().messages) {
+      if (m.accountId === accountId) m.labelIds = m.labelIds.filter((l) => l !== labelId);
+    }
+    void label;
+    afterMutation([accountId], []);
+    return null;
+  },
+  trash_empty_preview: (args) => ({
+    count: trashThreads((args.accountIds as string[]) ?? []).length,
+  }),
+  trash_empty: (args) => {
+    const accountIds = (args.accountIds as string[]) ?? [];
+    const targets = trashThreads(accountIds);
+    for (const t of targets) {
+      db.messages = database().messages.filter((m) => !(m.accountId === t.accountId && m.threadId === t.id));
+    }
+    db.threads = database().threads.filter(
+      (t) => !targets.some((x) => x.accountId === t.accountId && x.id === t.id),
+    );
+    afterMutation(
+      accountIds,
+      targets.map((t) => t.id),
+    );
+    return {
+      gestureId: `gesture-empty-${database().nextOpId++}`,
+      operations: targets.map((t) => gestureOp(t.accountId, 'Delete forever')),
+    };
+  },
+
+  // --- P9.3 Native utilities ------------------------------------------------
+  message_raw_export: (args) => {
+    const message = ownedMessage(String(args.accountId), String(args.messageId));
+    const path = `/tmp/sift-e2e/${message.id}.eml`;
+    savedPaths.push(path);
+    return { path };
+  },
+
+  // --- P10.4 Storage cap ----------------------------------------------------
+  storage_set_attachment_cap: (args) => {
+    attachmentCapBytes = Math.max(0, Number(args.bytes ?? 0));
+    return usageSnapshot();
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -1316,6 +1799,7 @@ export interface FixtureControl {
       subject: string;
       recipientSummary: string;
       errorMessage: string | null;
+      scheduledAt: number | null;
       payload?: string;
     }[];
     /** Force an operation into the state the drain loop would have produced. */
@@ -1337,6 +1821,21 @@ export interface FixtureControl {
     mutateThread: (accountId: string, threadId: string, patch: Partial<FixtureThread>) => void;
     injectNewMail: (accountId: string, id: string, subject: string) => void;
     reset: () => void;
+    /** Move the fixture clock and run due sends/reminders (P8.1/P8.2). */
+    advanceClock: (ms: number) => void;
+    clock: () => number;
+    reminders: () => ReminderDto[];
+    rules: () => FixtureRule[];
+    notifications: () => FixtureNotificationState;
+    setNotifications: (patch: Partial<FixtureNotificationState>) => void;
+    notificationsSent: () => {
+      accountId: string;
+      threadId: string;
+      subject: string | null;
+      hidden: boolean;
+    }[];
+    clickNotification: () => { accountId: string; threadId: string };
+    notifyBurst: (count: number, threadId: string) => { count: number; threadId: string };
   };
 }
 
@@ -1378,6 +1877,7 @@ export function installControl(): void {
           subject: o.subject,
           recipientSummary: o.recipientSummary,
           errorMessage: o.errorMessage,
+          scheduledAt: o.scheduledAt,
           payload: o.payload,
         })),
       /** Drive one operation to a state the drain loop would have produced. */
@@ -1495,6 +1995,82 @@ export function installControl(): void {
         };
         database().threads.push(t);
         afterMutation([accountId], [id]);
+        // The runtime notifies after the metadata commit, exactly once per
+        // message unless a burst was grouped (P8.4).
+        notifyThread(accountId, t);
+        emitBadge();
+      },
+      /**
+       * Move the fixture clock and run everything the runtime would run at that
+       * moment (P8.1/P8.2): due sends are claimed, due reminders are delivered
+       * or marked due. This is what makes "sleep across the due time" a real
+       * transition instead of a hand-waved assertion.
+       */
+      advanceClock: (ms) => {
+        setClock(clockSkew + ms);
+        const at = now();
+        for (const op of database().outbox) {
+          if (op.state !== 'pending' || op.notBefore > at) continue;
+          op.state = 'done';
+          op.completedAt = at;
+          const d = database().drafts.find((x) => x.localId === op.localId);
+          if (d) d.state = 'sent';
+          emitOutboxState(op.accountId);
+        }
+        for (const r of database().reminders) {
+          if (r.completedAt != null || r.remindAt > at) continue;
+          // Delivery is recorded before the notification is attempted (P8.2):
+          // a denied OS prompt leaves the reminder `due`, visible, not lost.
+          const cfg = database().notifications;
+          if (cfg.enabled && cfg.permission === 'granted' && cfg.filter !== 'off') {
+            r.deliveredAt = at;
+            r.state = 'delivered';
+          } else {
+            r.state = 'due';
+          }
+          emit('store:threads', { account_id: r.accountId, thread_ids: [r.threadId] });
+        }
+        persist();
+        emitBadge();
+      },
+      /** The clock the fixture currently reports, for assertions. */
+      clock: () => now(),
+      reminders: () =>
+        reminderRows(
+          database().accounts.map((a) => a.id),
+          true,
+        ),
+      rules: () => database().rules.map((r) => ({ ...r })),
+      notifications: () => ({ ...database().notifications }),
+      /** Patch the delivery policy the way the Settings panel does (P8.4). */
+      setNotifications: (patch) => Object.assign(database().notifications, patch),
+      /** Every `notify:new` the runtime emitted, in order (P8.4). */
+      notificationsSent: () => notifyLog.map((n) => ({ ...n })),
+      /**
+       * The user clicks the notification banner: the runtime focuses the window
+       * and tells the frontend which conversation to open.
+       */
+      clickNotification: () => {
+        if (!lastNotified) throw new Error('no_notification');
+        emit('nav:open-thread', { ...lastNotified });
+        return { ...lastNotified };
+      },
+      /** One grouped summary for a burst, the way the runtime coalesces it. */
+      notifyBurst: (count, threadId) => {
+        const accountId = database().accounts[0]?.id ?? ACCOUNT_A;
+        const t = findThread(accountId, threadId) ?? threadRows()[0];
+        if (!t) throw new Error('no_thread');
+        lastNotified = { accountId, threadId: t.id };
+        notifyLog.push({ accountId, threadId: t.id, subject: t.subject, hidden: false });
+        emit('notify:new', {
+          accountId,
+          threadId: t.id,
+          title: `${count} new messages`,
+          subject: null,
+          body: `${count} new messages in ${t.subject}`,
+          hidden: false,
+        });
+        return { count, threadId: t.id };
       },
       reset: () => {
         for (const k of Object.keys(delays)) delete delays[k];
@@ -1510,6 +2086,10 @@ export function installControl(): void {
         undoGroups = {};
         network = true;
         health = {};
+        setClock(0);
+        notifyLog.length = 0;
+        lastNotified = null;
+        attachmentCapBytes = 2 * 1024 * 1024 * 1024;
         try {
           window.localStorage.removeItem(FIXTURE_DB_KEY);
         } catch {

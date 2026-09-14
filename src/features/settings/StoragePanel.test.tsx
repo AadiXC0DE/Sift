@@ -17,6 +17,7 @@ function usageWith(attachmentBytes: number): StorageUsage {
     bodies: { bytes: 8 * MIB, items: 340 },
     attachments: { bytes: attachmentBytes, items: attachmentBytes > 0 ? 4 : 0 },
     draftCache: { bytes: 1.5 * MIB, items: 2 },
+    pinnedBytes: 0,
     attachmentCacheLimitBytes: 512 * MIB,
     totalBytes: 2 * MIB + 8 * MIB + attachmentBytes + 1.5 * MIB,
     computedAt: 1_700_000_000_000,

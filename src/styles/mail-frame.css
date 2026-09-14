@@ -34,6 +34,8 @@ body.sift-mail-light {
   background: #fff;
   color-scheme: light;
   --sift-mark: #dbe6ff;
+  /* The match find is sitting on (P9.3), one step stronger than the rest. */
+  --sift-mark-active: #ffd98a;
   --sift-quote: #666;
   --sift-quote-summary: #888;
 }
@@ -43,6 +45,8 @@ body.sift-mail-dark {
   background: #161615;
   color-scheme: dark;
   --sift-mark: #2b3a5c;
+  /* The match find is sitting on (P9.3), one step stronger than the rest. */
+  --sift-mark-active: #6b5a1f;
   --sift-quote: #b0b0aa;
   --sift-quote-summary: #8a8a85;
 }

@@ -9,6 +9,9 @@ import { Button } from '../../ui/Button';
 import { Kbd } from '../../ui/Kbd';
 import { defaultBindings } from '../../keymap/defaults';
 import { StoragePanel } from './StoragePanel';
+import { NotificationSettings } from '../notifications/NotificationSettings';
+import { VipPanel } from '../notifications/VipPanel';
+import { RulesPanel } from '../rules/RulesPanel';
 import { toast } from 'sonner';
 import type { Account } from '../../app/ipc/types';
 
@@ -156,12 +159,17 @@ export function SettingsDialog({
     'General',
     'Appearance',
     'Accounts',
-    'Shortcuts',
     'Notifications',
+    'VIPs',
+    'Rules',
+    'Shortcuts',
     'Privacy',
     'Storage',
     'Advanced',
   ];
+  // Per-account panels name the account by its address, never by an opaque id.
+  const accountIds = accounts.map((a) => a.id);
+  const accountNames = Object.fromEntries(accounts.map((a) => [a.id, a.email]));
 
   React.useEffect(() => {
     if (open) void refreshAccounts();
@@ -381,29 +389,16 @@ export function SettingsDialog({
               ))}
             </div>
           )}
+          {/*
+            Notifications are delivered by the native runtime (P8.4): this
+            panel writes the delivery policy the backend enforces, and the
+            frontend never posts a notification of its own. The legacy
+            `settings.notifications` value is not read here — two sources of
+            truth are what made the setting and the behavior disagree.
+          */}
           {tab === 'Notifications' && (
             <>
-              <Row label="New mail">
-                <Segmented
-                  value={settings.notifications as never}
-                  onChange={(v) => void set({ notifications: v })}
-                  options={[
-                    { value: 'inbox', label: 'Inbox only' },
-                    { value: 'everything', label: 'Everything' },
-                    { value: 'off', label: 'Off' },
-                  ]}
-                />
-              </Row>
-              <Row label="Sound">
-                <Segmented
-                  value={settings.sound as never}
-                  onChange={(v) => void set({ sound: v })}
-                  options={[
-                    { value: 'off', label: 'Off' },
-                    { value: 'subtle', label: 'Subtle' },
-                  ]}
-                />
-              </Row>
+              <NotificationSettings accountIds={accountIds} accountNames={accountNames} />
               <Row label="Dock badge">
                 <Segmented
                   value={settings.dockBadge as never}
@@ -416,6 +411,8 @@ export function SettingsDialog({
               </Row>
             </>
           )}
+          {tab === 'VIPs' && <VipPanel accountIds={accountIds} accountNames={accountNames} />}
+          {tab === 'Rules' && <RulesPanel accountIds={accountIds} accountNames={accountNames} />}
           {tab === 'Privacy' && (
             <>
               <Row label="Remote images">

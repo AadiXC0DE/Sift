@@ -89,6 +89,10 @@ export interface FixtureOutboxOp {
   recipientSummary: string;
   action: string;
   scheduledAt: number | null;
+  /** Exact intended local wall time `YYYY-MM-DDTHH:MM` for a scheduled send (P8.1). */
+  scheduledLocalTime?: string | null;
+  /** The IANA zone that wall time belongs to. */
+  scheduledTimezone?: string | null;
   retryAt: number | null;
   startedAt: number | null;
   completedAt: number | null;
@@ -113,6 +117,45 @@ export interface FixtureDb {
   settings: Settings;
   sync: SyncStatus[];
   nextOpId: number;
+  /** Local message reminders (P8.2): no provider label, no timestamp change. */
+  reminders: FixtureReminder[];
+  rules: FixtureRule[];
+  /** VIP addresses per account (P8.4). */
+  vips: Record<string, string[]>;
+  notifications: FixtureNotificationState;
+  nextRuleId: number;
+}
+
+export interface FixtureReminder {
+  accountId: string;
+  threadId: string;
+  remindAt: number;
+  completedAt: number | null;
+  deliveredAt: number | null;
+  /** `scheduled` | `due` (deadline passed, delivery unconfirmed) | `delivered`. */
+  state: 'scheduled' | 'due' | 'delivered';
+}
+
+export interface FixtureRule {
+  id: string;
+  accountId: string;
+  name: string;
+  enabled: boolean;
+  match: 'all' | 'any';
+  conditions: { field: string; op: string; value: string }[];
+  actions: { kind: string; labelId: string | null }[];
+  sortOrder: number;
+  revision: number;
+  lastError: string | null;
+}
+
+export interface FixtureNotificationState {
+  enabled: boolean;
+  permission: 'granted' | 'denied' | 'prompt' | 'unsupported';
+  filter: 'off' | 'inbox' | 'vip';
+  hideSubject: boolean;
+  sound: 'none' | 'native';
+  accountIds: string[];
 }
 
 const addr = (e: string, n?: string): Address => (n ? { e, n } : { e });
@@ -165,6 +208,7 @@ function label(
     unread_count,
     total_count,
     sort_order,
+    depth: 0,
   };
 }
 
@@ -657,6 +701,20 @@ export function seedDatabase(scenario: Scenario = 'default'): FixtureDb {
     settings: { ...defaultSettings },
     sync,
     nextOpId: 1,
+    reminders: [],
+    rules: [],
+    vips: {},
+    // Notifications start enabled and granted so a test has to opt into the
+    // denial path rather than silently covering it (P8.4).
+    notifications: {
+      enabled: true,
+      permission: 'granted',
+      filter: 'inbox',
+      hideSubject: false,
+      sound: 'native',
+      accountIds: [ACCOUNT_A, ACCOUNT_B],
+    },
+    nextRuleId: 1,
   };
 }
 

@@ -1,4 +1,4 @@
-import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Sidebar } from '../features/sidebar/Sidebar';
 import { ThreadList } from '../features/thread-list/ThreadList';
 import { ThreadView } from '../features/thread-view/ThreadView';
@@ -9,8 +9,14 @@ import { useAccounts } from '../stores/accountsStore';
 import { api } from './ipc/commands';
 import { on } from './ipc/events';
 import { useSync } from '../stores/syncStore';
+import { useSettings } from '../stores/settingsStore';
 import { useOutbox } from '../stores/outboxStore';
 import { ConnectivityStrip } from '../features/sync/ConnectivityStrip';
+import { SendLaterView } from '../features/send-later/SendLaterView';
+import { useScheduled } from '../features/send-later/scheduledStore';
+import { RemindersView } from '../features/reminders/RemindersView';
+import { useReminders } from '../features/reminders/remindersStore';
+import { useNotificationBridge } from '../features/notifications/bridge';
 import type { ConnectivityState, SyncStatus } from './ipc/types';
 import type { ComposeRequest } from '../features/compose/replyContext';
 import { engine } from '../keymap/engine';
@@ -60,6 +66,13 @@ export function App() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [addAccountOpen, setAddAccountOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState<ComposeRequest | null>(null);
+  /**
+   * The two Phase 8 panels that are not mailboxes (P8.1/P8.2). They are App
+   * state rather than `View` variants because neither is a provider view: Send
+   * Later reads the outbox and Reminders reads a local table, so neither
+   * belongs in the mailbox query or in the backend's view enum.
+   */
+  const [utility, setUtility] = useState<'send_later' | 'reminders' | null>(null);
   const [sidebarHidden, setSidebarHidden] = useState(false);
   // Lazy overlays mount on first open and stay mounted so their close
   // transitions still run; they are never parsed before the user asks.
@@ -70,6 +83,29 @@ export function App() {
   const accounts = useAccounts((s) => s.accounts);
   const included = useAccounts((s) => s.included);
   const scope = useView((s) => s.accountScope);
+  const view = useView((s) => s.view);
+  /**
+   * The accounts the Send Later and Reminders panels cover: the current account
+   * scope, minus any account the user excluded from the unified view (P8.1/P8.2).
+   */
+  const scopedIds = useMemo(
+    () => (scope === 'all' ? accounts.filter((a) => included[a.id] !== false).map((a) => a.id) : [scope]),
+    [scope, accounts, included],
+  );
+  const refreshScheduled = useScheduled((s) => s.refresh);
+  const refreshReminders = useReminders((s) => s.refresh);
+  useEffect(() => {
+    void refreshScheduled(scopedIds);
+  }, [scopedIds, refreshScheduled]);
+  useEffect(() => {
+    void refreshReminders(scopedIds);
+  }, [scopedIds, refreshReminders]);
+  // A mailbox view and a Phase 8 panel are alternatives: picking a mailbox
+  // leaves the panel, so the list is never ambiguous about what it shows.
+  const mailboxKey = `${view.kind}:${scope}`;
+  useEffect(() => {
+    setUtility(null);
+  }, [mailboxKey]);
 
   const refreshAccounts = useAccounts((s) => s.refresh);
   const setOpenThread = useView((s) => s.setOpenThread);
@@ -181,26 +217,12 @@ export function App() {
     })
       .then((u) => unsubs.push(u))
       .catch(() => {});
-    // Dock badge = unread inbox threads across included accounts.
-    on('store:labels', () => {
-      void (async () => {
-        try {
-          const accs = useAccounts.getState();
-          let total = 0;
-          for (const a of accs.accounts) {
-            if (accs.included[a.id] === false) continue;
-            const labels = await api.labels_list(a.id);
-            const inbox = labels.find((l) => l.id === 'INBOX');
-            total += inbox?.unread_count ?? 0;
-          }
-          await api.app_set_badge(total);
-        } catch {
-          /* offline */
-        }
-      })();
-    })
-      .then((u) => unsubs.push(u))
-      .catch(() => {});
+    // Dock badge (P8.4): the Rust runtime computes it once at startup and after
+    // each relevant commit, from the same unread-Inbox-thread query that feeds
+    // the UI, and announces it as `badge:update`. The frontend only applies the
+    // number it is told — recomputing it here from label events was the second
+    // source of truth that made the count disagree with the mailbox, and the
+    // notification bridge owns the subscription.
     // global keys not in inputs
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
@@ -342,14 +364,27 @@ export function App() {
       });
       // The panel is a live view of the queue, not a snapshot: a claim, a
       // failure or a completion must be visible without reopening it (P6.6).
-      if (useOutbox.getState().open) {
-        void useOutbox.getState().refresh(
-          useAccounts
-            .getState()
-            .accounts.filter((a) => useAccounts.getState().included[a.id] !== false)
-            .map((a) => a.id),
-        );
-      }
+      const ids = useAccounts
+        .getState()
+        .accounts.filter((a) => useAccounts.getState().included[a.id] !== false)
+        .map((a) => a.id);
+      if (useOutbox.getState().open) void useOutbox.getState().refresh(ids);
+      // A scheduled send is an outbox row, so the Send Later list and the
+      // sidebar count change with exactly the same event (P8.1).
+      void useScheduled.getState().refresh(ids);
+    })
+      .then((u) => unsubs.push(u))
+      .catch(() => {});
+    // Reminders change on sync as well as on the user's own edits (P8.2): the
+    // thread store event is the one that fires when a conversation or its
+    // reminder state moved.
+    on('store:threads', () => {
+      void useReminders.getState().refresh(
+        useAccounts
+          .getState()
+          .accounts.filter((a) => useAccounts.getState().included[a.id] !== false)
+          .map((a) => a.id),
+      );
     })
       .then((u) => unsubs.push(u))
       .catch(() => {});
@@ -458,8 +493,31 @@ export function App() {
 
   const paneOffOpen = layout === 'off' && openThread != null;
   const bottom = layout === 'bottom';
+  const utilityOpen = utility != null;
+  // A utility panel occupies the list column; the reader is not shown beside
+  // it, because neither panel is a conversation list (P8.1/P8.2).
   const showList = !paneOffOpen;
-  const showThread = layout !== 'off' || openThread != null;
+  const showThread = (layout !== 'off' || openThread != null) && !utilityOpen;
+
+  /**
+   * The OS notification click (P8.4). The payload is account-qualified, so the
+   * scope is set to that account *before* the thread opens: opening a thread
+   * whose account is not in scope would show it under the wrong account's
+   * header, or drop it entirely.
+   */
+  useNotificationBridge({
+    onOpenThread: (ref) => {
+      setUtility(null);
+      useView.getState().setScope(ref.accountId);
+      useView.getState().setOpenThread({ accountId: ref.accountId, threadId: ref.threadId });
+    },
+    onBadge: (count) => {
+      // The badge itself is Rust's number (P8.4); the only decision left here
+      // is the user's own on/off preference, which must stay meaningful.
+      const hidden = useSettings.getState().settings.dockBadge === 'off';
+      void api.app_set_badge(hidden ? 0 : count).catch(() => {});
+    },
+  });
 
   if (window.location.hash === '#/kitchen-sink') {
     return <KitchenSink />;
@@ -478,7 +536,15 @@ export function App() {
       }}
     >
       <div style={{ display: 'flex', flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }}>
-        {!sidebarHidden && <Sidebar onSettings={() => setSettingsOpen(true)} />}
+        {!sidebarHidden && (
+          <Sidebar
+            onSettings={() => setSettingsOpen(true)}
+            utility={utility}
+            onOpenUtility={(kind) => {
+              setUtility((cur) => (cur === kind ? null : kind));
+            }}
+          />
+        )}
         <div
           style={{
             display: 'flex',
@@ -526,12 +592,31 @@ export function App() {
                     setSettingsOpen(true);
                   }}
                 />
-                <ThreadList
-                  onCompose={() => setComposeOpen({ mode: 'new' })}
-                  onOpenDraft={(draft) =>
-                    setComposeOpen({ mode: draft.mode || 'new', draftId: draft.localId })
-                  }
-                />
+                {utility === 'send_later' ? (
+                  <SendLaterView
+                    accountIds={scopedIds}
+                    onEditDraft={(draft) => {
+                      setUtility(null);
+                      setComposeOpen({ mode: draft.mode || 'new', draftId: draft.localId });
+                    }}
+                  />
+                ) : utility === 'reminders' ? (
+                  <RemindersView
+                    accountIds={scopedIds}
+                    onOpenThread={(ref) => {
+                      setUtility(null);
+                      useView.getState().setScope(ref.accountId);
+                      setOpenThread({ accountId: ref.accountId, threadId: ref.threadId });
+                    }}
+                  />
+                ) : (
+                  <ThreadList
+                    onCompose={() => setComposeOpen({ mode: 'new' })}
+                    onOpenDraft={(draft) =>
+                      setComposeOpen({ mode: draft.mode || 'new', draftId: draft.localId })
+                    }
+                  />
+                )}
               </div>
             )}
             {showList && showThread && layout !== 'off' && (

@@ -5,7 +5,12 @@ import { useSync, outboxTotals } from '../../stores/syncStore';
 import { useOutbox } from '../../stores/outboxStore';
 import { OutboxPanel } from '../outbox/OutboxPanel';
 import { Popover } from '../../ui/Popover';
+import { Menu } from '../../ui/Menu';
+import { Dialog } from '../../ui/Dialog';
+import { Button } from '../../ui/Button';
 import { api } from '../../app/ipc/commands';
+import { utilities } from '../mail-utilities/ipc';
+import { readSiftError } from '../../lib/siftError';
 import type { Label } from '../../app/ipc/types';
 import { AccountSwitcher } from '../accounts/AccountSwitcher';
 import {
@@ -20,9 +25,14 @@ import {
   AlertTriangle,
   Trash2,
   Settings,
+  CalendarClock,
+  BellRing,
+  MoreHorizontal,
 } from 'lucide-react';
 import { useLabels } from '../../stores/labelsStore';
 import { COLOR_MIX_SUPPORTED } from '../../lib/css';
+import { useScheduled } from '../send-later/scheduledStore';
+import { useReminders } from '../reminders/remindersStore';
 
 const views = [
   { kind: 'inbox', label: 'Inbox', icon: Inbox },
@@ -38,11 +48,25 @@ const views = [
   { kind: 'trash', label: 'Trash', icon: Trash2 },
 ] as const;
 
-export function Sidebar({ onSettings }: { onSettings: () => void }) {
+export function Sidebar({
+  onSettings,
+  utility,
+  onOpenUtility,
+}: {
+  onSettings: () => void;
+  /** The open Phase 8 panel, so its row can read as the current page. */
+  utility: 'send_later' | 'reminders' | null;
+  onOpenUtility: (kind: 'send_later' | 'reminders') => void;
+}) {
   const view = useView((s) => s.view);
   const setView = useView((s) => s.setView);
   const accounts = useAccounts((s) => s.accounts);
   const scope = useView((s) => s.accountScope);
+  // Both rows are conditional on there being something to show (P8.1/P8.2):
+  // navigation to an always-empty panel would be a permanent dead end.
+  const scheduledCount = useScheduled((s) => s.items.length);
+  const reminders = useReminders((s) => s.rows);
+  const dueReminders = reminders.filter((r) => r.state === 'due').length;
   const [labels, setLabels] = useState<Label[]>([]);
   const [counts, setCounts] = useState<Record<string, { unread: number; total: number }>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
@@ -53,14 +77,14 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
     }
   });
 
-  useEffect(() => {
+  const loadLabels = React.useCallback(() => {
     const ids = scope === 'all' ? accounts.map((a) => a.id) : [scope];
     if (!ids.length) {
       setLabels([]);
       setCounts({});
       return;
     }
-    Promise.all(ids.map((id) => api.labels_list(id).catch(() => [] as Label[]))).then((all) => {
+    void Promise.all(ids.map((id) => api.labels_list(id).catch(() => [] as Label[]))).then((all) => {
       const merged = all.flat();
       setLabels(merged);
       for (const labels of all) {
@@ -76,6 +100,10 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
       setCounts(c);
     });
   }, [scope, accounts]);
+
+  useEffect(() => {
+    loadLabels();
+  }, [loadLabels]);
 
   const toggleCollapse = (name: string) => {
     setCollapsed((c) => {
@@ -140,43 +168,39 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
       <SyncProgress />
       <nav style={{ flex: 1, overflowY: 'auto', padding: '4px 8px' }} aria-label="Mailbox">
         {views.map((v) => {
-          const active = view.kind === v.kind;
           const Icon = v.icon;
           return (
-            <button
+            <NavRow
               key={v.kind}
+              icon={<Icon size={16} strokeWidth={1.5} />}
+              label={v.label}
+              count={countFor(v.kind)}
+              active={view.kind === v.kind && !utility}
               onClick={() => setView({ kind: v.kind } as never)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                width: '100%',
-                height: 30,
-                padding: '0 8px',
-                borderRadius: 'var(--r-md)',
-                border: 'none',
-                cursor: 'pointer',
-                background: active
-                  ? COLOR_MIX_SUPPORTED
-                    ? 'color-mix(in oklab, var(--accent) 12%, transparent)'
-                    : 'var(--bg-row-selected)'
-                  : undefined,
-                color: active ? 'var(--fg)' : 'var(--fg-2)',
-                fontSize: 13,
-              }}
-              className="hoverable"
-              aria-current={active ? 'page' : undefined}
-            >
-              <Icon size={16} strokeWidth={1.5} color={active ? 'var(--fg)' : 'var(--fg-3)'} />
-              <span style={{ flex: 1, textAlign: 'left' }}>{v.label}</span>
-              {countFor(v.kind) > 0 && (
-                <span className="num" style={{ fontSize: 11.5, color: 'var(--fg-2)' }}>
-                  {countFor(v.kind)}
-                </span>
-              )}
-            </button>
+            />
           );
         })}
+        {scheduledCount > 0 && (
+          <NavRow
+            icon={<CalendarClock size={16} strokeWidth={1.5} />}
+            label="Send Later"
+            count={scheduledCount}
+            active={utility === 'send_later'}
+            testId="nav-send-later"
+            onClick={() => onOpenUtility('send_later')}
+          />
+        )}
+        {reminders.length > 0 && (
+          <NavRow
+            icon={<BellRing size={16} strokeWidth={1.5} />}
+            label="Reminders"
+            count={reminders.length}
+            warn={dueReminders > 0}
+            active={utility === 'reminders'}
+            testId="nav-reminders"
+            onClick={() => onOpenUtility('reminders')}
+          />
+        )}
         <div
           style={{
             fontSize: 11,
@@ -193,6 +217,7 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
           collapsed={collapsed}
           onToggle={toggleCollapse}
           accountHints={accountHints}
+          onChanged={loadLabels}
         />
       </nav>
       <PendingFooter />
@@ -218,16 +243,77 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
   );
 }
 
+/**
+ * One mailbox-style navigation row (P8.1/P8.2). The Phase 8 panels reuse the
+ * mailbox rows so they read as views of their own rather than as actions, and
+ * so the active state, count and hover behavior stay identical.
+ */
+function NavRow({
+  icon,
+  label,
+  count,
+  active,
+  warn,
+  testId,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  count: number;
+  active: boolean;
+  /** Draws the count as a due/undelivered indicator rather than a total. */
+  warn?: boolean;
+  testId?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid={testId}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        width: '100%',
+        height: 30,
+        padding: '0 8px',
+        borderRadius: 'var(--r-md)',
+        border: 'none',
+        cursor: 'pointer',
+        background: active
+          ? COLOR_MIX_SUPPORTED
+            ? 'color-mix(in oklab, var(--accent) 12%, transparent)'
+            : 'var(--bg-row-selected)'
+          : undefined,
+        color: active ? 'var(--fg)' : 'var(--fg-2)',
+        fontSize: 13,
+      }}
+      className="hoverable"
+      aria-current={active ? 'page' : undefined}
+    >
+      <span style={{ display: 'inline-flex', color: active ? 'var(--fg)' : 'var(--fg-3)' }}>{icon}</span>
+      <span style={{ flex: 1, textAlign: 'left' }}>{label}</span>
+      {count > 0 && (
+        <span className="num" style={{ fontSize: 11.5, color: warn ? 'var(--warning)' : 'var(--fg-2)' }}>
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
 function LabelTree({
   labels,
   collapsed,
   onToggle,
   accountHints,
+  onChanged,
 }: {
   labels: Label[];
   collapsed: Record<string, boolean>;
   onToggle: (n: string) => void;
   accountHints: Record<string, string>;
+  onChanged: () => void;
 }) {
   const setView = useView((s) => s.setView);
   // nest by '/'
@@ -250,6 +336,7 @@ function LabelTree({
           key={keyOf(l)}
           label={l}
           hint={accountHints[keyOf(l)]}
+          onChanged={onChanged}
           onClick={() => setView({ kind: 'label', labelId: l.id })}
         />
       ))}
@@ -279,6 +366,7 @@ function LabelTree({
                   label={l}
                   hint={accountHints[keyOf(l)]}
                   short
+                  onChanged={onChanged}
                   onClick={() => setView({ kind: 'label', labelId: l.id })}
                 />
               </div>
@@ -294,84 +382,232 @@ function LabelRow({
   onClick,
   short,
   hint,
+  onChanged,
 }: {
   label: Label;
   onClick: () => void;
   short?: boolean;
   /** Account email, shown only when the same label name exists twice (P3.6). */
   hint?: string;
+  /** Re-reads this account's labels after a rename or a delete (P8.5). */
+  onChanged: () => void;
 }) {
   const view = useView((s) => s.view);
   const active = view.kind === 'label' && view.labelId === label.id;
   const name = short ? label.name.split('/').slice(1).join('/') : label.name;
   const title = hint ? `${label.name} — ${hint}` : label.name;
+  const [renaming, setRenaming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [draft, setDraft] = useState(label.name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const rename = async () => {
+    const next = draft.trim();
+    if (!next || next === label.name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await utilities.label_rename({ accountId: label.account_id, labelId: label.id, name: next });
+      setRenaming(false);
+      onChanged();
+    } catch (e) {
+      // The provider's refusal is the honest answer: a duplicate name, a
+      // system label, or an offline queue that could not be built.
+      setError(readSiftError(e).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await utilities.label_delete({ accountId: label.account_id, labelId: label.id });
+      setDeleting(false);
+      if (active) useView.getState().setView({ kind: 'inbox' });
+      onChanged();
+    } catch (e) {
+      setError(readSiftError(e).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      data-label-name={label.name}
-      data-account-id={label.account_id}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        width: '100%',
-        height: 28,
-        padding: '0 8px',
-        borderRadius: 'var(--r-md)',
-        border: 'none',
-        cursor: 'pointer',
-        background: active
-          ? COLOR_MIX_SUPPORTED
-            ? 'color-mix(in oklab, var(--accent) 12%, transparent)'
-            : 'var(--bg-row-selected)'
-          : undefined,
-        color: 'var(--fg-2)',
-        fontSize: 13,
-      }}
-      className="hoverable"
-    >
-      <span
+    <div className="sift-label-row" style={{ display: 'flex', alignItems: 'center' }}>
+      <button
+        onClick={onClick}
+        title={title}
+        data-label-name={label.name}
+        data-account-id={label.account_id}
         style={{
-          width: 8,
-          height: 8,
-          borderRadius: '50%',
-          background: label.color_bg ?? 'var(--accent)',
-          flexShrink: 0,
-        }}
-      />
-      <span
-        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
           flex: 1,
-          textAlign: 'left',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
+          minWidth: 0,
+          height: 28,
+          padding: '0 8px',
+          borderRadius: 'var(--r-md)',
+          border: 'none',
+          cursor: 'pointer',
+          background: active
+            ? COLOR_MIX_SUPPORTED
+              ? 'color-mix(in oklab, var(--accent) 12%, transparent)'
+              : 'var(--bg-row-selected)'
+            : undefined,
+          color: 'var(--fg-2)',
+          fontSize: 13,
         }}
+        className="hoverable"
       >
-        {name}
-      </span>
-      {hint && (
         <span
           style={{
-            fontSize: 11,
-            color: 'var(--fg-3)',
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            background: label.color_bg ?? 'var(--accent)',
             flexShrink: 0,
-            maxWidth: 96,
+          }}
+        />
+        <span
+          style={{
+            flex: 1,
+            textAlign: 'left',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
           }}
         >
-          {hint}
+          {name}
         </span>
-      )}
-      {label.unread_count > 0 && (
-        <span className="num" style={{ fontSize: 11.5 }}>
-          {label.unread_count}
-        </span>
-      )}
-    </button>
+        {hint && (
+          <span
+            style={{
+              fontSize: 11,
+              color: 'var(--fg-3)',
+              flexShrink: 0,
+              maxWidth: 96,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {hint}
+          </span>
+        )}
+        {label.unread_count > 0 && (
+          <span className="num" style={{ fontSize: 11.5 }}>
+            {label.unread_count}
+          </span>
+        )}
+      </button>
+      {/*
+        Rename and delete (P8.5). The trigger is a real focusable control, so it
+        is reachable by keyboard; the row reveals it on hover *or* focus-within
+        (P9.5).
+      */}
+      <span className="sift-label-actions">
+        <Menu
+          label={hint ? `${label.name} — ${hint}` : label.name}
+          trigger={
+            <button
+              aria-label={`Actions for label ${label.name}`}
+              data-testid={`label-menu-${label.account_id}-${label.id}`}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 22,
+                height: 22,
+                background: 'none',
+                border: 'none',
+                borderRadius: 5,
+                cursor: 'pointer',
+                color: 'var(--fg-3)',
+              }}
+            >
+              <MoreHorizontal size={14} />
+            </button>
+          }
+          items={[
+            {
+              label: 'Rename…',
+              action: () => {
+                setDraft(label.name);
+                setError(null);
+                setRenaming(true);
+              },
+            },
+            {
+              label: 'Delete label…',
+              danger: true,
+              action: () => {
+                setError(null);
+                setDeleting(true);
+              },
+            },
+          ]}
+        />
+      </span>
+      <Dialog open={renaming} onClose={() => setRenaming(false)} title="Rename label" width={400}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            aria-label="Label name"
+            data-testid="rename-label-input"
+            style={{
+              height: 32,
+              border: '1px solid var(--border-strong)',
+              borderRadius: 6,
+              padding: '0 10px',
+              background: 'var(--bg-raised)',
+              color: 'var(--fg)',
+            }}
+          />
+          <div style={{ fontSize: 12, color: 'var(--fg-3)' }}>
+            Nested labels use “/”, for example “Client Work/Invoices”.
+          </div>
+          {error && (
+            <div role="alert" style={{ fontSize: 12.5, color: 'var(--danger)' }}>
+              {error}
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button onClick={() => setRenaming(false)}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={busy || !draft.trim() || draft.trim() === label.name}
+              onClick={() => void rename()}
+            >
+              Rename
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+      <Dialog open={deleting} onClose={() => setDeleting(false)} title="Delete label" width={400}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 13 }}>
+            Delete “{label.name}”? This removes the label from its conversations and deletes nothing else: the
+            messages stay in All Mail and keep every other label.
+          </div>
+          {error && (
+            <div role="alert" style={{ fontSize: 12.5, color: 'var(--danger)' }}>
+              {error}
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button onClick={() => setDeleting(false)}>Cancel</Button>
+            <Button variant="danger" disabled={busy} onClick={() => void remove()}>
+              Delete label
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    </div>
   );
 }
 
