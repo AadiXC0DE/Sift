@@ -155,9 +155,10 @@ function verifyRemote(): void {
   if (local.problems.length > 0) fail(`local metadata failed verification:\n  - ${local.problems.join('\n  - ')}`);
   const expected = new Set([...local.files, 'SHA256SUMS']);
 
-  const release = ghJson(['release', 'view', tag, '--repo', repo, '--json', 'isDraft,assets']);
+  const release = ghJson(['release', 'view', tag, '--repo', repo, '--json', 'isDraft,tagName,assets']);
   if (typeof release !== 'object' || release === null) fail(`gh returned no release for ${tag}`);
-  const { isDraft, assets } = release as { isDraft?: unknown; assets?: unknown };
+  const { isDraft, tagName, assets } = release as { isDraft?: unknown; tagName?: unknown; assets?: unknown };
+  if (tagName !== tag) fail(`draft tag ${tagName} does not match ${tag}`);
   if (isDraft !== true) fail(`release ${tag} is not a draft; refusing to verify a published release in place`);
   if (!Array.isArray(assets)) fail(`release ${tag} has no asset list`);
 
@@ -166,7 +167,10 @@ function verifyRemote(): void {
     seen.add(asset.name);
     if (!expected.has(asset.name)) fail(`release ${tag} carries unexpected asset ${asset.name}`);
     if (asset.state !== 'uploaded') fail(`${asset.name} is in state ${asset.state}, not uploaded`);
-    const problem = urlProblem(asset.url, { repo, tag, name: asset.name });
+    // GitHub assigns temporary untagged-* download URLs until publication.
+    // Confirm the release tag above; still enforce the repository and filename.
+    const draftUrl = asset.url.replace(/(\/releases\/download\/)untagged-[a-f0-9]+\//, `$1${tag}/`);
+    const problem = urlProblem(draftUrl, { repo, tag, name: asset.name });
     if (problem) fail(`${asset.name}: ${problem}`);
   }
   for (const name of expected) {

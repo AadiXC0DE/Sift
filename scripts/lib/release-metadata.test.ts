@@ -177,9 +177,12 @@ describe('post-upload verification (draft release)', () => {
 
   const args = (out: string, config: string) => ['--verify-remote', '--out-dir', out, '--config', config, '--repo', REPO, '--tag', TAG];
 
-  it('accepts a draft whose uploaded bytes match SHA256SUMS', () => {
+  it.each(['tagged', 'untagged'])('accepts a %s draft whose uploaded bytes match SHA256SUMS', (format) => {
     const { fixture, out, files } = staged();
-    const stub = stubGh(fixture.dir, { isDraft: true, assets: releaseAssets(files) }, files);
+    const assets = releaseAssets(files).map(asset => ({ ...asset,
+      url: format === 'untagged' ? asset.url.replace(`/download/${TAG}/`, '/download/untagged-1f904d34ded62e050600/') : asset.url,
+    }));
+    const stub = stubGh(fixture.dir, { isDraft: true, tagName: TAG, assets }, files);
     const result = run(args(out, fixture.config), stub.env);
     expect(result.stderr).toBe('');
     expect(result.status).toBe(0);
@@ -189,7 +192,7 @@ describe('post-upload verification (draft release)', () => {
   it('rejects an uploaded asset whose bytes were truncated', () => {
     const { fixture, out, files } = staged();
     const truncated = { ...files, [ARCHIVE]: files[ARCHIVE].subarray(0, 16) };
-    const stub = stubGh(fixture.dir, { isDraft: true, assets: releaseAssets(truncated) }, truncated);
+    const stub = stubGh(fixture.dir, { isDraft: true, tagName: TAG, assets: releaseAssets(truncated) }, truncated);
     const result = run(args(out, fixture.config), stub.env);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('sha256');
@@ -197,7 +200,7 @@ describe('post-upload verification (draft release)', () => {
 
   it('refuses to verify a release that is already published', () => {
     const { fixture, out, files } = staged();
-    const stub = stubGh(fixture.dir, { isDraft: false, assets: releaseAssets(files) }, files);
+    const stub = stubGh(fixture.dir, { isDraft: false, tagName: TAG, assets: releaseAssets(files) }, files);
     const result = run(args(out, fixture.config), stub.env);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('not a draft');
@@ -206,7 +209,7 @@ describe('post-upload verification (draft release)', () => {
   it('rejects an unexpected asset on the release', () => {
     const { fixture, out, files } = staged();
     const assets = [...releaseAssets(files), { name: 'notes.txt', url: `https://github.com/${REPO}/releases/download/${TAG}/notes.txt`, state: 'uploaded', size: 1 }];
-    const stub = stubGh(fixture.dir, { isDraft: true, assets }, files);
+    const stub = stubGh(fixture.dir, { isDraft: true, tagName: TAG, assets }, files);
     const result = run(args(out, fixture.config), stub.env);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('unexpected asset');
