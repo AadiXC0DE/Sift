@@ -77,3 +77,10 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[profile.release]
+# Keep the native installer small without changing panic/recovery semantics.
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true

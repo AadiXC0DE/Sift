@@ -2,6 +2,9 @@
 
 ## v1.1.0 (2026-09-14)
 
+- Sync recipientless drafts without treating them as failed sends or connection failures.
+- Avoid startup IMAP lock inversion and drain queued changes before refreshing the mailbox.
+- Align composer buttons, keep connection warnings readable and remove the title-bar inset in full screen.
 - Preserve authored email body styles and size the reader when quoted content collapses.
 - Quieter account markers and aligned unread indicators without an extra blue focus stripe.
 - Settings → Updates: check, download, verify, install and restart with explicit controls.
