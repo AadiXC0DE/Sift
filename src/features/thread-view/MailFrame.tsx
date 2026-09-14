@@ -89,6 +89,8 @@ export function MailFrame({ messageId, html, allowed, darkSafe }: Props) {
     // local, never touches the network, and lets a cached body keep its CID
     // references instead of carrying base64 bytes through every IPC payload.
     const csp = `default-src 'none'; img-src data: blob: sift-att:${remote}; media-src data: blob: sift-att:${remote}; style-src 'unsafe-inline'${remote}; font-src data:${remote}; script-src 'nonce-${nonce}'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'`;
+    // Keep script bytes identical to mail-shim.js: the packaged app CSP allows
+    // that exact hash. Put per-frame secrets in attributes, never in the source.
     return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><style>${mailCss}</style></head><body class="sift-mail sift-mail-${surface}">${html ?? ''}<script nonce="${nonce}" data-token="${token}">${shimSource}</script></body></html>`;
   }, [allowed, html, nonce, token, surface]);
 

@@ -2,6 +2,7 @@
 import SiteLayout from '../layouts/SiteLayout.astro';
 import { RELEASES_PAGE, releaseState, releaseView } from '../lib/release';
 const release = releaseView(await releaseState(), 'macOS 13 or newer', 'Apple Silicon and Intel');
+const checksumHref = release.version ? `${RELEASES_PAGE}/download/${release.version}/SHA256SUMS` : `${RELEASES_PAGE}/latest/download/SHA256SUMS`;
 const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" width="15" height="15" aria-hidden="true" focusable="false"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>`;
 ---
 <SiteLayout title="Download" description="Download Sift for macOS: a native Gmail client with no bundled browser engine." path="/download">
@@ -23,6 +24,11 @@ const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"
 
   <div class="prose">
     {!release.published && <p class="metric-foot">{release.status}</p>}
+
+    <h2 id="homebrew">More of a Terminal person?</h2>
+    <p>With <a href="https://brew.sh">Homebrew</a> installed, one command downloads the verified release and puts Sift in Applications:</p>
+    <pre class="install-command"><code>brew install --cask aadixc0de/tap/sift</code></pre>
+    <p>Homebrew handles installation and checks the download’s checksum. Apple’s first-launch check still applies — follow the steps below if it appears.</p>
 
     <h2 id="first-launch">One tiny macOS detour.</h2>
     <p>Sift is a small indie app without Apple’s notarization stamp yet. The inbox is ready; the Apple paperwork isn’t. macOS may show “Apple could not verify Sift.app.” Here’s what to do.</p>
@@ -58,6 +64,7 @@ const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"
         </p>
       )
     }
+    <p><a href={checksumHref}>Download the published SHA256SUMS file</a> to compare with your installer.</p>
     <p>The release pipeline generates <code>SHA256SUMS</code> from the exact bytes it uploads, then re-downloads the uploaded file and verifies it while the release is still a draft. Nothing is published until that check passes, so the hash and the file cannot disagree.</p>
 
     <h2>Updates</h2>

@@ -253,3 +253,33 @@ The universal installer budget is 20 MiB as of 1.1.0. The verified CI artifact i
 Recovery run `34877290740` published `v1.1.0` after checking the retained installers from tagged run `34844819611`. Both arm64 and x86_64 binaries, app version, ad-hoc code signature, updater signature, staged and downloaded checksums, and rollback check passed. The release includes the universal DMG, signed updater archive, signature, `latest.json`, and `SHA256SUMS`.
 
 The universal DMG is 17,670,550 bytes. SHA-256: `1314c0ea66d84b760a7396204a97cdbc22116e15d259048122d051c2d3212e2f`. Apple notarization remains deferred. This post-publication commit also rebuilds the Vercel site so its build-time release lookup sees the published installer.
+
+## Packaged mail rendering regression (1.1.1)
+
+Mail `srcdoc` inherits the release document's CSP. Development alone cannot verify
+it: Tauri also augments that policy with script hashes and style nonces. The frame
+now uses an exact hash-approved static script, with its random token in an
+attribute. `scripts/check-mail-csp.mjs` fails the build if script bytes and the
+configured hash drift. Explicit style element/attribute directives preserve mail
+CSS under the augmented parent policy.
+
+`e2e/release-csp.spec.ts` exercises the release policy, message styling, full-height
+frames, quote expansion/collapse, and narrow widths. The release workflow runs
+this check before building installers. For 1.1.1 it also passed in Chromium,
+WebKit, and a native macOS WKWebView probe. The installed production app was
+visually checked against the previously broken GitHub notification: authored
+styling and a single outer reading-pane scrollbar were restored.
+
+## Homebrew distribution
+
+The public cask lives at `AadiXC0DE/homebrew-tap/Casks/sift.rb`; a checked-in copy
+is maintained at `Casks/sift.rb` here. After a release passes all artifact gates,
+update both copies with its exact version and verified DMG SHA-256. Never use
+`sha256 :no_check`. Install with `brew install --cask aadixc0de/tap/sift`.
+Homebrew installation does not notarize the app or guarantee a warning-free
+first launch. Keep the cask caveat and `/download#first-launch` instructions.
+
+If the Vercel release deploy hook is absent, trigger a site deployment after
+publication and verify that every live download CTA resolves to the new DMG,
+including with JavaScript disabled. The site resolves release metadata at build
+time.
