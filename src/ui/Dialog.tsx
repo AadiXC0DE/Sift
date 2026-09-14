@@ -35,12 +35,14 @@ export function Dialog({
             background: 'rgb(0 0 0 / .32)',
             position: 'fixed',
             inset: 0,
+            zIndex: 50,
             transition: 'opacity 200ms var(--ease-out)',
           }}
         />
         <BaseDialog.Popup
           style={{
             position: 'fixed',
+            zIndex: 51,
             top: '50%',
             left: '50%',
             transform: 'translate(-50%,-50%) scale(1)',

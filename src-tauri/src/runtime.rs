@@ -204,6 +204,11 @@ async fn spawn_account_loops(
     generation: u64,
     cancel: CancellationToken,
 ) {
+    // Fictional demo accounts have no credentials or remote mailbox. In
+    // particular, constructing their IDLE provider would falsely request reauth.
+    if crate::demo::is_demo() {
+        return;
+    }
     let state = app.state::<AppState>();
     macro_rules! spawn_loop {
         ($loops:ident) => {{
