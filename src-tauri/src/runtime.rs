@@ -60,14 +60,26 @@ impl RuntimeHost {
 /// account cancels that generation, and the next supervisor tick re-arms the
 /// account only if a newer, live generation exists (P4.4).
 pub fn spawn_supervisor(app: AppHandle) {
-    // Snooze watcher (global, cheap).
+    // Snooze watcher (global, cheap): the nearest deadline wakes it, and a
+    // 30 second fallback bounds how long a clock change or a DST jump can
+    // strand a due thread. It runs once immediately on startup, so a timer
+    // that expired while the app was closed is honoured at launch.
     let snooze_app = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(30)).await;
             if let Err(e) = check_snoozes(&snooze_app).await {
                 eprintln!("snooze watcher: {e}");
             }
+            let state = snooze_app.state::<AppState>();
+            let deadline = crate::snooze::next_deadline(&state.db)
+                .await
+                .ok()
+                .flatten();
+            let wait_ms = match deadline {
+                Some(when) => (when - crate::db::now_ms()).clamp(0, crate::snooze::WATCH_FALLBACK_MS),
+                None => crate::snooze::WATCH_FALLBACK_MS,
+            };
+            tokio::time::sleep(Duration::from_millis(wait_ms.max(50) as u64)).await;
         }
     });
 
@@ -217,6 +229,11 @@ async fn poll_loop(
 }
 
 /// Outbox drain loop.
+///
+/// It no longer relies on the poll interval alone (P6.6): a nudge arrives the
+/// moment something is queued or the network comes back, and the interval
+/// remains as the backstop for time-based work (a send's undo deadline, an
+/// uncertain send's reconciliation schedule).
 async fn drain_loop(
     state: &AppState,
     account_id: &str,
@@ -225,6 +242,7 @@ async fn drain_loop(
     host: &RuntimeHost,
 ) {
     loop {
+        let wake = state.outbox_wake(account_id).await;
         let mut worked = false;
         if !crate::demo::is_demo() && !state.network_paused(account_id) {
             if let Some(provider) = provider(state, account_id, cancel).await {
@@ -278,8 +296,11 @@ async fn drain_loop(
                 serde_json::json!({"account_id": account_id, "pending": n, "failed": failed, "summary": summary}),
             );
         }
-        if !sleep_or_cancel(cancel, if worked { 1 } else { 5 }).await {
-            return;
+        let interval = if worked { 1 } else { 5 };
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = wake.notified() => {}
+            _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
         }
     }
 }
@@ -427,6 +448,24 @@ async fn partial_tick(
             state.record_provider_ok(account_id);
             emit_store(host, account_id, &changed_threads).await;
             notify_new(&state.db, host, &new_inbox).await;
+            // A snoozed thread that received an incoming message is live
+            // again: wake it by the same policy as a due timer (P6.5).
+            let touched: Vec<String> = changed_threads
+                .iter()
+                .filter(|(a, _)| a == account_id)
+                .map(|(_, t)| t.clone())
+                .collect();
+            if let Ok(woken) =
+                crate::snooze::wake_threads_with_new_mail(&state.db, account_id, &touched).await
+            {
+                for thread in woken {
+                    state.kick_outbox(account_id).await;
+                    (host.emit)(
+                        "snooze:woke",
+                        serde_json::json!({"account_id": account_id, "thread_ids": [thread]}),
+                    );
+                }
+            }
         }
         Ok(PartialOutcome::NeedsFull) => {
             state.record_provider_ok(account_id);
@@ -483,6 +522,9 @@ pub async fn resume_account(app: &AppHandle, account_id: &str) {
         return;
     };
     let host = RuntimeHost::for_app(app);
+    // Reconnect is an explicit drain trigger (P6.6): queued work goes out
+    // immediately instead of waiting for the next poll interval.
+    state.kick_outbox(account_id).await;
     let coordinator = state.coordinator_for(account_id).await;
     coordinator
         .tick_now(|| partial_tick(&state, account_id, generation, &cancel, &*provider, &host))
@@ -621,9 +663,12 @@ async fn check_snoozes(app: &AppHandle) -> anyhow::Result<()> {
     let state = app.state::<AppState>();
     let host = RuntimeHost::for_app(app);
     let now = crate::db::now_ms();
-    let settings = state.db.settings_get().await.unwrap_or_default();
-    let due = crate::scheduler::process_overdue(&state.db, now).await?;
-    let mut live = Vec::with_capacity(due.len());
+    // The timer removal, the label change and the queued operation are one
+    // transaction per account, so a wake can never be half-applied (P6.5).
+    let due = crate::snooze::wake_due(&state.db, now)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let mut live: Vec<(String, String)> = Vec::with_capacity(due.len());
     for (aid, tid) in due {
         // A removed account must not get new rows or events from a wake-up.
         if state.is_cancelled(&aid).await {
@@ -631,48 +676,48 @@ async fn check_snoozes(app: &AppHandle) -> anyhow::Result<()> {
         }
         live.push((aid, tid));
     }
-    let due = live;
-    for (aid, tid) in &due {
-        // Restore INBOX (+UNREAD per setting) and enqueue the server op.
-        let mids: Vec<String> = state
-            .db
-            .read({
-                let (a, t) = (aid.clone(), tid.clone());
-                move |c| -> anyhow::Result<Vec<String>> {
-                    let mut s =
-                        c.prepare("SELECT id FROM messages WHERE account_id=? AND thread_id=?")?;
-                    let v: Vec<String> = s
-                        .query_map(rusqlite::params![a, t], |r| r.get(0))?
-                        .collect::<Result<Vec<String>, rusqlite::Error>>()?;
-                    Ok(v)
-                }
-            })
-            .await?;
-        for mid in &mids {
-            let mut add = vec!["INBOX".to_string()];
-            if settings.wake_snoozed_unread {
-                add.push("UNREAD".to_string());
-            }
-            let _ = state
-                .db
-                .apply_label_change(&crate::dto::MessageRef::new(aid.clone(), mid.clone()), &add, &[])
-                .await;
-        }
-        let payload = serde_json::json!({"ids": mids, "add": ["INBOX"], "remove": []}).to_string();
-        let _ = state
-            .db
-            .outbox_enqueue(aid, "modify_labels", &payload, None, 0)
-            .await;
-        emit_store(&host, aid, &[(aid.clone(), tid.clone())]).await;
+    for (aid, _) in &live {
+        state.kick_outbox(aid).await;
     }
-    if !due.is_empty() {
-        let tids: Vec<String> = due.iter().map(|(_, t)| t.clone()).collect();
-        (host.emit)(
-            "snooze:woke",
-            serde_json::json!({"account_id": due[0].0, "thread_ids": tids}),
-        );
+    if !live.is_empty() {
+        let mut by_account: HashMap<String, Vec<String>> = HashMap::new();
+        for (aid, tid) in &live {
+            by_account.entry(aid.clone()).or_default().push(tid.clone());
+        }
+        for (aid, tids) in by_account {
+            emit_store(&host, &aid, &tids.iter().map(|t| (aid.clone(), t.clone())).collect::<Vec<_>>())
+                .await;
+            (host.emit)(
+                "snooze:woke",
+                serde_json::json!({"account_id": aid, "thread_ids": tids}),
+            );
+        }
     }
     Ok(())
+}
+
+/// Weekly maintenance (P6.6): finished operations lose their payload after
+/// seven days, sent drafts lose their recovery copy after the same window.
+/// Pending, failed, uncertain and scheduled work is never touched.
+pub async fn prune_finished_work(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let files = state
+        .db
+        .outbox_prune(crate::db::outbox::OP_PAYLOAD_RETENTION_MS)
+        .await
+        .unwrap_or_default();
+    for path in files {
+        let _ = tokio::fs::remove_file(path).await;
+    }
+    let pruned = state
+        .db
+        .drafts_prune_sent(crate::db::outbox::OP_PAYLOAD_RETENTION_MS)
+        .await
+        .unwrap_or_default();
+    for local_id in pruned {
+        let dir = crate::outgoing::draft_send_dir(&state.data_dir, &local_id);
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
 }
 
 #[cfg(test)]

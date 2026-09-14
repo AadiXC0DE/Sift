@@ -19,6 +19,10 @@ thread_id,in_reply_to_message_id,rfc_message_id,parent_rfc_message_id,references
 to_json,cc_json,bcc_json,subject,body_html,attachments_json,revision,saved_revision,\
 remote_revision,state,not_before,scheduled_at,scheduled_timezone,scheduled_local_time,updated_at";
 
+/// Draft rows in this state are finished: they exist only as the recovery
+/// copy an acknowledged send leaves behind.
+const SENT_STATE: &str = crate::dto::DRAFT_STATE_SENT;
+
 /// Page size ceiling from appendix A: `drafts_list` never returns more than
 /// this, whatever the caller asks for.
 pub const DRAFTS_PAGE_MAX: i64 = 100;
@@ -26,6 +30,76 @@ const DRAFTS_PAGE_DEFAULT: i64 = 50;
 
 fn json_vec<T: serde::de::DeserializeOwned>(s: String) -> Vec<T> {
     serde_json::from_str(&s).unwrap_or_default()
+}
+
+/// Outcome of Undo Send (P6.2).
+///
+/// `TooLate` carries the state the operation actually reached, so the composer
+/// can say what happened ("Sift handed this to Gmail") instead of a generic
+/// refusal — and never promises that nothing was sent.
+#[derive(Debug, Clone)]
+pub enum SendCancel {
+    Cancelled(Box<Draft>),
+    TooLate { state: String },
+}
+
+/// A privacy-safe recipient summary for the Outbox panel: the first display
+/// name (or address) plus a count, never the message.
+fn summarize_recipients(recipients: &[serde_json::Value]) -> String {
+    let first = recipients.first().and_then(|r| {
+        r.get("name")
+            .and_then(|n| n.as_str())
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| r.get("email").and_then(|e| e.as_str()))
+    });
+    let total = recipients.len();
+    match (first, total) {
+        (Some(name), 1) => name.to_string(),
+        (Some(name), n) => format!("{name} +{}", n - 1),
+        (None, 0) => String::new(),
+        (None, n) => format!("{n} recipients"),
+    }
+}
+
+/// The prior label membership of every message in a thread, captured before a
+/// gesture changes it: the exact values an Undo restores (P6.3).
+pub(crate) fn capture_thread_state(
+    tx: &rusqlite::Transaction<'_>,
+    account_id: &str,
+    thread_id: &str,
+) -> Result<(Vec<String>, Option<String>)> {
+    let mut ids: Vec<String> = vec![];
+    let mut messages: Vec<serde_json::Value> = vec![];
+    let mut st = tx.prepare(
+        "SELECT id,label_ids,is_unread,is_starred FROM messages \
+         WHERE account_id=? AND thread_id=? ORDER BY id",
+    )?;
+    let rows = st
+        .query_map(params![account_id, thread_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)? != 0,
+                r.get::<_, i64>(3)? != 0,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (id, labels, unread, starred) in rows {
+        let labels: Vec<String> = serde_json::from_str(&labels).unwrap_or_default();
+        messages.push(serde_json::json!({
+            "id": id,
+            "labels": labels,
+            "unread": unread,
+            "starred": starred,
+        }));
+        ids.push(id);
+    }
+    let previous = if messages.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({ "messages": messages }).to_string())
+    };
+    Ok((ids, previous))
 }
 
 fn row_to_draft(r: &rusqlite::Row) -> rusqlite::Result<Draft> {
@@ -314,15 +388,51 @@ impl Db {
                         .clone()
                         .or(current.scheduled_local_time.clone());
                     if current.state == crate::dto::DRAFT_STATE_QUEUED {
-                        // Editing a queued draft returns it to the composer and
-                        // cancels the send it was queued for (P6.2 re-queues).
+                        // Editing a queued draft must not rewrite the frozen
+                        // payload (P6.2): the pending send is cancelled first,
+                        // then this edit becomes a new revision. An operation
+                        // that already left `pending` cannot be taken back, so
+                        // the edit is refused with the honest state instead.
+                        let send: Option<(i64, String)> = tx
+                            .query_row(
+                                "SELECT id,state FROM outbox_ops WHERE kind='send' \
+                                 AND draft_id=? AND draft_revision=? \
+                                 ORDER BY id DESC LIMIT 1",
+                                params![row.local_id, current.revision],
+                                |r| Ok((r.get(0)?, r.get(1)?)),
+                            )
+                            .optional()?;
+                        if let Some((op_id, state)) = send {
+                            if !matches!(
+                                state.as_str(),
+                                crate::db::outbox::STATE_PENDING
+                                    | crate::db::outbox::STATE_CANCELLED
+                                    | crate::db::outbox::STATE_FAILED
+                            ) {
+                                return Err(crate::errors::SiftError::typed(
+                                    "draft_queued",
+                                    "This message is already on its way. Sift will not change what it is sending.",
+                                    serde_json::json!({"opId": op_id, "state": state}),
+                                )
+                                .into());
+                            }
+                            if state == crate::db::outbox::STATE_PENDING {
+                                tx.execute(
+                                    "UPDATE outbox_ops SET state='cancelled', completed_at=?1, \
+                                       failure_code='superseded_by_edit', operation_key=NULL \
+                                     WHERE id=?2 AND state='pending'",
+                                    params![now, op_id],
+                                )?;
+                                tx.execute(
+                                    "UPDATE outbox_ops SET state='cancelled', completed_at=?1, \
+                                       failure_code='dependency_failed' \
+                                     WHERE depends_on_op_id=?2 AND state='pending'",
+                                    params![now, op_id],
+                                )?;
+                            }
+                        }
                         row.state = crate::dto::DRAFT_STATE_EDITING.to_string();
                         row.not_before = None;
-                        tx.execute(
-                            "UPDATE outbox_ops SET state='cancelled' WHERE kind='send' \
-                             AND state='pending' AND json_extract(payload,'$.localId')=?",
-                            params![row.local_id],
-                        )?;
                     } else {
                         row.state = current.state.clone();
                         row.not_before = current.not_before;
@@ -408,7 +518,9 @@ impl Db {
         let accounts = account_ids.to_vec();
         let cursor = cursor.map(|s| s.to_string());
         self.read(move |c| {
-            let mut sql = format!("SELECT {COLS} FROM drafts WHERE 1=1");
+            // A sent draft is a seven-day recovery copy, not a draft: it must
+            // never reappear in the Drafts view (P6.2).
+            let mut sql = format!("SELECT {COLS} FROM drafts WHERE state<>'{SENT_STATE}'");
             if !accounts.is_empty() {
                 let ph = vec!["?"; accounts.len()].join(",");
                 sql.push_str(&format!(" AND account_id IN ({ph})"));
@@ -564,11 +676,15 @@ impl Db {
 
     /// Queue a prepared send.
     ///
-    /// One transaction: the operation and the draft's `queued` state land
-    /// together, so a crash can never leave a frozen revision with no
-    /// operation (or an operation whose draft is still editable). The draft
-    /// row itself is kept — an undo has to reopen the real draft, and only an
-    /// acknowledged send may remove it (P6.2).
+    /// One transaction: the operation, the draft's `queued` state and — for
+    /// Send & Archive — the dependent label operation all land together, so a
+    /// crash can never leave a frozen revision with no operation, an operation
+    /// whose draft is still editable, or an archive that could run before its
+    /// send.
+    ///
+    /// The operation key is `send:<draft>:<frozen revision>`: a second Send
+    /// click for the same revision reuses the operation instead of queueing a
+    /// duplicate, and a send that supersedes it must address a new revision.
     pub async fn drafts_enqueue_send(
         &self,
         prepared: &crate::outgoing::PreparedSend,
@@ -578,6 +694,42 @@ impl Db {
         let p = prepared.clone();
         self.write(move |c| {
             let tx = c.unchecked_transaction()?;
+            let key = crate::outbox::send_operation_key(&p.draft_id, p.revision);
+            // Double Send: the operation already exists and owns this revision.
+            let existing: Option<(i64, i64, String)> = tx
+                .query_row(
+                    "SELECT id,not_before,state FROM outbox_ops WHERE operation_key=?",
+                    params![key],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            if let Some((id, not_before, state)) = existing {
+                if crate::db::outbox::STATE_CANCELLED != state {
+                    return Ok(crate::dto::SendHandle {
+                        op_id: id,
+                        not_before,
+                    });
+                }
+                // A cancelled attempt released its key (an Undo returns the
+                // draft to editing); this Send is a fresh operation.
+                tx.execute(
+                    "UPDATE outbox_ops SET operation_key=NULL WHERE id=?",
+                    params![id],
+                )?;
+            }
+            // The frozen content: subject and a privacy-safe recipient summary
+            // for the Outbox panel, never the message itself.
+            let (subject, to_json): (String, String) = tx
+                .query_row(
+                    "SELECT subject,to_json FROM drafts WHERE local_id=?",
+                    params![p.draft_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .unwrap_or_default();
+            let recipients: Vec<serde_json::Value> =
+                serde_json::from_str(&to_json).unwrap_or_default();
+            let recipient_summary = summarize_recipients(&recipients);
             let changed = tx.execute(
                 "UPDATE drafts SET state=?, not_before=?, rfc_message_id=? \
                  WHERE local_id=? AND revision=?",
@@ -600,9 +752,10 @@ impl Db {
             // The send already carries the newest content; a pending remote
             // draft sync would only publish an older revision.
             tx.execute(
-                "UPDATE outbox_ops SET state='cancelled' WHERE account_id=? AND kind='draft_sync' \
-                 AND state IN ('pending','inflight') AND json_extract(payload,'$.localId')=?",
-                params![p.account_id, p.draft_id],
+                "UPDATE outbox_ops SET state='cancelled', completed_at=?1, failure_code='superseded_by_send' \
+                 WHERE account_id=?2 AND kind='draft_sync' \
+                 AND state IN ('pending','inflight') AND json_extract(payload,'$.localId')=?3",
+                params![super::now_ms(), p.account_id, p.draft_id],
             )?;
             let payload = serde_json::json!({
                 "localId": p.draft_id,
@@ -614,15 +767,57 @@ impl Db {
                 "bccRecipients": p.bcc_recipients,
                 "rfcMessageId": p.rfc_message_id,
                 "threadId": p.thread_id,
+                "recipientSummary": recipient_summary,
+                "subject": subject,
                 "archiveAfterSend": archive_after_send,
             })
             .to_string();
             tx.execute(
-                "INSERT INTO outbox_ops (account_id,kind,payload,not_before,created_at) \
-                 VALUES (?, 'send', ?, ?, ?)",
-                params![p.account_id, payload, not_before, super::now_ms()],
+                "INSERT INTO outbox_ops (account_id,kind,payload,not_before,created_at,\
+                   operation_key,draft_id,draft_revision,rfc_message_id,summary_action,\
+                   summary_recipient,summary_subject) \
+                 VALUES (?, 'send', ?, ?, ?, ?, ?, ?, ?, 'Sending', ?, ?)",
+                params![
+                    p.account_id,
+                    payload,
+                    not_before,
+                    super::now_ms(),
+                    key,
+                    p.draft_id,
+                    p.revision,
+                    p.rfc_message_id,
+                    recipient_summary,
+                    subject
+                ],
             )?;
             let op_id = tx.last_insert_rowid();
+            // Send & Archive: a dependent label operation that only becomes
+            // runnable once the send is done (P6.2).
+            if archive_after_send {
+                if let Some(thread_id) = p.thread_id.clone() {
+                    let (ids, previous) =
+                        capture_thread_state(&tx, &p.account_id, &thread_id)?;
+                    if !ids.is_empty() {
+                        let payload = serde_json::json!({
+                            "ids": ids, "add": [], "remove": ["INBOX"],
+                        })
+                        .to_string();
+                        tx.execute(
+                            "INSERT INTO outbox_ops (account_id,kind,payload,state,attempts,not_before,created_at,\
+                               operation_key,depends_on_op_id,previous_state_json,summary_action) \
+                             VALUES (?, 'modify_labels', ?, 'pending', 0, 0, ?, ?, ?, ?, 'Archiving')",
+                            params![
+                                p.account_id,
+                                payload,
+                                super::now_ms(),
+                                crate::outbox::archive_operation_key(&p.draft_id, p.revision),
+                                op_id,
+                                previous
+                            ],
+                        )?;
+                    }
+                }
+            }
             tx.commit()?;
             Ok(crate::dto::SendHandle { op_id, not_before })
         })
@@ -633,6 +828,17 @@ impl Db {
     /// operation already left `pending` — the caller must not claim the mail
     /// was unsent.
     pub async fn drafts_cancel_send(&self, op_id: i64) -> Result<Option<Draft>> {
+        Ok(match self.drafts_cancel_send_detailed(op_id).await? {
+            SendCancel::Cancelled(draft) => Some(*draft),
+            SendCancel::TooLate { .. } => None,
+        })
+    }
+
+    /// Undo Send with the honest state of the operation when it is too late
+    /// (P6.2). The conditional `pending -> cancelled` update is the winner: a
+    /// claim that landed first wins, and the caller is told which state it
+    /// lost to instead of a bare failure.
+    pub async fn drafts_cancel_send_detailed(&self, op_id: i64) -> Result<SendCancel> {
         self.write(move |c| {
             let tx = c.unchecked_transaction()?;
             let row: Option<(String, String)> = tx
@@ -643,14 +849,32 @@ impl Db {
                 )
                 .optional()?;
             let Some((state, payload)) = row else {
-                return Ok(None);
+                return Ok(SendCancel::TooLate {
+                    state: "missing".into(),
+                });
             };
-            if state != "pending" {
-                return Ok(None);
+            if state != crate::db::outbox::STATE_PENDING {
+                return Ok(SendCancel::TooLate { state });
             }
+            let changed = tx.execute(
+                "UPDATE outbox_ops SET state='cancelled', completed_at=?1, failure_code='undone', \
+                   operation_key=NULL WHERE id=?2 AND state=?3",
+                params![super::now_ms(), op_id, crate::db::outbox::STATE_PENDING],
+            )?;
+            if changed == 0 {
+                let state: String = tx.query_row(
+                    "SELECT state FROM outbox_ops WHERE id=?",
+                    params![op_id],
+                    |r| r.get(0),
+                )?;
+                return Ok(SendCancel::TooLate { state });
+            }
+            // The archive that waited on this send can never run now.
             tx.execute(
-                "UPDATE outbox_ops SET state='cancelled' WHERE id=?",
-                params![op_id],
+                "UPDATE outbox_ops SET state='cancelled', completed_at=?1, \
+                   failure_code='dependency_failed' \
+                 WHERE depends_on_op_id=?2 AND state='pending'",
+                params![super::now_ms(), op_id],
             )?;
             let payload: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
             let local_id = payload["localId"].as_str().unwrap_or_default().to_string();
@@ -664,9 +888,42 @@ impl Db {
                     params![local_id],
                     row_to_draft,
                 )
-                .optional()?;
+                .optional()?
+                .ok_or_else(|| anyhow::anyhow!("the draft of operation {op_id} is gone"))?;
             tx.commit()?;
-            Ok(draft)
+            Ok(SendCancel::Cancelled(Box::new(draft)))
+        })
+        .await
+    }
+
+    /// The send was accepted (or reconciled as accepted): the draft's content
+    /// stays for the seven-day recovery window, and the row is terminal so it
+    /// can no longer be queued or edited as an unsent draft (P6.2).
+    pub async fn drafts_mark_sent(&self, local_id: &str, revision: i64) -> Result<()> {
+        let l = local_id.to_string();
+        self.write(move |c| {
+            c.execute(
+                "UPDATE drafts SET state=?, not_before=NULL WHERE local_id=? AND revision=?",
+                params![crate::dto::DRAFT_STATE_SENT, l, revision],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Sent drafts past their recovery window, oldest first. The caller
+    /// removes the staged files and the frozen MIME of each returned id.
+    pub async fn drafts_prune_sent(&self, retention_ms: i64) -> Result<Vec<String>> {
+        self.write(move |c| {
+            let cutoff = super::now_ms() - retention_ms;
+            let ids: Vec<String> = c
+                .prepare("SELECT local_id FROM drafts WHERE state=?1 AND updated_at < ?2")?
+                .query_map(params![crate::dto::DRAFT_STATE_SENT, cutoff], |r| r.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            for id in &ids {
+                c.execute("DELETE FROM drafts WHERE local_id=?", params![id])?;
+            }
+            Ok(ids)
         })
         .await
     }

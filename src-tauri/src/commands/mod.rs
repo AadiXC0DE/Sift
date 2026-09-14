@@ -3,6 +3,7 @@ pub mod actions;
 pub mod attachments;
 pub mod compose;
 pub mod demo;
+pub mod outbox;
 pub mod search;
 pub mod settings;
 pub mod storage;

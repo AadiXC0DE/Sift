@@ -12,6 +12,7 @@ pub fn row_to_account(r: &rusqlite::Row) -> rusqlite::Result<Account> {
         avatar_url: r.get("avatar_url")?,
         color: r.get("color")?,
         auth_kind: r.get("auth_kind").unwrap_or_else(|_| "oauth".to_string()),
+        granted_scope: r.get("granted_scope").unwrap_or(None),
         history_id: r.get("history_id")?,
         sync_state: r.get("sync_state")?,
         last_sync_at: r.get("last_sync_at")?,
@@ -35,8 +36,8 @@ impl Db {
     pub async fn accounts_insert(&self, a: &Account) -> Result<()> {
         let a = a.clone();
         self.write(move |c| {
-      c.execute("INSERT OR REPLACE INTO accounts (id,provider,email,display_name,avatar_url,color,auth_kind,history_id,sync_state,last_sync_at,created_at,sort_order,signature_html) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        params![a.id,a.provider,a.email,a.display_name,a.avatar_url,a.color,a.auth_kind,a.history_id,a.sync_state,a.last_sync_at,a.created_at,a.sort_order,a.signature_html])?;
+      c.execute("INSERT OR REPLACE INTO accounts (id,provider,email,display_name,avatar_url,color,auth_kind,history_id,sync_state,last_sync_at,created_at,sort_order,signature_html,granted_scope) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        params![a.id,a.provider,a.email,a.display_name,a.avatar_url,a.color,a.auth_kind,a.history_id,a.sync_state,a.last_sync_at,a.created_at,a.sort_order,a.signature_html,a.granted_scope])?;
       Ok(())
     }).await
     }
@@ -138,6 +139,24 @@ impl Db {
         })
         .await
     }
+    /// Record the scope the provider actually granted (P6.4). Written at
+    /// sign-in and refreshed whenever a token is exchanged, so the deletion
+    /// gate never relies on what Sift asked for.
+    pub async fn accounts_set_scope(&self, id: &str, scope: Option<&str>) -> Result<()> {
+        let (i, s) = (id.to_string(), scope.map(|s| s.to_string()));
+        self.write(move |c| {
+            if s.is_none() {
+                return Ok(());
+            }
+            c.execute(
+                "UPDATE accounts SET granted_scope=? WHERE id=?",
+                params![s, i],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn accounts_set_auth_kind(&self, id: &str, kind: &str) -> Result<()> {
         let (i, k) = (id.to_string(), kind.to_string());
         self.write(move |c| {
@@ -182,6 +201,7 @@ impl Db {
             avatar_url: avatar,
             color: "blue".into(),
             auth_kind: "oauth".into(),
+            granted_scope: None,
             history_id: None,
             sync_state: "new".into(),
             last_sync_at: None,

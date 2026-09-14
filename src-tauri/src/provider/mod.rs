@@ -671,7 +671,23 @@ pub trait Provider: Send + Sync {
     /// header before DATA because the envelope already carries those
     /// recipients ([`SendRequest::bcc_count`] is what the check compares
     /// against).
+    ///
+    /// A transport that loses contact after the message may have been
+    /// submitted returns an error carrying the code `send_uncertain`: the
+    /// outbox turns that into `uncertain` and never resubmits (P6.1).
     async fn send(&self, req: &SendRequest) -> Result<SentInfo, SiftError>;
+
+    /// Did the provider accept a message carrying this stable RFC Message-ID?
+    ///
+    /// This is how an `uncertain` send is reconciled (P6.1). The default is
+    /// "unknown": a transport that cannot answer leaves the operation
+    /// uncertain rather than claiming an outcome it cannot prove.
+    async fn sent_by_rfc_message_id(
+        &self,
+        _rfc_message_id: &str,
+    ) -> Result<Option<SentInfo>, SiftError> {
+        Ok(None)
+    }
     /// Upsert the remote copy of a draft and return its identity: the remote
     /// draft id plus, where the transport knows it, the message id the copy
     /// carries locally.

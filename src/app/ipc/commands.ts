@@ -6,6 +6,7 @@ import type {
   AttachmentRefKey,
   ConnectivityState,
   ComposeLimits,
+  OperationState,
   Contact,
   Draft,
   DraftPage,
@@ -18,7 +19,11 @@ import type {
   Settings,
   StorageUsage,
   SyncStatus,
-  ThreadAction,
+  ActionKind,
+  GestureResponse,
+  GestureTarget,
+  OutboxOp,
+  OutboxPage,
   ThreadDetail,
   ThreadsPage,
   ThreadsQuery,
@@ -40,11 +45,7 @@ export const api = {
   accounts_add_google: (login_hint?: string) =>
     call<Account>('accounts_add_google', { loginHint: login_hint }),
   accounts_probe_email: (email: string) => call<boolean | null>('accounts_probe_email', { email }),
-  accounts_add_app_password: (
-    email: string,
-    appPassword: string,
-    onProgress: (p: SetupProgress) => void,
-  ) => {
+  accounts_add_app_password: (email: string, appPassword: string, onProgress: (p: SetupProgress) => void) => {
     // new Channel() touches Tauri internals synchronously and throws in a
     // plain browser (e2e, previews). Fall back to no progress channel so the
     // failure surfaces as an async rejection the wizard can render.
@@ -64,8 +65,7 @@ export const api = {
   accounts_update_app_password: (id: string, appPassword: string) =>
     call<Account>('accounts_update_app_password', { id, appPassword }),
   accounts_remove: (id: string) => call<void>('accounts_remove', { id }),
-  accounts_removal_preview: (id: string) =>
-    call<RemovalCounts>('accounts_removal_preview', { id }),
+  accounts_removal_preview: (id: string) => call<RemovalCounts>('accounts_removal_preview', { id }),
   accounts_update: (p: Record<string, unknown>) => call<Account>('accounts_update', p),
   system_info: () => call<{ version: string; oauth_available: boolean; demo: boolean }>('system_info'),
   sync_now: (account_id?: string) => call<void>('sync_now', { accountId: account_id }),
@@ -89,29 +89,37 @@ export const api = {
     call<MessageBody>('message_body', { accountId: account_id, messageId: message_id }),
   message_raw_source: (account_id: string, message_id: string) =>
     call<string>('message_raw_source', { accountId: account_id, messageId: message_id }),
-  threads_action: (a: ThreadAction) => call<{ undo_group: string }>('threads_action', { req: a }),
-  action_undo: (undo_group: string) => call<void>('action_undo', { undoGroup: undo_group }),
-  snooze_set: (account_id: string, thread_ids: string[], wake_at: number) =>
-    call<{ undo_group: string }>('snooze_set', {
-      accountId: account_id,
-      threadIds: thread_ids,
-      wakeAt: wake_at,
-    }),
-  snooze_clear: (account_id: string, thread_ids: string[]) =>
-    call<void>('snooze_clear', { accountId: account_id, threadIds: thread_ids }),
+  // One gesture, however many accounts it spans: the backend returns one
+  // operation group whose Undo attempts every account and reports the ones it
+  // could not restore (P6.3).
+  threads_action: (a: { gestureId?: string | null; targets: GestureTarget[]; action: ActionKind }) =>
+    call<GestureResponse>('threads_action', a),
+  action_undo: (a: { gestureId: string }) => call<GestureResponse>('action_undo', a),
+  snooze_set: (a: {
+    gestureId?: string | null;
+    targets: GestureTarget[];
+    wakeAt: number;
+    wakeUnread?: boolean;
+  }) => call<GestureResponse>('snooze_set', a),
+  snooze_clear: (a: { gestureId?: string | null; targets: GestureTarget[] }) =>
+    call<GestureResponse>('snooze_clear', a),
+  outbox_list: (a: {
+    accountIds: string[];
+    states?: OperationState[] | null;
+    cursor?: string | null;
+    limit?: number | null;
+  }) => call<OutboxPage>('outbox_list', a),
+  outbox_get: (a: { opId: number }) => call<OutboxOp>('outbox_get', a),
+  outbox_retry: (a: { opId: number; acknowledgeDuplicateRisk?: boolean }) =>
+    call<OutboxOp>('outbox_retry', a),
   drafts_get: (a: { localId: string }) => call<Draft>('drafts_get', a),
   drafts_list: (a: { accountIds: string[]; cursor?: string; limit?: number }) =>
     call<DraftPage>('drafts_list', a),
-  drafts_upsert: (a: { draft: Draft; expectedRevision?: number }) =>
-    call<Draft>('drafts_upsert', a),
+  drafts_upsert: (a: { draft: Draft; expectedRevision?: number }) => call<Draft>('drafts_upsert', a),
   // Explicit discard only: the send path must never call this.
   drafts_delete: (local_id: string) => call<void>('drafts_delete', { localId: local_id }),
-  drafts_send: (a: {
-    localId: string;
-    revision: number;
-    notBefore?: number;
-    archiveAfterSend?: boolean;
-  }) => call<SendHandle>('drafts_send', a),
+  drafts_send: (a: { localId: string; revision: number; notBefore?: number; archiveAfterSend?: boolean }) =>
+    call<SendHandle>('drafts_send', a),
   send_cancel: (a: { opId: number }) => call<Draft>('send_cancel', a),
   compose_limits: () => call<ComposeLimits>('compose_limits'),
   contacts_suggest: (account_id: string, q: string, limit: number) =>
@@ -123,8 +131,7 @@ export const api = {
   attachments_save_as: (a: AttachmentRefKey) => call<SaveAsResult>('attachments_save_as', a),
   attachments_save_all: (a: { accountId: string; messageId: string }) =>
     call<SaveAllResult>('attachments_save_all', a),
-  attachments_cancel: (a: { accountId: string; requestId: string }) =>
-    call<void>('attachments_cancel', a),
+  attachments_cancel: (a: { accountId: string; requestId: string }) => call<void>('attachments_cancel', a),
   attachments_add_from_paths: (a: { accountId: string; draftId: string; paths: string[] }) =>
     call<AttachmentRef[]>('attachments_add_from_paths', a),
   // Forwarding: stage one attachment of an existing message into a draft.

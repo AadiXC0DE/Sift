@@ -199,16 +199,27 @@ async fn install_provider(
 }
 
 /// An op that was mid-flight when its generation was cancelled must not be
-/// lost: put it back in the queue for the new provider to apply. (Startup
-/// recovery does the same for ops left behind by a crash.)
+/// lost — but it must not be replayed blindly either (P6.1).
+///
+/// Idempotent work (label sets, identity-addressed deletion, a draft push)
+/// goes back to the queue. An `inflight` **send** does not: its acceptance is
+/// unknown, so it becomes `uncertain` and waits for reconciliation against the
+/// provider's Sent view. This is the same rule startup recovery applies, and
+/// it is the one that stops a reconnect from sending a message twice.
 async fn requeue_inflight(db: &Db, account_id: &str) {
     let account_id = account_id.to_string();
+    let now = crate::db::now_ms();
     let _ = db
         .write(move |c| -> anyhow::Result<()> {
             c.execute(
-                "UPDATE outbox_ops SET state='pending', not_before=0 \
-                 WHERE account_id=? AND state='inflight'",
+                "UPDATE outbox_ops SET state='pending', not_before=0, started_at=NULL \
+                 WHERE account_id=? AND state='inflight' AND kind<>'send'",
                 rusqlite::params![account_id],
+            )?;
+            c.execute(
+                "UPDATE outbox_ops SET state='uncertain', reconcile_at=?1, reconcile_attempts=0 \
+                 WHERE account_id=?2 AND state='inflight' AND kind='send'",
+                rusqlite::params![now, account_id],
             )?;
             Ok(())
         })
@@ -271,6 +282,13 @@ pub async fn accounts_add_google(
     )
     .await?;
 
+    if tokens.scope.is_some() {
+        state
+            .db
+            .accounts_set_scope(&account.id, tokens.scope.as_deref())
+            .await
+            .map_err(db_error)?;
+    }
     let provider: Arc<dyn Provider> = Arc::new(crate::provider::gmail::api::GmailApiProvider::new(
         account.id.clone(),
         crate::provider::gmail::client::GmailClient::new(tokens.access_token.clone()),

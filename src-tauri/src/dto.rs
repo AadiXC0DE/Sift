@@ -16,6 +16,30 @@ pub struct Account {
     pub created_at: i64,
     pub sort_order: i64,
     pub signature_html: Option<String>,
+    /// The scope the provider actually granted, when it reports one (P6.4).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub granted_scope: Option<String>,
+}
+
+impl Account {
+    /// May Sift permanently delete mail from this account?
+    ///
+    /// An app-password account has full IMAP access by construction. An OAuth
+    /// account is gated on the granted scope: a consent screen that returned
+    /// only read access cannot authorize a permanent deletion, and a scope we
+    /// have never seen is treated as "try it and report the provider's own
+    /// refusal" rather than as a silent grant.
+    pub fn allows_permanent_delete(&self) -> bool {
+        if self.auth_kind != "oauth" {
+            return true;
+        }
+        match self.granted_scope.as_deref() {
+            Some(scope) => scope.split_whitespace().any(|s| {
+                s.contains("mail.google.com") || s.ends_with("/gmail.modify")
+            }),
+            None => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -609,6 +633,127 @@ pub struct SendHandle {
     pub op_id: i64,
     #[serde(rename = "notBefore")]
     pub not_before: i64,
+}
+
+/// One account-qualified target of a UI gesture (P6.3).
+///
+/// The account travels with every target: a mixed selection is one gesture
+/// that happens to span accounts, not two unrelated requests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GestureTarget {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "threadId")]
+    pub thread_id: String,
+}
+
+/// The compact Outbox row (P6.6).
+///
+/// Deliberately payload-free: the panel shows a recipient summary, the local
+/// subject, the schedule/retry time and the error, and never deserializes a
+/// queued MIME body to do it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboxOpSummary {
+    pub op_id: i64,
+    pub account_id: String,
+    pub kind: String,
+    /// `pending | inflight | uncertain | done | failed | cancelled`.
+    pub state: String,
+    pub action: String,
+    pub recipient_summary: Option<String>,
+    pub subject: Option<String>,
+    /// When a queued send is due (send later / undo window).
+    pub scheduled_at: Option<i64>,
+    /// When the next attempt or reconciliation happens.
+    pub retry_at: Option<i64>,
+    pub created_at: i64,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub draft_id: Option<String>,
+    pub revision: Option<i64>,
+    /// A send whose acceptance is unknown and whose bounded reconciliation is
+    /// exhausted: only an acknowledged retry may move it.
+    pub requires_duplicate_ack: bool,
+}
+
+impl From<&crate::db::outbox::Op> for OutboxOpSummary {
+    fn from(op: &crate::db::outbox::Op) -> Self {
+        use crate::db::outbox::{STATE_PENDING, STATE_UNCERTAIN};
+        let is_send = op.kind == "send";
+        Self {
+            op_id: op.id,
+            account_id: op.account_id.clone(),
+            kind: op.kind.clone(),
+            state: op.state.clone(),
+            action: op
+                .summary_action
+                .clone()
+                .unwrap_or_else(|| crate::db::outbox::op_label(&op.kind, &op.payload).to_string()),
+            recipient_summary: op.summary_recipient.clone(),
+            subject: op.summary_subject.clone(),
+            scheduled_at: (is_send && op.state == STATE_PENDING && op.not_before > 0)
+                .then_some(op.not_before),
+            retry_at: if op.state == STATE_UNCERTAIN {
+                op.reconcile_at
+            } else if op.state == STATE_PENDING && op.attempts > 0 {
+                Some(op.not_before)
+            } else {
+                None
+            },
+            created_at: op.created_at,
+            error_code: op.failure_code.clone(),
+            error_message: op.last_error.clone(),
+            draft_id: op.draft_id.clone(),
+            revision: op.draft_revision,
+            requires_duplicate_ack: op.requires_duplicate_ack(),
+        }
+    }
+}
+
+/// One page of the Outbox panel, newest first.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboxPage {
+    pub operations: Vec<OutboxOpSummary>,
+    pub next_cursor: Option<String>,
+    pub total: i64,
+    pub counts: crate::db::outbox::OutboxCounts,
+}
+
+/// The result of one gesture: the operation ids it created, per account.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GestureResponse {
+    pub gesture_id: String,
+    pub operations: Vec<OutboxOpSummary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<crate::actions::GestureFailure>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadsActionRequest {
+    pub gesture_id: Option<String>,
+    pub targets: Vec<GestureTarget>,
+    pub action: ActionKind,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnoozeSetRequest {
+    pub gesture_id: Option<String>,
+    pub targets: Vec<GestureTarget>,
+    pub wake_at: i64,
+    #[serde(default)]
+    pub wake_unread: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnoozeClearRequest {
+    pub gesture_id: Option<String>,
+    pub targets: Vec<GestureTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

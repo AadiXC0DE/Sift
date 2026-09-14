@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod app_state;
 pub mod attachments;
 pub mod commands;
@@ -13,7 +14,7 @@ pub mod outbox;
 pub mod provider;
 pub mod render;
 pub mod runtime;
-pub mod scheduler;
+pub mod snooze;
 pub mod search;
 pub mod secrets;
 pub mod sync;
@@ -152,6 +153,12 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             app.manage(state);
             // Background engine: per-account poll/drain/backfill + snooze watcher.
             crate::runtime::spawn_supervisor(app.app_handle().clone());
+            // Bounded retention for finished work (P6.6). It never touches
+            // pending, failed, uncertain or scheduled operations.
+            let prune_app = app.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                crate::runtime::prune_finished_work(&prune_app).await;
+            });
             Ok(())
         })
         .register_uri_scheme_protocol("sift-att", |ctx, req| {
@@ -245,10 +252,13 @@ fn run_inner(with_file_log: bool) -> Result<(), tauri::Error> {
             commands::threads::message_body,
             commands::threads::message_raw_source,
             commands::threads::remote_images_load,
-            commands::actions::threads_action,
-            commands::actions::action_undo,
-            commands::actions::snooze_set,
-            commands::actions::snooze_clear,
+            commands::outbox::threads_action,
+            commands::outbox::action_undo,
+            commands::outbox::snooze_set,
+            commands::outbox::snooze_clear,
+            commands::outbox::outbox_list,
+            commands::outbox::outbox_get,
+            commands::outbox::outbox_retry,
             commands::actions::labels_create,
             commands::compose::drafts_get,
             commands::compose::drafts_list,

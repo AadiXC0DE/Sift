@@ -141,6 +141,9 @@ pub struct Tokens {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_in: i64,
+    /// The scope Google actually granted (space separated). It can be narrower
+    /// than what Sift asked for, and permanent deletion is gated on it (P6.4).
+    pub scope: Option<String>,
 }
 
 pub async fn exchange(
@@ -172,6 +175,7 @@ pub async fn exchange(
         access_token: v["access_token"].as_str().unwrap_or_default().into(),
         refresh_token: v["refresh_token"].as_str().map(|s| s.to_string()),
         expires_in: v["expires_in"].as_i64().unwrap_or(3600),
+        scope: v["scope"].as_str().map(|s| s.to_string()),
     })
 }
 
@@ -197,6 +201,7 @@ pub async fn refresh(refresh_token: &str, http: &reqwest::Client) -> Result<Toke
         access_token: v["access_token"].as_str().unwrap_or_default().into(),
         refresh_token: v["refresh_token"].as_str().map(|s| s.to_string()),
         expires_in: v["expires_in"].as_i64().unwrap_or(3600),
+        scope: v["scope"].as_str().map(|s| s.to_string()),
     })
 }
 

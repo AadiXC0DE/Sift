@@ -45,6 +45,8 @@ pub struct Behavior {
     pub no_condstore: bool,
     /// Omit IDLE from caps.
     pub no_idle: bool,
+    /// Omit UIDPLUS from caps: a server that cannot do a targeted EXPUNGE.
+    pub no_uidplus: bool,
 
     // -- P1.2 strictness and failure injection -------------------------------
     /// Split every response into this many TCP writes (literal fragmentation).
@@ -554,6 +556,9 @@ async fn handle(sock: TcpStream, state: Arc<Mutex<State>>) {
                     }
                     if st.behavior.no_idle {
                         caps = caps.replace(" IDLE", "");
+                    }
+                    if st.behavior.no_uidplus {
+                        caps = caps.replace(" UIDPLUS", "");
                     }
                     caps
                 };

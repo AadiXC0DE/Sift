@@ -311,6 +311,37 @@ impl GmailClient {
             .await?;
         Ok(())
     }
+
+    /// Permanently delete ONE message (P6.4).
+    ///
+    /// Thread-level deletion is not a substitute: the outbox names exact
+    /// message identities, and deleting a thread would take messages the user
+    /// did not confirm.
+    pub async fn delete_message(&self, id: &str) -> Result<(), SiftError> {
+        self.quota(20).await;
+        self.send_with_retry(self.http.delete(format!("{}/messages/{}", base_url(), id)))
+            .await?;
+        Ok(())
+    }
+
+    /// The message carrying this RFC 5322 Message-ID, if Gmail has one.
+    ///
+    /// This is the receipt check for an `uncertain` send (P6.1): Gmail's own
+    /// index answers whether the message was accepted, instead of Sift
+    /// guessing from a local state.
+    pub async fn find_message_by_rfc_message_id(
+        &self,
+        rfc_message_id: &str,
+    ) -> Result<Option<IdPair>, SiftError> {
+        let bare = crate::outgoing::bare_message_id(rfc_message_id);
+        if bare.is_empty() {
+            return Ok(None);
+        }
+        let page = self
+            .list_messages(None, Some(&format!("rfc822msgid:{bare}")), true)
+            .await?;
+        Ok(page.messages.and_then(|m| m.into_iter().next()))
+    }
     pub async fn send_raw(&self, raw: &str, thread_id: Option<&str>) -> Result<Message, SiftError> {
         self.quota(100).await;
         let body = SendRequest {

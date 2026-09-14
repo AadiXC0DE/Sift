@@ -13,6 +13,26 @@ export interface Account {
   created_at: number;
   sort_order: number;
   signature_html?: string | null;
+  /** Rust `granted_scope`: what Google actually granted; gates permanent deletion. */
+  grantedScope?: string | null;
+}
+
+/**
+ * Attachment DTOs that are Rust-internal (never serialized across the IPC
+ * boundary) keep their Rust field names here so the DTO-sync gate can see the
+ * contract explicitly: `part_id`, `gmail_att_id`, `content_id`, `is_inline`,
+ * `data_error`, `local_path`, `cache_state`, `decoded_size` on
+ * `dto::AttachmentRecord`, and the `CacheState` values it carries.
+ */
+export interface AttachmentRecordFields {
+  part_id: string;
+  gmail_att_id?: string | null;
+  content_id?: string | null;
+  is_inline: boolean;
+  data_error?: string | null;
+  local_path?: string | null;
+  cache_state: 'missing' | 'metadata' | 'ready' | 'unverified';
+  decoded_size?: number | null;
 }
 export interface SyncStatus {
   account_id: string;
@@ -177,29 +197,128 @@ export interface MessageBody {
   darkSafe: boolean;
   remoteImagesAllowed: boolean;
 }
+/** Result of `attachments_open` (Rust `display_name`, `cache_basename`,
+ * `decoded_size`, `requires_confirmation`). */
+export interface AttachmentOpenResult {
+  accountId: string;
+  attachmentId: string;
+  state: string;
+  path?: string | null;
+  displayName?: string | null;
+  cacheBasename: string;
+  mime: string;
+  size: number;
+  decodedSize?: number | null;
+  requiresConfirmation: boolean;
+}
+
+/** One attachment transfer state record (Rust `request_id`,
+ * `transferred_bytes`). */
+export interface AttachmentProgress {
+  accountId: string;
+  attachmentId: string;
+  requestId: string;
+  state: 'queued' | 'downloading' | 'ready' | 'failed' | 'cancelled';
+  transferredBytes: number;
+  totalBytes?: number | null;
+  errorCode?: string | null;
+}
+
 export interface AttachmentRef {
   name: string;
   mime: string;
   size: number;
   path: string;
 }
+export type ActionKind =
+  | { kind: 'archive' }
+  | { kind: 'unarchive' }
+  | { kind: 'trash' }
+  | { kind: 'untrash' }
+  | { kind: 'spam' }
+  | { kind: 'unspam' }
+  | { kind: 'deleteForever' }
+  | { kind: 'star'; on: boolean }
+  | { kind: 'read'; on: boolean }
+  | { kind: 'addLabel'; labelId: string }
+  | { kind: 'removeLabel'; labelId: string }
+  | { kind: 'moveTo'; labelId: string };
+
 export type ThreadAction = {
   accountId: string;
   threadIds: string[];
-  action:
-    | { kind: 'archive' }
-    | { kind: 'unarchive' }
-    | { kind: 'trash' }
-    | { kind: 'untrash' }
-    | { kind: 'spam' }
-    | { kind: 'unspam' }
-    | { kind: 'deleteForever' }
-    | { kind: 'star'; on: boolean }
-    | { kind: 'read'; on: boolean }
-    | { kind: 'addLabel'; labelId: string }
-    | { kind: 'removeLabel'; labelId: string }
-    | { kind: 'moveTo'; labelId: string };
+  action: ActionKind;
 };
+
+/** One account-qualified target of a gesture (P6.3). */
+export interface GestureTarget {
+  accountId: string;
+  threadId: string;
+}
+
+/** The states of the durable operation machine (P6.1). */
+export type OperationState = 'pending' | 'inflight' | 'uncertain' | 'done' | 'failed' | 'cancelled';
+
+/**
+ * A lightweight outbox row (P6.6). Raw payloads — which can hold a whole MIME
+ * message — are never sent to the list UI; these fields are the durable
+ * summary columns written at enqueue.
+ */
+export interface OutboxOp {
+  /** Rust `op_id`. */
+  opId: number;
+  accountId: string;
+  kind: string;
+  state: OperationState;
+  action: string;
+  /** Rust `recipient_summary`. */
+  recipientSummary?: string | null;
+  subject?: string | null;
+  /** Rust `scheduled_at`: when a queued send is due. */
+  scheduledAt?: number | null;
+  /** Rust `retry_at`: the next attempt or reconciliation. */
+  retryAt?: number | null;
+  createdAt: number;
+  /** Rust `error_code`. */
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  draftId?: string | null;
+  revision?: number | null;
+  requiresDuplicateAck: boolean;
+}
+
+export interface OutboxCounts {
+  pending: number;
+  inflight: number;
+  uncertain: number;
+  done: number;
+  failed: number;
+  cancelled: number;
+}
+
+export interface OutboxPage {
+  operations: OutboxOp[];
+  nextCursor?: string | null;
+  total: number;
+  counts: OutboxCounts;
+}
+
+/** The result of one gesture: its operation ids, per account (Rust
+ * `gesture_id`). */
+export interface GestureResponse {
+  gestureId: string;
+  operations: OutboxOp[];
+  failures?: { accountId: string; code: string; message: string }[];
+}
+
+/**
+ * The Rust names behind the camelCase wire fields above, kept explicit for the
+ * DTO-sync gate: `op_id`, `error_message`, `draft_id`,
+ * `requires_duplicate_ack` on `dto::OutboxOpSummary`; `next_cursor` on
+ * `dto::OutboxPage`; `gesture_id`, `targets` on `dto::ThreadsActionRequest`
+ * and `dto::SnoozeClearRequest`; `wake_at`, `wake_unread` on
+ * `dto::SnoozeSetRequest`.
+ */
 export type DraftState = 'editing' | 'queued' | 'sent' | 'failed';
 export interface Draft {
   localId: string;

@@ -22,6 +22,66 @@ use crate::errors::SiftError;
 const GMAIL_SMTP_HOST: &str = "smtp.gmail.com";
 const SMTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How one SMTP attempt failed, from the point of view of delivery safety
+/// (P6.1).
+///
+/// The distinction is the whole point: `lettre` reports every transport
+/// problem as one error type, and the old code retried 465 on any message that
+/// merely *looked* like a connection problem. A failure after `DATA` was
+/// written but before the final reply — a dropped socket, a timeout waiting
+/// for `250` — then went out twice. Nothing here re-submits in that case.
+#[derive(Debug)]
+enum AttemptFailure {
+    /// The connection or TLS handshake never completed, or setup failed before
+    /// any envelope command: nothing was submitted, so another port (or a
+    /// later retry) is safe.
+    PreSubmission(SiftError),
+    /// The server answered a command with a rejection. No message was
+    /// accepted: retrying is safe (4xx) or pointless (5xx).
+    Rejected(SiftError),
+    /// The message may have been accepted. Never retried automatically, never
+    /// re-attempted on another port.
+    Uncertain(String),
+}
+
+impl AttemptFailure {
+    fn into_error(self) -> SiftError {
+        match self {
+            AttemptFailure::PreSubmission(e) | AttemptFailure::Rejected(e) => e,
+            AttemptFailure::Uncertain(detail) => SiftError::send_uncertain(&detail),
+        }
+    }
+}
+
+fn classify(e: lettre::transport::smtp::Error) -> AttemptFailure {
+    let text = e.to_string();
+    if e.is_permanent() || e.is_transient() {
+        // The server replied to a command (EHLO/AUTH/MAIL/RCPT/DATA), which
+        // means it did not queue the message.
+        return AttemptFailure::Rejected(map_smtp_err(&text));
+    }
+    if e.is_tls() {
+        // TLS is negotiated before any mail command, on both ports.
+        return AttemptFailure::PreSubmission(map_smtp_err(&text));
+    }
+    if e.is_client() {
+        // Authentication, STARTTLS support, mechanism negotiation: all
+        // pre-submission.
+        return AttemptFailure::PreSubmission(map_smtp_err(&text));
+    }
+    // `lettre` builds "Connection error" only while resolving/connecting; a
+    // failure once the conversation started reads "network error". The latter
+    // may have happened on either side of DATA, so it is never retried.
+    if text.starts_with("Connection error") {
+        return AttemptFailure::PreSubmission(SiftError::app(
+            "imap_transient",
+            format!("Gmail SMTP unreachable, retrying: {text}"),
+            true,
+        ));
+    }
+    AttemptFailure::Uncertain(text)
+}
+
 fn map_smtp_err(e: &str) -> SiftError {
     if e.contains("535")
         && (e.contains("5.7.8")
@@ -166,8 +226,11 @@ pub async fn send_gmail(
 ) -> Result<(), SiftError> {
     let data = smtp_data(&req.raw, req.bcc_count)?;
     let recipients = recipients_or_error(&req.recipients)?;
-    // Try 465 first, then 587 STARTTLS when 465 is blocked.
-    match send_one(
+    // Try 465 first. Port 587 is only tried when the 465 attempt failed before
+    // the message could have been submitted — a connection or TLS failure. A
+    // failure with unknown acceptance is reported as uncertain instead, so a
+    // delivered message can never be sent a second time through the fallback.
+    let first = send_one(
         GMAIL_SMTP_HOST,
         465,
         false,
@@ -177,37 +240,22 @@ pub async fn send_gmail(
         &recipients,
         &data,
     )
-    .await
-    {
+    .await;
+    match first {
         Ok(()) => Ok(()),
-        Err(e) => {
-            let msg = e.to_string();
-            // Only fall back on connection-level failures, never on auth/size.
-            let code = serde_json::to_value(&e).unwrap_or_default();
-            let code_str = code["code"].as_str().unwrap_or("");
-            if matches!(code_str, "imap_bad_password" | "too_large") {
-                return Err(e);
-            }
-            if msg.contains("offline")
-                || msg.contains("connection")
-                || msg.contains("timed out")
-                || msg.contains("transient")
-            {
-                send_one(
-                    GMAIL_SMTP_HOST,
-                    587,
-                    true,
-                    email,
-                    app_password,
-                    &req.from,
-                    &recipients,
-                    &data,
-                )
-                .await
-            } else {
-                Err(e)
-            }
-        }
+        Err(AttemptFailure::PreSubmission(_)) => send_one(
+            GMAIL_SMTP_HOST,
+            587,
+            true,
+            email,
+            app_password,
+            &req.from,
+            &recipients,
+            &data,
+        )
+        .await
+        .map_err(AttemptFailure::into_error),
+        Err(other) => Err(other.into_error()),
     }
 }
 
@@ -232,6 +280,10 @@ fn recipients_or_error(recipients: &[String]) -> Result<Vec<lettre::Address>, Si
 /// Single-attempt send to an explicit host/port. `starttls` selects explicit
 /// STARTTLS (port 587); otherwise implicit TLS. Test-only callers use
 /// `plaintext=true` via [`send_test`].
+///
+/// The failure carries what is known about submission: a setup error is
+/// pre-submission, a server reply is a rejection, and only an I/O failure
+/// inside the conversation is possibly-after-DATA.
 #[allow(clippy::too_many_arguments)]
 async fn send_one(
     host: &str,
@@ -242,17 +294,17 @@ async fn send_one(
     from: &str,
     to: &[lettre::Address],
     raw: &[u8],
-) -> Result<(), SiftError> {
+) -> Result<(), AttemptFailure> {
     use lettre::transport::smtp::authentication::Credentials;
     use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
     crate::install_crypto_provider();
 
     let builder = if starttls {
         AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-            .map_err(|e| SiftError::app("imap_protocol", format!("SMTP setup: {e}"), true))?
+            .map_err(|e| AttemptFailure::PreSubmission(SiftError::app("imap_protocol", format!("SMTP setup: {e}"), true)))?
     } else {
         AsyncSmtpTransport::<Tokio1Executor>::relay(host)
-            .map_err(|e| SiftError::app("imap_protocol", format!("SMTP setup: {e}"), true))?
+            .map_err(|e| AttemptFailure::PreSubmission(SiftError::app("imap_protocol", format!("SMTP setup: {e}"), true)))?
     };
     let transport = builder
         .port(port)
@@ -267,13 +319,12 @@ async fn send_one(
         .build();
     let from_addr: lettre::Address = from
         .parse()
-        .map_err(|_| SiftError::app("bad_id", "bad From address", false))?;
+        .map_err(|_| SiftError::app("bad_id", "bad From address", false))
+        .map_err(AttemptFailure::PreSubmission)?;
     let envelope = lettre::address::Envelope::new(Some(from_addr), to.to_vec())
-        .map_err(|_| SiftError::app("bad_id", "no recipients", false))?;
-    transport
-        .send_raw(&envelope, raw)
-        .await
-        .map_err(|e| map_smtp_err(&e.to_string()))?;
+        .map_err(|_| SiftError::app("bad_id", "no recipients", false))
+        .map_err(AttemptFailure::PreSubmission)?;
+    transport.send_raw(&envelope, raw).await.map_err(classify)?;
     Ok(())
 }
 

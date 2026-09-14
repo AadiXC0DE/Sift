@@ -74,6 +74,9 @@ pub struct AppState {
     /// Native connectivity state per account (P4.6). The network hint is a
     /// hint; successful/failed provider operations are the evidence.
     pub connectivity: crate::connectivity::Connectivity,
+    /// One wake-up handle per account (P6.6): enqueueing work and reconnecting
+    /// nudge the drain instead of waiting out its poll interval.
+    pub outbox_kicks: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
 }
 
 impl AppState {
@@ -100,7 +103,25 @@ impl AppState {
             sync_coordinators: Mutex::new(Default::default()),
             setup_runtime: Mutex::new(None),
             connectivity: crate::connectivity::Connectivity::new(),
+            outbox_kicks: Mutex::new(Default::default()),
         }
+    }
+
+    // -- outbox wake-ups (P6.6) ---------------------------------------------
+
+    /// The account's drain wake handle. Held rather than recreated so a nudge
+    /// is never lost between a producer and the loop that waits on it.
+    pub async fn outbox_wake(&self, account_id: &str) -> Arc<tokio::sync::Notify> {
+        let mut kicks = self.outbox_kicks.lock().await;
+        kicks
+            .entry(account_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
+            .clone()
+    }
+
+    /// Something was queued (or the network came back): drain now.
+    pub async fn kick_outbox(&self, account_id: &str) {
+        self.outbox_wake(account_id).await.notify_one();
     }
 
     // -- per-account background generations (P4.4) --------------------------
@@ -495,6 +516,14 @@ impl AppState {
                     expires_at: now + t.expires_in * 1000,
                 };
                 self.tokens.write().await.insert(account_id.into(), info);
+                // The granted scope can narrow at any refresh; keep the
+                // deletion gate honest (P6.4).
+                if t.scope.is_some() {
+                    let _ = self
+                        .db
+                        .accounts_set_scope(account_id, t.scope.as_deref())
+                        .await;
+                }
                 // Drop any cached provider so the next call rebuilds it
                 // with the fresh access token.
                 self.providers.write().await.remove(account_id);

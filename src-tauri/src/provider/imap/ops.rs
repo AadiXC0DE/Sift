@@ -453,94 +453,275 @@ pub async fn apply_trash_threads(
     Ok(ApplyOutcome::Done)
 }
 
-/// Delete forever: in Trash/Junk, flag \Deleted + EXPUNGE.
-pub async fn apply_delete_threads(
+/// One message named by an immutable identity, captured *before* its display
+/// rows were removed (P6.4).
+///
+/// The local id is the stable Gmail identity (hex, converted to decimal at the
+/// IMAP boundary); `uid`/`uidvalidity`/`folder` are only hints recorded at
+/// gesture time, and are used solely when the epoch still matches.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct DeleteTarget {
+    pub id: String,
+    #[serde(default, rename = "rfcMessageId")]
+    pub rfc_message_id: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub uid: Option<u32>,
+    #[serde(default)]
+    pub uidvalidity: Option<u32>,
+}
+
+/// Permanent deletion, addressed by identity rather than by thread (P6.4).
+///
+/// `DeleteForever` removes the local rows as soon as the user confirms, so the
+/// old implementation — which looked the messages up from the thread at drain
+/// time — could find nothing and delete nothing remotely. Here the op carries
+/// the message identities, the provider resolves each one's *current* locator
+/// before deleting, verifies that the message is really in Trash/Junk, and
+/// requires UIDPLUS for the targeted `UID EXPUNGE` that removes exactly those
+/// messages.
+pub async fn apply_delete_messages(
     pool: &ImapPool,
     db: &Db,
     folders: &FolderMap,
     account_id: &str,
-    threads: &[String],
+    targets: &[DeleteTarget],
 ) -> Result<ApplyOutcome, SiftError> {
-    if threads.is_empty() {
+    if targets.is_empty() {
         return Ok(ApplyOutcome::Done);
     }
+    // A targeted EXPUNGE is the only safe form: a broad EXPUNGE would take the
+    // other client's \Deleted messages with it.
+    if !pool.caps().await.uidplus {
+        return Err(SiftError::app(
+            "unsupported_operation",
+            "This Gmail account does not advertise UIDPLUS, so Sift cannot remove exactly the messages you confirmed.",
+            false,
+        ));
+    }
+    let mut expunged = 0usize;
+    let mut gone = 0usize;
+    for target in targets {
+        let located = resolve_for_delete(pool, folders, target).await?;
+        let Some(located) = located else {
+            // Searched by identity in every folder that could hold it and found
+            // nothing: it really is already gone.
+            gone += 1;
+            continue;
+        };
+        match located {
+            DeleteLocation::InTrash { role, folder, uid } => {
+                let set = super::message::uid_set(&[uid], 1);
+                {
+                    let mut w = pool
+                        .with_selected_worker(&folder, false, &no_cancel())
+                        .await?;
+                    // Flag and targeted EXPUNGE errors propagate: a deletion
+                    // that did not happen must never be reported as done, and
+                    // it stays visible so the user can retry it.
+                    match w
+                        .conn()
+                        .uid_store(&set, "+FLAGS", &["\\Deleted".to_string()])
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(SiftError::App { message, .. }) if already_applied(&message) => {
+                            gone += 1;
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                    match w.conn().uid_expunge(Some(&set)).await {
+                        Ok(()) => {}
+                        Err(SiftError::App { message, .. }) if already_applied(&message) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                let _ = db.imap_delete_uids(account_id, &role, &[uid as i64]).await;
+                expunged += 1;
+            }
+            DeleteLocation::OutsideTrash => {
+                // Per-message membership, not a thread aggregate. The message
+                // is somewhere it must not be permanently deleted from, so it
+                // is left alone and the user is told why.
+                return Err(SiftError::app(
+                    "delete_target_moved",
+                    "A message you confirmed for permanent deletion is no longer in Trash or Spam, so Sift left it alone.",
+                    false,
+                ));
+            }
+        }
+    }
+    if expunged == 0 && gone > 0 {
+        return Ok(ApplyOutcome::AlreadyApplied);
+    }
+    Ok(ApplyOutcome::Done)
+}
+
+/// Where a message that is being deleted actually is, right now.
+enum DeleteLocation {
+    InTrash {
+        role: String,
+        folder: String,
+        uid: u32,
+    },
+    /// It exists, but not where it may be permanently deleted from.
+    OutsideTrash,
+}
+
+/// Resolve the *current* locator of a message that is being deleted (P6.4).
+///
+/// The recorded location is only a hint, and it is verified by a search before
+/// it is used: a UID from an older epoch, or one whose message was moved by
+/// another client, would otherwise be used to expunge whatever now holds it —
+/// or, worse, to report a deletion that never happened. Trash and Junk are
+/// searched before \All because on Gmail a trashed message is in both.
+async fn resolve_for_delete(
+    pool: &ImapPool,
+    folders: &FolderMap,
+    target: &DeleteTarget,
+) -> Result<Option<DeleteLocation>, SiftError> {
+    let Some(dec) = ids::from_hex(&target.id) else {
+        // Not a Gmail identity: fall back to the recorded locator, which is all
+        // this payload carries.
+        return Ok(match (target.role.clone(), target.uid) {
+            (Some(role), Some(uid)) if role == "trash" || role == "junk" => folders
+                .name_for_role(&role)
+                .map(|folder| DeleteLocation::InTrash {
+                    role,
+                    folder: folder.to_string(),
+                    uid,
+                }),
+            (Some(_), Some(_)) => Some(DeleteLocation::OutsideTrash),
+            _ => None,
+        });
+    };
+    // Trash first, then Junk, then \All: the order is what makes "is it still
+    // in Trash?" the question we answer.
+    let mut outside = false;
+    for role in ["trash", "junk", "all"] {
+        let Some(name) = folders.name_for_role(role).map(str::to_string) else {
+            continue;
+        };
+        let uids = {
+            let mut w = pool
+                .with_selected_worker(&name, true, &no_cancel())
+                .await?;
+            w.conn().uid_search_gmmsgid(dec).await?
+        };
+        let Some(uid) = uids.first().copied() else {
+            continue;
+        };
+        if role == "all" {
+            outside = true;
+            continue;
+        }
+        return Ok(Some(DeleteLocation::InTrash {
+            role: role.to_string(),
+            folder: name,
+            uid,
+        }));
+    }
+    if outside {
+        return Ok(Some(DeleteLocation::OutsideTrash));
+    }
+    Ok(None)
+}
+
+/// Targets for a permanent deletion, from an outbox `delete` payload.
+///
+/// The current shape is the immutable identity list written before the local
+/// rows were removed. A payload left by the pre-P6.4 build only has thread
+/// ids: those messages (if their rows still exist) are read once, up front, so
+/// the operation still names exact messages instead of asking the database
+/// during the delete.
+pub async fn delete_targets_from_payload(
+    db: &Db,
+    account_id: &str,
+    payload: &serde_json::Value,
+) -> Result<Vec<DeleteTarget>, SiftError> {
+    if payload.get("messages").and_then(|m| m.as_array()).is_some() {
+        return serde_json::from_value(payload["messages"].clone()).map_err(|e| {
+            SiftError::app(
+                "payload_invalid",
+                format!("the deletion list could not be read: {e}"),
+                false,
+            )
+        });
+    }
+    let threads: Vec<String> =
+        serde_json::from_value(payload["threads"].clone()).unwrap_or_default();
+    if threads.is_empty() {
+        return Ok(Vec::new());
+    }
     let db_err = |e: anyhow::Error| SiftError::app("db", e.to_string(), false);
+    let mut out = Vec::new();
     for tid in threads {
-        let mids: Vec<String> = db
+        let ids: Vec<String> = db
             .read({
                 let (a, t) = (account_id.to_string(), tid.clone());
                 move |c| {
-                    Ok(
-                        c.prepare("SELECT id FROM messages WHERE account_id=? AND thread_id=?")?
-                            .query_map(rusqlite::params![a, t], |r| r.get(0))?
-                            .collect::<Result<Vec<String>, _>>()?,
-                    )
+                    Ok(c.prepare(
+                        "SELECT id FROM messages WHERE account_id=? AND thread_id=?",
+                    )?
+                    .query_map(rusqlite::params![a, t], |r| r.get(0))?
+                    .collect::<Result<Vec<String>, _>>()?)
                 }
             })
             .await
             .map_err(db_err)?;
-        for mid in mids {
-            // Prefer Trash/Junk copies; fall back to wherever it lives.
-            // UID maps go stale across MOVEs (fresh UIDs), so SEARCH when empty.
-            let holders = db
-                .uids_for_message(account_id, &mid)
-                .await
-                .map_err(db_err)?;
-            let (role, uid): (String, i64) = match holders
-                .iter()
-                .find(|(r, _)| r == "trash")
-                .or_else(|| holders.iter().find(|(r, _)| r == "junk"))
-                .or_else(|| holders.first())
-                .cloned()
-            {
-                Some(v) => v,
-                None => {
-                    // SEARCH trash/junk/all for the current copy.
-                    let Some(dec) = ids::from_hex(&mid) else {
-                        continue;
-                    };
-                    let mut found: Option<(String, i64)> = None;
-                    for r in ["trash", "junk", "all"] {
-                        let Some(name) = folders.name_for_role(r) else {
-                            continue;
-                        };
-                        let uids = {
-                            let mut w =
-                                pool.with_selected_worker(name, true, &no_cancel()).await?;
-                            w.conn().uid_search_gmmsgid(dec).await.unwrap_or_default()
-                        };
-                        if let Some(u) = uids.into_iter().next() {
-                            found = Some((r.to_string(), u as i64));
-                            break;
-                        }
-                    }
-                    let Some(v) = found else { continue };
-                    v
-                }
-            };
-            let folder = folders
-                .name_for_role(&role)
-                .unwrap_or(&folders.trash)
-                .to_string();
-            // Flag + targeted EXPUNGE share one lease with the SELECT that
-            // opened the mailbox (P4.3).
-            let mut w = pool
-                .with_selected_worker(&folder, false, &no_cancel())
-                .await?;
-            let conn = w.conn();
-            let set = super::message::uid_set(&[uid as u32], 1);
-            let _ = conn
-                .uid_store(&set, "+FLAGS", &["\\Deleted".to_string()])
-                .await;
-            match conn.uid_expunge(Some(&set)).await {
-                Ok(()) => {}
-                Err(SiftError::App { message, .. }) if already_applied(&message) => {}
-                Err(e) => return Err(e),
-            }
-            let _ = db.imap_delete_uids(account_id, &role, &[uid]).await;
+        for id in ids {
+            out.push(DeleteTarget {
+                id,
+                ..Default::default()
+            });
         }
     }
-    Ok(ApplyOutcome::Done)
+    Ok(out)
+}
+
+/// Reconcile an `uncertain` send against the server's own index (P6.1).
+///
+/// The prepared message carries a stable RFC Message-ID; when a copy of that
+/// message exists in Sent, the operation is provably done. An empty result is
+/// *not* proof of non-delivery — the caller keeps the operation uncertain and
+/// re-checks on the bounded schedule.
+pub async fn sent_by_rfc_message_id(
+    pool: &ImapPool,
+    folders: &FolderMap,
+    rfc_message_id: &str,
+) -> Result<Option<(String, String)>, SiftError> {
+    let wanted = crate::outgoing::bare_message_id(rfc_message_id).to_string();
+    if wanted.is_empty() {
+        return Ok(None);
+    }
+    for role in ["sent", "all"] {
+        let Some(name) = folders.name_for_role(role).map(str::to_string) else {
+            continue;
+        };
+        let uids = {
+            let mut w = pool
+                .with_selected_worker(&name, true, &no_cancel())
+                .await?;
+            w.conn().uid_search_header("Message-ID", &wanted).await?
+        };
+        let Some(uid) = uids.first().copied() else {
+            continue;
+        };
+        let hex = resolve_hex(pool, &name, uid).await;
+        return Ok(Some((
+            if hex.is_empty() {
+                format!("{role}:{uid}")
+            } else {
+                hex
+            },
+            String::new(),
+        )));
+    }
+    Ok(None)
 }
 
 /// Stable locator for an IMAP draft: `uidvalidity:uid:hex-message-id`.

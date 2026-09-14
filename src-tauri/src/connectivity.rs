@@ -213,7 +213,7 @@ fn resolve(network: bool, account: Option<&Account>) -> &'static str {
 
 fn error_code(error: &SiftError) -> String {
     match error {
-        SiftError::App { code, .. } => code.clone(),
+        SiftError::App { code, .. } | SiftError::Typed { code, .. } => code.clone(),
         SiftError::Http(_) => "http".into(),
         SiftError::Io(_) => "io".into(),
         SiftError::Db(_) => "db".into(),
@@ -227,7 +227,7 @@ fn error_code(error: &SiftError) -> String {
 /// A failure that says something about reaching the provider at all.
 fn is_connectivity_error(error: &SiftError) -> bool {
     match error {
-        SiftError::App { code, .. } => matches!(
+        SiftError::App { code, .. } | SiftError::Typed { code, .. } => matches!(
             code.as_str(),
             "offline"
                 | "imap_transient"

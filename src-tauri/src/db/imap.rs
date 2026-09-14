@@ -160,6 +160,27 @@ impl Db {
     }
 
     /// Every folder/uid holding a message (for resolving op targets).
+    /// Forget the UID map rows of messages that no longer exist locally.
+    ///
+    /// `imap_uids` has no foreign key to `messages`, so a permanent delete
+    /// must clear them explicitly — a stale row would let a later `locate`
+    /// resolve a UID that now belongs to nothing (or, after a UIDVALIDITY
+    /// change, to another message).
+    pub async fn imap_forget_messages(&self, account_id: &str, message_ids: &[String]) -> Result<()> {
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+        let (a, ids) = (account_id.to_string(), message_ids.to_vec());
+        self.write(move |c| {
+            let mut s = c.prepare("DELETE FROM imap_uids WHERE account_id=? AND message_id=?")?;
+            for id in &ids {
+                s.execute(params![a, id])?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn uids_for_message(
         &self,
         account_id: &str,

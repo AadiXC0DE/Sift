@@ -174,20 +174,39 @@ pub async fn drafts_send(
 }
 
 /// Cancel a send that has not been claimed yet and return the reopened draft.
+///
+/// When the operation already left `pending` the composer gets the state it
+/// actually reached: Sift must never imply it pulled back a message the
+/// provider may already have accepted.
 #[tauri::command]
-pub async fn send_cancel(state: State<'_, AppState>, op_id: i64) -> Result<Draft, SiftError> {
-    state
+pub async fn send_cancel(
+    state: State<'_, AppState>,
+    op_id: i64,
+) -> Result<Draft, SiftError> {
+    let outcome = state
         .db
-        .drafts_cancel_send(op_id)
+        .drafts_cancel_send_detailed(op_id)
         .await
-        .map_err(db_error)?
-        .ok_or_else(|| {
-            SiftError::app(
-                "too_late",
-                "This message is already on its way and can't be undone.",
-                false,
-            )
-        })
+        .map_err(db_error)?;
+    match outcome {
+        crate::db::drafts::SendCancel::Cancelled(draft) => {
+            state.kick_outbox(&draft.account_id).await;
+            Ok(*draft)
+        }
+        crate::db::drafts::SendCancel::TooLate { state: op_state } => {
+            Err(SiftError::typed(
+                "send_undo_expired",
+                match op_state.as_str() {
+                    "inflight" => "Sift is handing this message to Gmail right now, so it cannot be recalled.",
+                    "uncertain" => "Sift could not prove whether Gmail accepted this message, so it will not pretend the send was undone.",
+                    "done" => "This message was already sent.",
+                    "failed" => "This send has already finished with an error; reopen the draft to try again.",
+                    _ => "This send is no longer waiting to be sent.",
+                },
+                serde_json::json!({"state": op_state, "opId": op_id}),
+            ))
+        }
+    }
 }
 
 /// Sift's current send limit, so the composer can show the real number

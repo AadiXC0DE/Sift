@@ -221,10 +221,33 @@ impl Provider for GmailApiProvider {
                 }
             }
             "delete" => {
-                let threads: Vec<String> =
-                    serde_json::from_value(op.payload["threads"].clone()).unwrap_or_default();
-                for t in threads {
-                    self.client.delete_thread(&t).await?;
+                // P6.4: delete the exact messages the user confirmed, by
+                // identity. A payload from before that change only has thread
+                // ids, which is the closest identity it carries.
+                let ids: Vec<String> = op.payload["messages"]
+                    .as_array()
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if ids.is_empty() {
+                    let threads: Vec<String> =
+                        serde_json::from_value(op.payload["threads"].clone()).unwrap_or_default();
+                    for t in threads {
+                        self.client.delete_thread(&t).await?;
+                    }
+                } else {
+                    for id in ids {
+                        match self.client.delete_message(&id).await {
+                            Ok(()) => {}
+                            // Gone already (another client, or a retried op):
+                            // the intent is satisfied.
+                            Err(SiftError::NotFound(_)) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
                 }
             }
             "send" => {
@@ -264,6 +287,22 @@ impl Provider for GmailApiProvider {
             id: m.id,
             thread_id: m.thread_id,
         })
+    }
+
+    /// Ask Gmail's own index whether a message with this Message-ID exists
+    /// (P6.1). This is the receipt for an `uncertain` send.
+    async fn sent_by_rfc_message_id(
+        &self,
+        rfc_message_id: &str,
+    ) -> Result<Option<SentInfo>, SiftError> {
+        Ok(self
+            .client
+            .find_message_by_rfc_message_id(rfc_message_id)
+            .await?
+            .map(|m| SentInfo {
+                id: m.id,
+                thread_id: m.thread_id,
+            }))
     }
 
     /// Real Gmail draft operations (P5.2): create when there is no remote copy,

@@ -1136,14 +1136,18 @@ impl Provider for GmailImapProvider {
                 Ok(ApplyOutcome::Done)
             }
             "delete" => {
-                let threads: Vec<String> =
-                    serde_json::from_value(op.payload["threads"].clone()).unwrap_or_default();
-                super::ops::apply_delete_threads(
+                let targets = super::ops::delete_targets_from_payload(
+                    &self.db,
+                    &self.account_id,
+                    &op.payload,
+                )
+                .await?;
+                super::ops::apply_delete_messages(
                     &self.pool,
                     &self.db,
                     &folders,
                     &self.account_id,
-                    &threads,
+                    &targets,
                 )
                 .await
             }
@@ -1210,6 +1214,35 @@ impl Provider for GmailImapProvider {
             id: String::new(),
             thread_id: String::new(),
         })
+    }
+
+    /// Reconcile an uncertain send against the server's own index (P6.1).
+    ///
+    /// IMAP cannot answer "did SMTP accept it?", but the Sent copy can: the
+    /// prepared message carries a stable Message-ID, and Gmail indexes it.
+    async fn sent_by_rfc_message_id(
+        &self,
+        rfc_message_id: &str,
+    ) -> Result<Option<SentInfo>, SiftError> {
+        let folders = self.folders_cached().await?;
+        let Some((id, _)) =
+            super::ops::sent_by_rfc_message_id(&self.pool, &folders, rfc_message_id).await?
+        else {
+            return Ok(None);
+        };
+        let thread_id = if id.is_empty() {
+            String::new()
+        } else {
+            self.db
+                .message_thread(&crate::dto::MessageRef::new(
+                    self.account_id.clone(),
+                    id.clone(),
+                ))
+                .await
+                .unwrap_or(None)
+                .unwrap_or_default()
+        };
+        Ok(Some(SentInfo { id, thread_id }))
     }
 
     async fn draft_upsert(

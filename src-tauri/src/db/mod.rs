@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-#[cfg(test)]
 use rusqlite::params;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
@@ -56,6 +55,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
         "0009_draft_lifecycle",
         include_str!("migrations/0009_draft_lifecycle.sql"),
     ),
+    (
+        "0010_outbox_lifecycle",
+        include_str!("migrations/0010_outbox_lifecycle.sql"),
+    ),
 ];
 
 #[derive(Clone)]
@@ -97,13 +100,47 @@ fn init_connection(conn: &mut Connection) -> rusqlite::Result<()> {
     ))
 }
 
-/// Startup repair for the outbox. An op left `inflight` means the app exited
-/// mid-send, so requeue it. Ops whose account no longer exists are orphaned by
-/// account removal and would otherwise count as "pending" forever.
+/// Startup repair for the outbox (P6.1).
+///
+/// The old version reset *every* `inflight` row to `pending`, which is exactly
+/// how a message whose SMTP `DATA` had already been accepted was sent a second
+/// time. Recovery is now per kind:
+///
+/// * label-set work (`modify_labels`, `trash`, `untrash`, `create_label`) and
+///   identity-addressed `delete` are idempotent: a crash between claim and
+///   acknowledgement only means the change may already have been applied, so
+///   they are requeued and re-checked against the server.
+/// * a `draft_sync` is a push of one immutable revision: requeueing it can
+///   only re-create the same remote draft.
+/// * an `inflight` **send** never resubmits. Its acceptance is unknown, so it
+///   becomes `uncertain` and is reconciled against the provider's Sent folder
+///   by stable RFC Message-ID before any human decision.
+///
+/// Dependents of a terminally failed or cancelled op can never run: they are
+/// cancelled here as well as at the transition that failed them.
 fn recover_outbox(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "UPDATE outbox_ops SET state='pending', attempts=0, not_before=0, last_error=NULL WHERE state='inflight';
-         DELETE FROM outbox_ops WHERE account_id NOT IN (SELECT id FROM accounts);",
+    let now = now_ms();
+    conn.execute(
+        "UPDATE outbox_ops SET state='pending', attempts=0, not_before=0, started_at=NULL, last_error=NULL \
+         WHERE state='inflight' AND kind IN ('modify_labels','trash','untrash','delete','draft_sync','create_label','label_rename','label_delete')",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE outbox_ops SET state='uncertain', started_at=COALESCE(started_at, ?1), \
+           reconcile_at=?1, reconcile_attempts=0, last_error=COALESCE(last_error, 'the app closed while this message was being handed to Gmail') \
+         WHERE state='inflight' AND kind='send'",
+        params![now],
+    )?;
+    conn.execute(
+        "UPDATE outbox_ops SET state='cancelled', completed_at=?1, \
+           failure_code='dependency_failed', last_error='the operation this waited on did not succeed' \
+         WHERE state='pending' AND depends_on_op_id IS NOT NULL \
+           AND EXISTS (SELECT 1 FROM outbox_ops d WHERE d.id=outbox_ops.depends_on_op_id AND d.state IN ('failed','cancelled','uncertain'))",
+        params![now],
+    )?;
+    conn.execute(
+        "DELETE FROM outbox_ops WHERE account_id NOT IN (SELECT id FROM accounts)",
+        [],
     )?;
     Ok(())
 }

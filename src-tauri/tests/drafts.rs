@@ -420,7 +420,19 @@ async fn p51_send_keeps_the_draft_and_freezes_its_revision() {
         .unwrap());
     let after_send = db.drafts_get(&draft.local_id).await.unwrap().unwrap();
     assert_eq!(after_send.body_html, "<p>reply</p>");
-    assert_eq!(after_send.state, "queued", "still the queued await of P6.2");
+    // P6.2: an acknowledged send marks the draft `sent` and keeps its content
+    // as the seven-day recovery copy. It is no longer a draft the user can
+    // edit or send, so it does not appear in the Drafts list either.
+    assert_eq!(after_send.state, "sent");
+    assert!(
+        db.drafts_list(std::slice::from_ref(&acc.id), None, 10)
+            .await
+            .unwrap()
+            .drafts
+            .iter()
+            .all(|d| d.local_id != draft.local_id),
+        "a sent draft is a recovery copy, not a draft"
+    );
     assert!(handle.op_id > 0);
     std::env::remove_var("SIFT_GMAIL_BASE");
 }

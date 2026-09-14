@@ -1444,6 +1444,29 @@ impl Conn {
         Ok(out)
     }
 
+    /// UIDs in the selected folder whose RFC 5322 message id matches.
+    ///
+    /// This is how an `uncertain` send is reconciled (P6.1): the prepared
+    /// message carries a stable Message-ID, so "did Gmail accept it?" is
+    /// answered by the server's own index rather than by a local guess.
+    pub async fn uid_search_header(&mut self, header: &str, value: &str) -> Result<Vec<u32>, SiftError> {
+        let v = value.replace('\\', "\\\\").replace('"', "\\\"");
+        let r = self
+            .read_cmd(&format!("UID SEARCH HEADER {header} \"{v}\""))
+            .await?;
+        if !r.tagged.ok {
+            super::errors::map_response("UID SEARCH", &r.tagged.text)?;
+        }
+        let mut out = vec![];
+        for u in r.untagged {
+            if let Response::Untagged(Untagged::Search(uids)) = u {
+                out.extend(uids);
+            }
+        }
+        out.sort_unstable();
+        Ok(out)
+    }
+
     /// Gmail web-syntax search (X-GM-RAW), newest UID order not guaranteed.
     pub async fn uid_search_raw(&mut self, query: &str) -> Result<Vec<u32>, SiftError> {
         // Quote-escape the query; Gmail syntax travels verbatim otherwise.
