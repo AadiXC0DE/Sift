@@ -159,7 +159,7 @@ else
   else
     fail "app binary is not universal (archs: ${ARCHS:-unknown})"
   fi
-  BUNDLE_VERSION=$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "")
+  BUNDLE_VERSION=$(plutil -extract CFBundleShortVersionString raw -o - "$APP/Contents/Info.plist" 2>/dev/null || echo "")
   if [ "$BUNDLE_VERSION" = "$VERSION" ]; then ok "app bundle version $BUNDLE_VERSION matches package.json"; else fail "app bundle version ${BUNDLE_VERSION:-missing} does not match package.json $VERSION"; fi
 fi
 

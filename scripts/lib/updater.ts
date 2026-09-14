@@ -128,7 +128,7 @@ export function decodeSignatureBox(text: string): MinisignSignature {
   };
 }
 
-/** latest.json carries base64 of the whole `.sig` file, not the raw box. */
+/** latest.json carries base64 of the minisign box, as Tauri writes in its `.sig` file. */
 export function signatureFieldFromBox(boxText: string): string {
   return Buffer.from(boxText, 'utf8').toString('base64');
 }

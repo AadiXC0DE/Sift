@@ -88,8 +88,12 @@ function writeConfig(path: string, pubkey: string): void {
 }
 
 describe('release-metadata pipeline', () => {
-  it('generates latest.json and SHA256SUMS that verify, and rejects a tampered archive', () => {
+  it.each(['minisign', 'tauri'])('generates verified metadata from %s signatures and rejects a tampered archive', (format) => {
     const fixture = fixtureBundle();
+    if (format === 'tauri') {
+      const sig = join(fixture.bundle, 'macos', `${ARCHIVE}.sig`);
+      writeFileSync(sig, Buffer.from(readFileSync(sig, 'utf8')).toString('base64'));
+    }
     writeConfig(fixture.config, fixture.key.pubkeyField);
     const archive = fixture.archive;
     const out = join(fixture.dir, 'out');

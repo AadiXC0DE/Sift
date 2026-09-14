@@ -6,6 +6,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
   PLATFORM_TARGETS,
+  decodeSignatureBox,
   type PlatformTarget,
   type ReleaseManifest,
   publicKeyProblem,
@@ -54,7 +55,13 @@ export function discoverBundle(bundleDir: string): BundleArtifacts {
   const archive = exactlyOne(join(bundleDir, 'macos'), '.app.tar.gz', 'updater archive');
   const signatureFile = `${archive}.sig`;
   if (!existsSync(signatureFile)) throw new Error(`updater archive has no signature: ${signatureFile} is missing`);
-  const signatureBox = readFileSync(signatureFile, 'utf8');
+  const signatureText = readFileSync(signatureFile, 'utf8').trim();
+  // Tauri writes base64 of the minisign box; fixture/standalone minisign files
+  // may contain the box itself. Normalize before encoding the manifest once.
+  const signatureBox = signatureText.startsWith('untrusted comment:')
+    ? signatureText
+    : Buffer.from(signatureText, 'base64').toString('utf8');
+  decodeSignatureBox(signatureBox);
   const secret = secretMaterialProblem(signatureBox);
   if (secret) throw new Error(`${signatureFile}: ${secret}`);
   return { dmg, archive, signatureFile, signatureBox };
