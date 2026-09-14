@@ -13,6 +13,7 @@ const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"
   <div class="card-block" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
     <a class="btn btn-primary" href={release.href}><span set:html={appleLogo} />{release.label}</a>
     <a class="btn btn-secondary" href={RELEASES_PAGE}>All releases</a>
+    <p class="install-note">Not notarized yet. <a href="#first-launch">Read the one-time opening steps ↓</a></p>
     <span class="pill-row">
       {release.size && <span class="chip">{release.size}</span>}
       <span class="chip">universal build</span>
@@ -23,12 +24,23 @@ const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"
   <div class="prose">
     {!release.published && <p class="metric-foot">{release.status}</p>}
 
-    <h2>Install</h2>
+    <h2 id="first-launch">One tiny macOS detour.</h2>
+    <p>Sift is a small indie app without Apple’s notarization stamp yet. The inbox is ready; the Apple paperwork isn’t. macOS may show “Apple could not verify Sift.app.” Here’s what to do.</p>
+    <h3>First, move in.</h3>
     <ol>
       <li>Open the downloaded DMG and drag <strong>Sift</strong> into Applications.</li>
-      <li>This release is not Apple Developer ID signed or notarized. After verifying its checksum, launch Sift; if macOS blocks it, open System Settings → Privacy &amp; Security → Open Anyway.</li>
+      <li>Open Sift from <strong>Applications</strong>. If macOS shows the verification warning, dismiss it.</li>
+      <li>Open <strong>System Settings → Privacy &amp; Security</strong>, scroll down, and choose <strong>Open Anyway</strong> beside Sift. Confirm and authenticate if asked.</li>
       <li>Connect your Gmail with an app password — no Google Cloud project, no consent screen.</li>
     </ol>
+
+    <details class="faq-item">
+      <summary>No “Open Anyway”? Take the side door.</summary>
+      <p>If you downloaded Sift from this page, compare the DMG with the SHA-256 checksum below first. Then open Terminal and paste:</p>
+      <pre class="install-command"><code>xattr -dr com.apple.quarantine /Applications/Sift.app</code></pre>
+      <p>Now open Sift from Applications. This removes the quarantine flag from Sift only; it does not turn off Gatekeeper or change your Mac’s global security settings. It also does not mean Apple has reviewed the app.</p>
+    </details>
+    <p class="metric-foot">The warning is expected for this unnotarized build. <a href="https://support.apple.com/en-gb/102445">Apple’s guide to opening downloaded apps</a>.</p>
 
     <h2>Connect Gmail</h2>
     <ol class="steps">

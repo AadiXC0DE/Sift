@@ -1,13 +1,13 @@
 {
   "name": "sift",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "type": "module",
   "productName": "Sift",
   "scripts": {
     "dev": "tauri dev",
     "dev:vite": "vite",
-    "build": "tsc --noEmit && vite build && node scripts/eager-js.mjs --dist dist",
+    "build": "node scripts/check-mail-csp.mjs && tsc --noEmit && vite build && node scripts/eager-js.mjs --dist dist",
     "build:tauri": "tauri build",
     "check:bundle": "bash scripts/check-bundle.sh",
     "preview": "vite preview",

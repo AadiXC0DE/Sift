@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.1 (2026-09-14)
+
+- Fix packaged email frames staying at 160px because the app CSP blocked their sizing script.
+- Preserve authored email styles under the release CSP, including Tauri’s style nonce injection.
+- Add WebKit and Chromium release-policy regression coverage for sizing, styles and quote collapse.
+- Explain first launch before downloading, including the missing “Open Anyway” fallback.
+- This beta remains unnotarized; updater signatures remain enforced.
+
 ## v1.1.0 (2026-09-14)
 
 - Sync recipientless drafts without treating them as failed sends or connection failures.

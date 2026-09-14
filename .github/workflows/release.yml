@@ -115,7 +115,7 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
-            Sift 1.1.0 is an unnotarized macOS release. Apple Developer ID signing and notarization are not included. If macOS blocks opening it, use System Settings → Privacy & Security → Open Anyway after verifying SHA256SUMS.
+            This Sift build is an unnotarized macOS release. Apple Developer ID signing and notarization are not included. First-launch steps, including when Open Anyway is missing: https://usesift.xyz/download#first-launch
             The updater archive is cryptographically signed with Sift's updater key.
           files: release-assets/*
       - name: verify uploaded bytes, checksums and urls while still a draft

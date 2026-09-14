@@ -95,6 +95,7 @@ const softwareLd = {
           <a class="btn btn-primary" id="download-hero" href={release.href}><span set:html={appleLogo} />{release.label}</a>
           <a class="btn btn-secondary" href="#features">Explore Sift</a>
         </div>
+        <p class="install-note rise rise-3">No Apple stamp yet. <a href="/download#first-launch">One tiny macOS detour →</a></p>
         <p class="hero-spec rise rise-3">
           {release.size && <><span>{release.size} download</span><span class="sep"></span></>}
           <span>no bundled browser</span><span class="sep"></span><span>mail stays on your Mac</span><span class="sep"></span><span>macOS 13+</span>
@@ -261,6 +262,7 @@ const softwareLd = {
         <a class="btn btn-primary" id="download-cta" href={release.href}><span set:html={appleLogo} />{release.label}</a>
         <a class="btn btn-secondary" href="/download">Installation guide</a>
       </div>
+      <p class="install-note">Unnotarized beta. <a href="/download#first-launch">First-launch steps, including when “Open Anyway” is missing →</a></p>
       <details class="sha">
         <summary>Checksums and release notes</summary>
         {

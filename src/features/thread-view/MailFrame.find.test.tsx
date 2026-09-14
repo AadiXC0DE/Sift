@@ -17,7 +17,7 @@ function srcdocOf(container: HTMLElement): string {
 
 /** The token the shim was built with, read back out of the injected script. */
 function tokenOf(container: HTMLElement): string {
-  const match = srcdocOf(container).match(/var TOKEN = "([0-9a-f]+)"/);
+  const match = srcdocOf(container).match(/data-token="([0-9a-f]+)"/);
   if (!match) throw new Error('shim token missing');
   return match[1];
 }
