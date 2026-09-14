@@ -32,6 +32,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           SIFT_GOOGLE_CLIENT_ID: ${{ secrets.SIFT_GOOGLE_CLIENT_ID }}
           SIFT_GOOGLE_CLIENT_SECRET: ${{ secrets.SIFT_GOOGLE_CLIENT_SECRET }}
+      - name: retain built installers for artifact verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: universal-installers
+          retention-days: 7
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz*
       - name: bundle budget on the universal artifact (DMG <=12 MiB, eager JS <=250 KiB gzip)
         run: |
           bash scripts/check-bundle.sh \
