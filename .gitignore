@@ -41,3 +41,6 @@ fixtures/mailbox-100k/*.db
 
 # Generated release staging (latest.json, SHA256SUMS and copied artifacts)
 /release-assets/
+
+# Test-only fixture bundle (e2e preview server)
+.e2e-build/

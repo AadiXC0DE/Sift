@@ -33,10 +33,18 @@ export default defineConfig({
     strictPort: true,
     watch: { ignored: ['**/src-tauri/**'] },
   },
+  // Serving the prebuilt bundle keeps the same URL as dev mode; CI uses it so
+  // page loads do not pay for on-demand transforms 168 times over.
+  preview: {
+    host: '127.0.0.1',
+    port: 4399,
+    strictPort: true,
+  },
   build: {
-    // Under Playwright's gitignored output directory, never next to the
-    // production `dist/` (which `emptyOutDir` must not be able to wipe).
-    outDir: 'test-results/e2e-build',
+    // Playwright wipes `test-results/` at the start of every run, so the
+    // fixture bundle lives beside it instead. Never next to the production
+    // `dist/`, which `emptyOutDir` must not be able to wipe.
+    outDir: '.e2e-build',
     emptyOutDir: true,
     rollupOptions: { input: path.join(fixtureDir, 'index.e2e.html') },
   },

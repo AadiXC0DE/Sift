@@ -20,13 +20,23 @@ jobs:
       - name: updater failure modes (staged fixture endpoint, no signed artifacts)
         run: pnpm exec tsx scripts/updater-dryrun.ts
       - run: pnpm test
+      - run: pnpm e2e:bundle
       - run: pnpm e2e
+        env:
+          # Serve the prebuilt fixture bundle instead of transforming on demand.
+          PW_PREVIEW: '1'
+          PW_WORKERS: '2'
+          # Chromium only: Playwright's WebKit build for the macos-14 arm64
+          # runner is frozen and unusable there (every test times out). WebKit
+          # is the engine Tauri ships on and is run locally - see
+          # docs/acceptance-dossier.md.
+          PW_PROJECTS: chromium
   rust:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        with: { components: 'rustfmt, clippy' }
       - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml

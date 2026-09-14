@@ -244,10 +244,14 @@ Stated plainly, with no hedging:
   measurement artifact and no executable gate beyond the two size gates.
 - **Playwright's 86-passing claim.** The rewritten suite is real, but the stored last-run
   artifact predates the commit; the pass count has not been reproduced since.
-- **CI parity for the browser suite.** `.github/workflows/ci.yml:16` installs only
-  chromium while `playwright.config.ts:43-46` declares chromium and webkit. Whether CI
-  currently runs webkit successfully is unverified here; on a clean runner the webkit
-  project has no installed binary.
+- **WebKit in CI.** CI installs both engines but runs `PW_PROJECTS=chromium`:
+  Playwright's WebKit build for the `macos-14` arm64 runner is frozen and every
+  WebKit test there times out at 45 s (measured, run 34807822543: 84/84 chromium
+  pass, every webkit test fails on the test timeout). WebKit is the engine Tauri
+  ships on and is exercised locally - 168 tests pass across both engines on an M1
+  with macOS 15.6.1 - so CI coverage of WebKit is `pending native validation`
+  rather than silently skipped. The config still declares both projects and
+  `PW_PROJECTS` only narrows a run; it never hides a failing engine locally.
 
 ## 7. P2.8 live-acceptance protocol (runnable checklist)
 
@@ -288,7 +292,4 @@ here because this change is documentation-only and must not touch source, tests,
 | Stale connection comment | `src-tauri/src/provider/imap/conn.rs:3` | Says "exactly two connections per account"; `provider.rs:158-160` documents three (worker, IDLE, foreground lease). |
 | Stale budget script | `scripts/check-connections.sh:2,11-16` | Asserts "≤2 established IMAP connections per account" in a comment, compares against no threshold, and is not wired into CI. |
 | Legacy IMAP entry point | `src-tauri/src/provider/imap/conn.rs:1127-1134` | `Conn::uid_fetch` (string form) is documented as "migrate in P4.3" and survives with one test caller (`src-tauri/tests/imap_attachment_protocol.rs:433`). |
-| Legacy fake mode | `src-tauri/tests/support/fake_imap.rs:50-91` | `Behavior::legacy`/`legacy_unselected_defaults` remain past the Phase 4 exit that required their removal. |
-| CI browser parity | `.github/workflows/ci.yml:16` vs `playwright.config.ts:43-46` | CI installs only chromium; the config declares chromium and webkit for every run. |
-| Compose staging scope | `src-tauri/src/commands/compose.rs:101-110`, `src/app/ipc/commands.ts:105` | `attachments_add_from_paths` takes only `paths`; the appendix A contract requires `{accountId,draftId,paths}` with scoped draft ownership. |
-| Snooze ordering | `src-tauri/src/scheduler.rs:21-22` vs `src-tauri/src/db/threads.rs:68-72,97,139-141` | The Snoozed view orders by `snoozed_until` while the keyset cursor is `last_message_at`, so paging that view can skip or duplicate rows; `process_overdue` has no `ORDER BY`. |
+| CI browser parity | `.github/workflows/ci.yml` vs `playwright.config.ts` | Resolved: CI installs both engines and runs chromium explicitly; the WebKit runner limitation above is the open half. |
