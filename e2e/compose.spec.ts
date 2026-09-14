@@ -73,9 +73,8 @@ test('compose: a body edit is autosaved and survives close and reload', async ({
 
   await page.getByLabel('Subject').fill('Draft survives');
   await typeBody(page, 'body text');
-  await page.waitForTimeout(450); // 300ms autosave debounce
-
-  await expect.poll(async () => (await drafts(page)).length).toBe(1);
+  await expect.poll(async () => (await drafts(page))[0]?.subject).toBe('Draft survives');
+  await expect.poll(async () => (await drafts(page))[0]?.bodyHtml).toContain('body text');
   const saved = (await drafts(page))[0];
   expect(saved.subject).toBe('Draft survives');
   expect(saved.bodyHtml).toContain('body text');
