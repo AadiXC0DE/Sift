@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Release Sift under the MIT License (`LICENSE`, plus `license` fields in `package.json` and `src-tauri/Cargo.toml`), and say so on the site: GitHub buttons in the navigation and hero, an "Open source" section on the landing page, license links in the footer of every page, download, FAQ, privacy, benchmarks, changelog and shortcuts pages, and `llms.txt`.
+- Fix the mobile navigation bar: the download button drops its three-word label to "Download" below 640px so it no longer crowds the bar, and the GitHub button now appears in the navigation at every width (links were previously hidden below 960px, leaving phones with no route to the source).
+
 ## v1.1.1 (2026-09-14)
 
 - Fix packaged email frames staying at 160px because the app CSP blocked their sizing script.

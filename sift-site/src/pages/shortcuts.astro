@@ -1,5 +1,6 @@
 ---
 import SiteLayout from '../layouts/SiteLayout.astro';
+import { LICENSE_NAME, LICENSE_URL, REPO_URL } from '../lib/project';
 const groups = [
   {
     title: 'Navigate',
@@ -72,6 +73,10 @@ const groups = [
   <div class="page-head">
     <h1>Shortcuts</h1>
     <p>Every action has a key. The palette covers the rest.</p>
+  </div>
+
+  <div class="prose">
+    <p class="metric-foot">Sift is open source under the <a href={LICENSE_URL}>{LICENSE_NAME} License</a> — bindings included, so the keymap is readable in <a href={`${REPO_URL}/blob/main/src/keymap/defaults.ts`}>the repository</a> if you want to check or change one.</p>
   </div>
 
   <div class="prose">

@@ -1,5 +1,6 @@
 ---
 import SiteLayout from '../layouts/SiteLayout.astro';
+import { LICENSE_NAME, LICENSE_URL, REPO_URL } from '../lib/project';
 // The one number this project has measured. Its command, its date and the
 // machine are part of it: an eager-JS figure without `--max-js-kib` and the
 // manifest walk means nothing (docs/acceptance-dossier.md §2.4).
@@ -82,6 +83,7 @@ const notPublished = [
 
     <h2>How a number gets published here</h2>
     <p>A figure earns a place on this page when it comes from a command anyone can run against this repository, on a named machine, on a named date, with the ceiling or the comparison it is judged against. The eager-JavaScript measurement and the two size gates above work that way; the rows above do not, yet.</p>
-    <p>The project keeps its own record of what is proven, what is pending and what has not been measured in <a href="https://github.com/AadiXC0DE/Sift/blob/main/docs/acceptance-dossier.md">docs/acceptance-dossier.md</a>, and its executable gates in <code>scripts/</code>. Read those rather than a landing page when the number matters.</p>
+    <p>The project keeps its own record of what is proven, what is pending and what has not been measured in <a href={`${REPO_URL}/blob/main/docs/acceptance-dossier.md`}>docs/acceptance-dossier.md</a>, and its executable gates in <code>scripts/</code>. Read those rather than a landing page when the number matters.</p>
+    <p>Sift is open source under the <a href={LICENSE_URL}>{LICENSE_NAME} License</a>, so every command above can be read and run against <a href={REPO_URL}>the same repository</a> you would build from.</p>
   </div>
 </SiteLayout>

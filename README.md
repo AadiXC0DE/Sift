@@ -68,3 +68,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 For a fictional demo mailbox, launch with `SIFT_DEMO=1` and a separate `SIFT_DATA_DIR`. Keep Rust and TypeScript DTOs in sync when contributing; CI checks them.
 
 [Architecture](docs/architecture.md) · [Release process](docs/release.md) · [Verification record](docs/acceptance-dossier.md) · [Report an issue](https://github.com/AadiXC0DE/Sift/issues)
+
+## License
+
+Sift is open source under the [MIT License](LICENSE). You may use, modify and redistribute it, including in closed-source builds, provided the copyright notice and the license text travel with it. Issues and pull requests are welcome on [GitHub](https://github.com/AadiXC0DE/Sift).

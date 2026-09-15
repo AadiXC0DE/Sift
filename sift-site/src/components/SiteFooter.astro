@@ -1,0 +1,26 @@
+---
+import { AUTHOR_URL, ISSUES_URL, LICENSE_NAME, LICENSE_URL, REPO_URL } from '../lib/project';
+const links = [
+  { href: '/shortcuts', label: 'Shortcuts' },
+  { href: '/privacy', label: 'Privacy' },
+  { href: '/faq', label: 'FAQ' },
+  { href: '/benchmarks', label: 'Benchmarks' },
+  { href: REPO_URL, label: 'GitHub' },
+  { href: ISSUES_URL, label: 'Issues' },
+];
+---
+<footer class="site">
+  <div class="footer-inner">
+    <nav aria-label="Footer">
+      {
+        links.map((l) => (
+          <a href={l.href}>{l.label}</a>
+        ))
+      }
+    </nav>
+    <span class="footer-license">
+      Open source under the <a href={LICENSE_URL}>{LICENSE_NAME} license</a>
+    </span>
+    <span class="footer-right">Made by <a href={AUTHOR_URL}>Aaditya</a></span>
+  </div>
+</footer>

@@ -1,6 +1,9 @@
 ---
 import '../styles/global.css';
+import { LICENSE_NAME, LICENSE_URL } from '../lib/project';
 import { releaseState, releaseView } from '../lib/release';
+import SiteFooter from '../components/SiteFooter.astro';
+import SiteNav from '../components/SiteNav.astro';
 interface Props {
   title: string;
   description?: string;
@@ -8,17 +11,10 @@ interface Props {
 }
 const {
   title,
-  description = 'Fast, quiet email for Gmail on macOS. Native Rust core, local-first, keyboard-first.',
+  description = 'Fast, quiet email for Gmail on macOS. Native Rust core, local-first, keyboard-first. MIT licensed and open source.',
   path = '',
 } = Astro.props;
-const nav = [
-  { href: '/benchmarks', label: 'Benchmarks' },
-  { href: '/changelog', label: 'Changelog' },
-  { href: '/shortcuts', label: 'Shortcuts' },
-  { href: '/faq', label: 'FAQ' },
-];
 const release = releaseView(await releaseState(), 'macOS 13 or newer');
-const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" width="15" height="15" aria-hidden="true" focusable="false"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>`;
 const origin = Astro.site ?? new URL('https://usesift.xyz');
 const canonical = new URL(Astro.url.pathname, origin).href;
 const ogImage = new URL('/og.png', origin).href;
@@ -31,6 +27,7 @@ const jsonLd = {
   url: origin.href,
   description,
   inLanguage: 'en',
+  license: LICENSE_URL,
   publisher: {
     '@type': 'Organization',
     name: siteName,
@@ -72,46 +69,20 @@ const jsonLd = {
       try {
         const t = localStorage.getItem('sift-theme');
         if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
-      } catch {}
+      } catch {
+        /* private mode: follow the system */
+      }
     </script>
   </head>
   <body>
-  <a class="skip-link" href="#main">Skip to content</a>
-    <header class="nav" id="nav">
-      <div class="nav-inner">
-        <a class="brand" href="/"><img src="/logo.png" alt="Sift" width="23" height="23" />Sift</a>
-        <nav class="nav-links" aria-label="Site">
-          {
-            nav.map((n) => (
-              <a href={n.href} aria-current={path === n.href ? 'page' : undefined}>
-                {n.label}
-              </a>
-            ))
-          }
-          <a href="https://github.com/AadiXC0DE/Sift">GitHub</a>
-        </nav>
-        <span class="nav-spacer"></span>
-        <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
-        <a class="btn btn-primary btn-sm" href={release.href}><span set:html={appleLogo} />{release.label}</a>
-      </div>
-    </header>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <SiteNav path={path} release={release} />
 
     <main class="page" id="main">
       <slot />
     </main>
 
-    <footer class="site">
-      <div class="footer-inner">
-        <nav aria-label="Footer">
-          <a href="/shortcuts">Shortcuts</a>
-          <a href="/privacy">Privacy</a>
-          <a href="/faq">FAQ</a>
-          <a href="/benchmarks">Benchmarks</a>
-          <a href="https://github.com/AadiXC0DE/Sift">GitHub</a>
-        </nav>
-        <span class="footer-right">Made by <a href="https://github.com/AadiXC0DE">Aaditya</a></span>
-      </div>
-    </footer>
+    <SiteFooter />
 
     <script is:inline>
       const navEl = document.getElementById('nav');
@@ -131,18 +102,22 @@ const jsonLd = {
       applyIcon();
       toggle &&
         toggle.addEventListener('click', () => {
-          const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+          const cur =
+            document.documentElement.dataset.theme ||
+            (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
           const next = cur === 'dark' ? 'light' : 'dark';
           document.documentElement.dataset.theme = next;
           try {
             localStorage.setItem('sift-theme', next);
-          } catch {}
+          } catch {
+            /* ignore */
+          }
           applyIcon();
         });
     </script>
-  <script>
-    import { initMotion } from '../lib/motion';
-    initMotion();
-  </script>
-</body>
+    <script>
+      import { initMotion } from '../lib/motion';
+      initMotion();
+    </script>
+  </body>
 </html>

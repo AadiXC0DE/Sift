@@ -187,6 +187,44 @@ button:focus-visible,
 .nav-spacer {
   flex: 1;
 }
+/* GitHub in the nav: a real button, quieter than the download CTA. */
+.gh {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    transform 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    background 160ms var(--ease-out);
+}
+.gh:hover {
+  text-decoration: none;
+  border-color: var(--faint);
+  background: var(--surface);
+}
+.gh:active {
+  transform: scale(0.96);
+}
+.gh-mark,
+.btn-mark {
+  display: inline-flex;
+}
+.gh-mark svg,
+.btn-mark svg {
+  display: block;
+}
+/* The download CTA's short form, shown only where the long label cannot fit. */
+.label-short {
+  display: none;
+}
 .icon-btn {
   width: 34px;
   height: 34px;
@@ -980,6 +1018,32 @@ kbd {
   color: var(--muted);
 }
 
+/* Open source. Reuses the product-facts pattern: claims above, buttons below. */
+.oss-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 28px;
+  padding: 28px 0 0;
+  border-top: 1px solid var(--line);
+  margin-top: 24px;
+}
+.oss-facts p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 10px 0 0;
+}
+.oss-facts code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.oss-ctas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
 /* Architecture flow. */
 .flow {
   display: flex;
@@ -1134,6 +1198,12 @@ footer.site {
 }
 .footer-right {
   margin-left: auto;
+}
+.footer-license {
+  color: var(--faint);
+}
+.footer-license a {
+  color: var(--muted);
 }
 
 /* ---------- Shared inner pages ---------- */
@@ -1368,14 +1438,20 @@ footer.site {
     font-size: 15.5px;
   }
   .icon-btn {
-    width: 44px;
-    height: 44px;
-    font-size: 21px;
+    width: 40px;
+    height: 40px;
+    font-size: 19px;
   }
+  /* The nav download CTA keeps its label but stops dominating the bar. */
   .btn-sm {
     height: 40px;
-    padding: 0 16px;
+    padding: 0 14px;
     font-size: 13.5px;
+  }
+  .gh {
+    height: 40px;
+    padding: 0 12px;
+    gap: 7px;
   }
   .section {
     padding: 56px 16px 0;
@@ -1466,6 +1542,10 @@ footer.site {
     grid-template-columns: 1fr;
     gap: 24px;
   }
+  .oss-facts {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
 }
 
 /* Progressive motion keeps charts readable without JavaScript. */
@@ -1489,12 +1569,20 @@ footer.site {
   .hero-spec { font-size: 11px; }
   .cta { padding: 56px 16px 0; }
   .cta-box { padding: 28px 22px; border-radius: 16px; }
-  .cta-row .btn { width: 100%; }
+  .cta-row .btn { flex: 1 1 140px; }
   .shortcut-row { grid-template-columns: 100px minmax(0, 1fr); gap: 12px; }
   .bar-row { grid-template-columns: 62px minmax(0, 1fr) 76px; gap: 8px; }
   .feel-card { padding: 16px 14px; }
   .nav-inner { gap: 8px; }
-  .nav .btn-sm { padding: 0 12px; font-size: 12px; }
+  /* Same 40px control height on every phone; the label is what got shorter. */
+  .nav .icon-btn { width: 40px; height: 40px; font-size: 18px; }
+  .nav .btn-sm { height: 40px; padding: 0 13px; font-size: 13px; }
+  /* Phones: the GitHub mark is the button; the word waits for room. */
+  .gh { height: 40px; padding: 0 11px; }
+  .gh-label { display: none; }
+  /* Same for the download CTA: icon plus one word, not three. */
+  .nav .label-long { display: none; }
+  .nav .label-short { display: inline; }
   .footer-inner { padding: 26px 16px 32px; }
 }
 

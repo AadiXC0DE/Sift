@@ -1,13 +1,15 @@
 ---
 import '../styles/global.css';
+import { AUTHOR_URL, ISSUES_URL, LICENSE_NAME, LICENSE_SUMMARY, LICENSE_URL, REPO_URL, appleMark as appleLogo, githubMark } from '../lib/project';
 import { RELEASES_PAGE, releaseState, releaseView } from '../lib/release';
+import SiteFooter from '../components/SiteFooter.astro';
+import SiteNav from '../components/SiteNav.astro';
 const release = releaseView(await releaseState(), 'macOS 13 or newer');
 const origin = new URL("https://usesift.xyz");
 const canonical = new URL("/", origin).href;
 const ogImage = new URL("/og.png", origin).href;
 const description =
   "Sift is a keyboard-first Gmail client for macOS. A Rust core and a local SQLite mirror keep reading, search and triage on your own machine.";
-const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" width="15" height="15" aria-hidden="true" focusable="false"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>`;
 const softwareLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
@@ -20,7 +22,9 @@ const softwareLd = {
   inLanguage: "en",
   isAccessibleForFree: true,
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-  author: { "@type": "Person", name: "Aaditya", url: "https://github.com/AadiXC0DE" },
+  license: LICENSE_URL,
+  codeRepository: REPO_URL,
+  author: { "@type": "Person", name: "Aaditya", url: AUTHOR_URL },
   // Version, download URL and file size are only stated when a published
   // release API response backs them; see src/lib/release.ts.
   ...(release.published && release.version && release.size
@@ -69,20 +73,7 @@ const softwareLd = {
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="nav" id="nav">
-    <div class="nav-inner">
-      <a class="brand" href="/"><img src="/logo.png" alt="Sift" width="23" height="23" />Sift</a>
-      <nav class="nav-links" aria-label="Site">
-        <a href="/benchmarks">Benchmarks</a>
-        <a href="/changelog">Changelog</a>
-        <a href="/shortcuts">Shortcuts</a>
-        <a href="https://github.com/AadiXC0DE/Sift">GitHub</a>
-      </nav>
-      <span class="nav-spacer"></span>
-      <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
-      <a class="btn btn-primary btn-sm" id="download-nav" href={release.href}><span set:html={appleLogo} />{release.label}</a>
-    </div>
-  </header>
+  <SiteNav release={release} />
 
   <main id="main">
   <div class="hero-stage">
@@ -93,9 +84,10 @@ const softwareLd = {
         <p class="sub rise rise-2">A keyboard-first Gmail client for Mac. Your mail is mirrored to your own machine, for quick search and a calmer inbox.</p>
         <div class="hero-ctas rise rise-2">
           <a class="btn btn-primary" id="download-hero" href={release.href}><span set:html={appleLogo} />{release.label}</a>
+          <a class="btn btn-secondary" id="github-hero" href={REPO_URL}><span class="btn-mark" set:html={githubMark} />View source</a>
           <a class="btn btn-secondary" href="#features">Explore Sift</a>
         </div>
-        <p class="install-note rise rise-3">No Apple stamp yet. <a href="/download#first-launch">One tiny macOS detour →</a> · <a href="/download#homebrew">Install with Homebrew</a></p>
+        <p class="install-note rise rise-3">Open source under the <a href={LICENSE_URL}>{LICENSE_NAME} license</a>. No Apple stamp yet. <a href="/download#first-launch">One tiny macOS detour →</a> · <a href="/download#homebrew">Install with Homebrew</a></p>
         <p class="hero-spec rise rise-3">
           {release.size && <><span>{release.size} download</span><span class="sep"></span></>}
           <span>no bundled browser</span><span class="sep"></span><span>mail stays on your Mac</span><span class="sep"></span><span>macOS 13+</span>
@@ -229,6 +221,25 @@ const softwareLd = {
     </div>
   </section>
 
+  <section class="section" aria-label="Open source" id="open-source">
+    <h2>Open source, all the way down.</h2>
+    <p class="lede">Sift is MIT licensed. The Rust core, the React interface, the site and the release pipeline are the same code you install — read it, build it, or fork it.</p>
+    <div class="oss">
+      <div class="oss-copy">
+        <div class="oss-facts">
+          <div><span class="product-fact">{LICENSE_NAME}</span><p>{LICENSE_SUMMARY}</p></div>
+          <div><span class="product-fact">Read every line</span><p>The sync engine, the sanitizer, the SQLite schema and this page all live in one repository.</p></div>
+          <div><span class="product-fact">Build it yourself</span><p><code>git clone</code>, then <code>pnpm install</code> and <code>pnpm tauri dev</code> with Rust and Node 20+.</p></div>
+        </div>
+      </div>
+      <div class="oss-ctas">
+        <a class="btn btn-primary" id="github-oss" href={REPO_URL}><span class="btn-mark" set:html={githubMark} />View Sift on GitHub</a>
+        <a class="btn btn-secondary" href={ISSUES_URL}>Report an issue</a>
+        <a class="btn btn-secondary" href={LICENSE_URL}>Read the {LICENSE_NAME} license</a>
+      </div>
+    </div>
+  </section>
+
   <section class="section" aria-label="Architecture">
     <h2>A small app. A solid foundation.</h2>
     <p class="lede">A Rust core does the heavy lifting once, then every read hits a local SQLite file. Mail goes directly between your Mac and Google.</p>
@@ -241,7 +252,7 @@ const softwareLd = {
       <span class="flow-arrow" aria-hidden="true">→</span>
       <div class="flow-node"><span class="flow-k">Your screen</span><span class="flow-d">local lists and search</span></div>
     </div>
-    <p class="rust-cta">The source is public. <a href="https://github.com/AadiXC0DE/Sift">Read the code</a> · <a href="/benchmarks">see what is measured</a></p>
+    <p class="rust-cta">The source is public under the <a href={LICENSE_URL}>{LICENSE_NAME} license</a>. <a href={REPO_URL}>Read the code</a> · <a href="/benchmarks">see what is measured</a></p>
   </section>
 
   <section class="section" aria-label="Connect">
@@ -260,6 +271,7 @@ const softwareLd = {
       {!release.published && <p class="metric-foot">{release.status}</p>}
       <div class="cta-row">
         <a class="btn btn-primary" id="download-cta" href={release.href}><span set:html={appleLogo} />{release.label}</a>
+        <a class="btn btn-secondary" id="github-cta" href={REPO_URL}><span class="btn-mark" set:html={githubMark} />View source</a>
         <a class="btn btn-secondary" href="/download">Installation guide</a>
       </div>
       <p class="install-note">Unnotarized beta. <a href="/download#first-launch">First-launch steps, including when “Open Anyway” is missing →</a></p>
@@ -284,18 +296,7 @@ const softwareLd = {
   </section>
 
   </main>
-  <footer class="site">
-    <div class="footer-inner">
-      <nav aria-label="Footer">
-        <a href="/shortcuts">Shortcuts</a>
-        <a href="/privacy">Privacy</a>
-        <a href="/faq">FAQ</a>
-        <a href="/benchmarks">Benchmarks</a>
-        <a href="https://github.com/AadiXC0DE/Sift">GitHub</a>
-      </nav>
-      <span class="footer-right">Made by <a href="https://github.com/AadiXC0DE">Aaditya</a></span>
-    </div>
-  </footer>
+  <SiteFooter />
 
   <script>
     // Sticky nav border after 8px scroll.

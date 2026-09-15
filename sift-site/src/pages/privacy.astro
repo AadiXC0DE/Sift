@@ -1,5 +1,6 @@
 ---
 import SiteLayout from '../layouts/SiteLayout.astro';
+import { ISSUES_URL, LICENSE_NAME, LICENSE_URL, REPO_URL } from '../lib/project';
 ---
 <SiteLayout title="Privacy" description="Mail goes directly to Google. No telemetry, no ads, no Sift server." path="/privacy">
   <div class="page-head">
@@ -32,7 +33,10 @@ import SiteLayout from '../layouts/SiteLayout.astro';
     <h2>Deleting your data</h2>
     <p>Removing an account deletes its Keychain entry and every row associated with it in the local database. Uninstalling the app and deleting its application support folder removes everything else.</p>
 
+    <h2>Reading the code</h2>
+    <p>You do not have to take this page’s word for any of it. Sift is open source under the <a href={LICENSE_URL}>{LICENSE_NAME} License</a>: the <a href={REPO_URL}>repository</a> holds the sync engine, the HTML sanitizer, the local schema and the release pipeline that builds the DMG, so every claim above can be checked against the code that runs it.</p>
+
     <h2>Questions</h2>
-    <p>Open an issue on <a href="https://github.com/AadiXC0DE/Sift">GitHub</a> if anything here is unclear.</p>
+    <p>Open an issue on <a href={ISSUES_URL}>GitHub</a> if anything here is unclear.</p>
   </div>
 </SiteLayout>

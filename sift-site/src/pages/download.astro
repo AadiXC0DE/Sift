@@ -1,9 +1,9 @@
 ---
 import SiteLayout from '../layouts/SiteLayout.astro';
+import { ISSUES_URL, LICENSE_NAME, LICENSE_URL, REPO_URL, appleMark, githubMark } from '../lib/project';
 import { RELEASES_PAGE, releaseState, releaseView } from '../lib/release';
 const release = releaseView(await releaseState(), 'macOS 13 or newer', 'Apple Silicon and Intel');
 const checksumHref = release.version ? `${RELEASES_PAGE}/download/${release.version}/SHA256SUMS` : `${RELEASES_PAGE}/latest/download/SHA256SUMS`;
-const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" width="15" height="15" aria-hidden="true" focusable="false"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg>`;
 ---
 <SiteLayout title="Download" description="Download Sift for macOS: a native Gmail client with no bundled browser engine." path="/download">
   <div class="page-head">
@@ -12,13 +12,15 @@ const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"
   </div>
 
   <div class="card-block" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-    <a class="btn btn-primary" href={release.href}><span set:html={appleLogo} />{release.label}</a>
+    <a class="btn btn-primary" href={release.href}><span set:html={appleMark} />{release.label}</a>
+    <a class="btn btn-secondary" href={REPO_URL}><span class="btn-mark" set:html={githubMark} />View source</a>
     <a class="btn btn-secondary" href={RELEASES_PAGE}>All releases</a>
     <p class="install-note">Not notarized yet. <a href="#first-launch">Read the one-time opening steps ↓</a></p>
     <span class="pill-row">
       {release.size && <span class="chip">{release.size}</span>}
       <span class="chip">universal build</span>
       <span class="chip">free beta</span>
+      <span class="chip">{LICENSE_NAME} licensed</span>
     </span>
   </div>
 
@@ -66,6 +68,10 @@ const appleLogo = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"
     }
     <p><a href={checksumHref}>Download the published SHA256SUMS file</a> to compare with your installer.</p>
     <p>The release pipeline generates <code>SHA256SUMS</code> from the exact bytes it uploads, then re-downloads the uploaded file and verifies it while the release is still a draft. Nothing is published until that check passes, so the hash and the file cannot disagree.</p>
+
+    <h2 id="source">Source and license</h2>
+    <p>Sift is open source under the <a href={LICENSE_URL}>{LICENSE_NAME} License</a>. The whole app — the Rust sync engine, the React interface, the release pipeline and this website — lives in one public repository, so you can read exactly what the build you install does with your mail, or compile it yourself.</p>
+    <p>Bug reports and feature requests go to <a href={ISSUES_URL}>GitHub Issues</a>. The build steps are in the repository’s README; a local build needs macOS, Node 20+, pnpm 9+ and a stable Rust toolchain.</p>
 
     <h2>Updates</h2>
     <p>Sift checks GitHub for a newer release when it launches — once per launch, only when you are online — and you can turn that check off or run it by hand in <strong>Settings → Updates</strong>. Nothing downloads or installs on its own: the Updates tab shows the new version, its date and its release notes, and then you press <strong>Download update</strong>, then <strong>Install and quit to finish</strong>, then <strong>Restart Sift now</strong>. The download is verified against the public key built into the app before anything is installed; a download that fails that check is rejected, and the tab says the update could not be verified.</p>

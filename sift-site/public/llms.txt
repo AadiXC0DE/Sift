@@ -1,6 +1,6 @@
 # Sift
 
-> Sift is a fast, keyboard-first desktop email client for Gmail and Google Workspace on macOS. A Rust core mirrors your entire mailbox into a local SQLite database, for fast local lists and search.
+> Sift is a fast, keyboard-first desktop email client for Gmail and Google Workspace on macOS. A Rust core mirrors your entire mailbox into a local SQLite database, for fast local lists and search. Sift is open source under the MIT License.
 
 Sift is a native Mac app, not an Electron shell: it draws its interface with the macOS WebView and ships no bundled browser engine. The download page reads the current installer size from the published GitHub release. The benchmarks page documents measured frontend size and enforced build budgets; launch-time and total application-memory figures are not published.
 
@@ -14,7 +14,9 @@ Sift is a native Mac app, not an Electron shell: it draws its interface with the
 - Privacy: no Sift server, no telemetry, credentials in the macOS Keychain; remote images are not loaded by default
 - Updates: Sift checks for a newer release at launch, verifies its signature, and installs nothing until you press Download update, then Install, then Restart now
 - Price: free while in beta
-- Source: public at https://github.com/AadiXC0DE/Sift
+- License: MIT (open source) — https://github.com/AadiXC0DE/Sift/blob/main/LICENSE
+- Source: public at https://github.com/AadiXC0DE/Sift (read, build, modify and redistribute it, including closed-source builds)
+- Issues: https://github.com/AadiXC0DE/Sift/issues
 
 ## Pages
 

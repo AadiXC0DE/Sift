@@ -1,5 +1,6 @@
 ---
 import SiteLayout from '../layouts/SiteLayout.astro';
+import { LICENSE_NAME, LICENSE_URL, REPO_URL } from '../lib/project';
 import { RELEASES_PAGE, releaseState, releaseView } from '../lib/release';
 const release = releaseView(await releaseState(), 'macOS 13 or newer');
 const releases = [
@@ -42,5 +43,6 @@ const releases = [
     }
     <p>{release.status}</p>
     <p>Version 1.1.0 is not Apple Developer ID signed or notarized. Updater archives are signed with Sift’s updater key. The pipeline generates <code>SHA256SUMS</code> from the exact bytes it uploads and re-verifies the uploaded file before the release is made public, so the checksums and the DMG cannot disagree.</p>
+    <p>Sift is open source under the <a href={LICENSE_URL}>{LICENSE_NAME} License</a>; the tagged source for every entry above is on <a href={`${REPO_URL}/tags`}>GitHub</a>.</p>
   </div>
 </SiteLayout>

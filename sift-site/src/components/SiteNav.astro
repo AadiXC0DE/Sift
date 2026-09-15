@@ -1,0 +1,44 @@
+---
+import { REPO_URL, appleMark, githubMark } from '../lib/project';
+import type { ReleaseView } from '../lib/release';
+
+interface Props {
+  /** Current path, for `aria-current`. */
+  path?: string;
+  release: ReleaseView;
+}
+const { path = '', release } = Astro.props;
+/** Phones get the short form: the full label cannot share a 320px bar. */
+const shortLabel = release.published ? 'Download' : 'Releases';
+const links = [
+  { href: '/benchmarks', label: 'Benchmarks' },
+  { href: '/changelog', label: 'Changelog' },
+  { href: '/shortcuts', label: 'Shortcuts' },
+  { href: '/faq', label: 'FAQ' },
+];
+---
+<header class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><img src="/logo.png" alt="Sift" width="23" height="23" />Sift</a>
+    <nav class="nav-links" aria-label="Site">
+      {
+        links.map((n) => (
+          <a href={n.href} aria-current={path === n.href ? 'page' : undefined}>
+            {n.label}
+          </a>
+        ))
+      }
+    </nav>
+    <span class="nav-spacer"></span>
+    <a
+      class="gh"
+      id="github-nav"
+      href={REPO_URL}
+      title="Source on GitHub · MIT licensed"
+      aria-label="Sift source code on GitHub, MIT licensed"
+      ><span class="gh-mark" set:html={githubMark} /><span class="gh-label">GitHub</span></a
+    >
+    <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    <a class="btn btn-primary btn-sm" id="download-nav" href={release.href}><span set:html={appleMark} /><span class="label-long">{release.label}</span><span class="label-short">{shortLabel}</span></a>
+  </div>
+</header>
